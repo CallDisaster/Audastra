@@ -469,7 +469,9 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
         const QString id = args.value("description").toString();
         QString error;
-        if (!module->ReparentDescriptionFrame(id, args.value("frame").toString(), args.value("parent").toString(), &error))
+        const std::optional<std::size_t> index = args.contains("index")
+            ? std::optional<std::size_t>(static_cast<std::size_t>(args.value("index").toInteger())) : std::nullopt;
+        if (!module->PlaceDescriptionFrame(id, args.value("frame").toString(), args.value("parent").toString(), index, &error))
             return Failure("GAME_UI_DESCRIPTION", error);
         const UiDescription* description = module->Description(id);
         if (description) binding.insert("text", Text(SerializeUiDescription(*description)));

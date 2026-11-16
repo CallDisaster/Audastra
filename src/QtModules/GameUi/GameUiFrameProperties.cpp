@@ -2,6 +2,7 @@
 
 #include "GameUiAuthoringJson.h"
 #include "GameUiChoice.h"
+#include "GameUiNodeTree.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiStyles.h"
@@ -48,12 +49,6 @@ constexpr int kResourceRole = Qt::UserRole + 41;  // 贴图、模型字段：双
 constexpr int kColorRole = Qt::UserRole + 42;     // 颜色字段：双击或右键打开取色器
 constexpr int kGroupRole = Qt::UserRole + 43;     // 分组行：基本、位置与大小……（记住折叠）
 
-QString KindLabel(UiFrameType type) {
-    for (const auto& candidate : UiFrameKinds()) {
-        if (candidate.type == type) return Text(candidate.label);
-    }
-    return Text(UiFrameTypeName(type));
-}
 
 double Round4(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -172,7 +167,7 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* root, const UiFrame& frame) 
     auto* basic = group(root, tr("基本"), QStringLiteral("basic"));
     editable(basic, tr("名称"), QStringLiteral("label"), Text(frame.label));
     editable(basic, tr("编号"), QStringLiteral("id"), Text(frame.id));
-    auto* typeRow = new QTreeWidgetItem(basic, {raw ? QStringLiteral("type") : tr("种类"), KindLabel(frame.type)});
+    auto* typeRow = new QTreeWidgetItem(basic, {raw ? QStringLiteral("type") : tr("种类"), GameUiNodeTree::FrameKindLabel(frame.type)});
     typeRow->setToolTip(1, Text(UiFrameTypeName(frame.type)));
     if (frame.type == UiFrameType::Template) {
         choice(basic, tr("模板"), QStringLiteral("template"), PropertyChoices(QStringLiteral("template")), Text(frame.templateName));

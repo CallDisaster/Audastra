@@ -23,6 +23,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeySequence>
 #include <QGridLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -418,6 +419,7 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     if (isFrame) {
         // 自己的控件。
         menu.addAction(tr("设置…"), this, [this, node, global] { (void)OpenFrameSettings(node, global); });
+        menu.addAction(tr("重命名"), this, [this, node] { RenameNodeItem(node); })->setShortcut(QKeySequence(Qt::Key_F2));
         menu.addAction(tr("添加子控件…"), this, [this, node, at, global] { (void)OpenKindPicker(node, at, global); });
         menu.addSeparator();
         menu.addAction(tr("复制"), this, [this] { QString error; if (!CopySelectedDescriptionFrame(&error)) ReportAuthoring(error); });
@@ -434,6 +436,7 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     } else if (isRoot) {
         // 自己的界面（根）。
         menu.addAction(tr("添加控件…"), this, [this, node, at, global] { (void)OpenKindPicker(node, at, global); });
+        menu.addAction(tr("重命名"), this, [this, node] { RenameNodeItem(node); })->setShortcut(QKeySequence(Qt::Key_F2));
         menu.addAction(tr("粘贴"), this, paste)->setEnabled(hasClip);
         menu.addSeparator();
         AddNewDescriptionForm(menu.addMenu(tr("新建界面")));

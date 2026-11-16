@@ -10,6 +10,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QAbstractItemDelegate>
 #include <QCompleter>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -266,6 +267,11 @@ void GameUiModule::BuildPage() {
     nodes_->header()->resizeSection(kNameColumn, 190);
     nodes_->header()->resizeSection(kTypeColumn, 90);
     nodes_->viewport()->installEventFilter(this);
+    // 自己的控件可拖动换位置、F2 改名（不随双击进入编辑）。
+    nodes_->setDragEnabled(true);
+    nodes_->setDragDropMode(QAbstractItemView::InternalMove);
+    nodes_->setDefaultDropAction(Qt::MoveAction);
+    nodes_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     nodes_->setUniformRowHeights(true);
     nodes_->setAlternatingRowColors(true);
     nodes_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -354,6 +360,18 @@ void GameUiModule::BuildPage() {
         if (populating_ || !item) return;
         SelectNode(item->data(0, kNodeRole).toUInt());
     });
+    connect(nodes_, &QTreeWidget::itemChanged, this, &GameUiModule::OnNodeItemChanged);
+    connect(nodes_->itemDelegate(), &QAbstractItemDelegate::closeEditor, this, &GameUiModule::OnNodeEditorClosed);
+    for (const auto signal : {&QTreeWidget::itemExpanded, &QTreeWidget::itemCollapsed}) {
+        connect(nodes_, signal, this, [this, signal](QTreeWidgetItem* item) {
+            if (!populating_ && item == originGroupItem_) originGroupExpanded_ = signal == &QTreeWidget::itemExpanded;
+        });
+    }
+    auto* rename = new QAction(nodes_);
+    rename->setShortcut(QKeySequence(Qt::Key_F2));
+    rename->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    nodes_->addAction(rename);
+    connect(rename, &QAction::triggered, this, [this] { RenameNodeItem(selected_); });
     connect(nodes_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& position) {
         QTreeWidgetItem* item = nodes_->itemAt(position);
         ShowContextMenu(item ? item->data(0, kNodeRole).toUInt() : kNoNode, std::nullopt, nodes_->viewport()->mapToGlobal(position), true);
@@ -372,6 +390,7 @@ void GameUiModule::BuildPage() {
         if (!ResizeDescriptionFrame(node, rect, &error)) ReportAuthoring(error);
     });
     connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::UpdateProperties);
+    connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::RefreshTypeColumn);
     InstallPropertyEditors(properties_);
     // Delete 删除所选的描述框架（节点树与画布上都可用）。
     for (QWidget* target : std::initializer_list<QWidget*>{nodes_, canvas_}) {
@@ -412,14 +431,18 @@ void GameUiModule::SelectNode(std::uint32_t node) {
         populating_ = true;
         QTreeWidgetItemIterator it(nodes_);
         QTreeWidgetItem* match = nullptr;
-        for (; *it; ++it) {
+        for (; *it && node != kNoNode; ++it) {
             if ((*it)->data(0, kNodeRole).toUInt() == node) {
                 match = *it;
                 break;
             }
         }
         nodes_->setCurrentItem(match);
-        if (match) nodes_->scrollToItem(match);
+        if (match) {
+            // 选中收起的分组或父节点里的项时展开到它。
+            for (QTreeWidgetItem* parent = match->parent(); parent; parent = parent->parent()) parent->setExpanded(true);
+            nodes_->scrollToItem(match);
+        }
         populating_ = false;
     }
     // 选中自己界面里的节点时，那份界面成为当前界面。

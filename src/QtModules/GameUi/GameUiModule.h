@@ -201,6 +201,17 @@ public:
     // 换父控件（parent 为空时放到界面顶层，排在最后）。以父控件为目标的锚点按新旧父控件上对应点的位置差改偏移，
     // 画面上位置不变；两边有一边还没排出位置时偏移不改。不能放进自己或自己的子控件。
     bool ReparentDescriptionFrame(const QString& description, const QString& frame, const QString& parent, QString* error = nullptr);
+    // 放到 parent 下第 index 个（空为排在最后；同一父控件下只调整先后，后面的画在上面）。换父控件时画面上位置不变。
+    // 节点树拖放与助手工具共用。
+    bool PlaceDescriptionFrame(const QString& description, const QString& frame, const QString& parent, std::optional<std::size_t> index,
+        QString* error = nullptr);
+    // 改显示名（frame 为空时改界面的名称）；编号不变，触发器与事件不受影响。
+    bool RenameDescriptionNode(const QString& description, const QString& frame, const QString& label, QString* error = nullptr);
+    // 节点树拖放：把 dragged 放到 target 上方（-1）、里面（0）或下方（1）。只能在同一份界面里移动。
+    bool DropOnNodeTree(std::uint32_t dragged, std::uint32_t target, int where, QString* error = nullptr);
+    [[nodiscard]] bool CanDropOnNodeTree(std::uint32_t dragged, std::uint32_t target, int where) const;
+    // 节点树里改名（F2）：编辑框里是显示名，确认后按显示名保存。
+    void RenameNodeItem(std::uint32_t node);
     // 控件（阵列时为第一个）或界面根（frame 为空）当前排出的位置；还没排出时为空。
     [[nodiscard]] std::optional<GameUi::FrameRect> DescriptionFrameRect(const QString& description, const QString& frame) const;
     // 铺满父控件：两个锚点左上、右下对齐父控件，去掉宽高；取消时改为居中于父控件、宽高取当前大小，画面上不动。
@@ -294,7 +305,7 @@ signals:
     void TriggerSimulationChanged();
 
 protected:
-    // 节点树的可见、可选两列：按下即切换，不改选中行。
+    // 节点树的可见、可选两列：按下即切换，不改选中行；拖放交给界面修改。
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -321,6 +332,11 @@ private:
     void ApplyAssets(std::vector<GameUiAsset> assets);
     void PopulateTree();
     void ApplyFilter();
+    // 节点树：拖放落点（-1 上方、0 里面、1 下方）、F2 改名的提交与取消、类型列中文名与原名切换。
+    [[nodiscard]] int DropPosition(QTreeWidgetItem* target, const QPoint& position) const;
+    void OnNodeItemChanged(QTreeWidgetItem* item, int column);
+    void OnNodeEditorClosed();
+    void RefreshTypeColumn();
     void UpdateProperties();
     void UpdateProblems();
     void SelectNode(std::uint32_t node);
@@ -458,6 +474,11 @@ private:
     bool assetsRerun_ = false;
     bool reloadQueued_ = false;
     bool populating_ = false;
+    QTreeWidgetItem* ownGroupItem_ = nullptr;     // 节点树分组“我的界面”
+    QTreeWidgetItem* originGroupItem_ = nullptr;  // 节点树分组“原版界面”
+    std::optional<bool> originGroupExpanded_;      // 作者展开或收起过“原版界面”后按作者的
+    QTreeWidgetItem* renameItem_ = nullptr;        // 正在 F2 改名的行
+    QString renameDisplay_;
     std::uint32_t selected_ = GameUi::kNoNode;
     QString selectedKey_;
     QString pendingSelection_;

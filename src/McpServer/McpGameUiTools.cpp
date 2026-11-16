@@ -141,12 +141,14 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("wait_ms", IntegerSchema(0, 60000));
             required.append("action");
         } else if (tool.name == "game_ui_frame_reparent") {
-            tool.description = "把界面描述里的控件 frame 移到控件 parent 下（parent 为空字符串时放到界面顶层，排在最后）。"
+            tool.description = "把界面描述里的控件 frame 移到控件 parent 下（parent 为空字符串时放到界面顶层）；index 为放在第几个（0 起，"
+                "不给时排在最后；parent 不变时只调整先后，后面的画在上面）。"
                 "以父控件为目标的锚点按新旧父控件上对应点的位置差改偏移，画面上位置不变（两边有一边还没排出位置时偏移不改）；"
-                "不能放进自己或自己的子控件。与编辑器属性“父控件”同一操作，结果作为导入文件进入待保存修改";
+                "不能放进自己或自己的子控件。与编辑器属性“父控件”、节点树拖放同一操作，结果作为导入文件进入待保存修改";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("frame", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("parent", QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("index", IntegerSchema(0, 100000));
             required.append("description");
             required.append("frame");
             required.append("parent");
@@ -302,7 +304,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
             return Failure("GAME_UI_ARGUMENT", "name_contains 无效。");
     }
     for (const auto& key : {QStringLiteral("offset"), QStringLiteral("limit"), QStringLiteral("width"), QStringLiteral("height"),
-             QStringLiteral("steps"), QStringLiteral("wait_ms")}) {
+             QStringLiteral("steps"), QStringLiteral("wait_ms"), QStringLiteral("index")}) {
         if (!args.contains(key)) continue;
         const auto schema = properties.value(key).toObject();
         if (!ValidInteger(args.value(key), schema.value("minimum").toInt(), schema.value("maximum").toInt()))

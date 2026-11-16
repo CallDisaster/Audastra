@@ -12,6 +12,7 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -21,6 +22,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -107,6 +109,7 @@ private slots:
     void NewUiFlowAndLayerOrder();
     void GroupedPropertiesUnitsAndEvents();
     void CanvasResizeSnapAndNudge();
+    void NodeTreeGroupsRenameAndDrop();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -1721,11 +1724,11 @@ void GameUiModuleTests::CanvasResizeSnapAndNudge() {
     QVERIFY2(module.SetDescriptionFrameRects(QStringLiteral("Hud"), {{QStringLiteral("panel1"), panelTarget}, {QStringLiteral("back1"), backTarget}},
                  QStringLiteral("测试摆放"), &error),
         qPrintable(error));
-    const auto near = [](const GameUi::FrameRect& a, const GameUi::FrameRect& b) {
+    const auto sameRect = [](const GameUi::FrameRect& a, const GameUi::FrameRect& b) {
         return qAbs(a.left - b.left) < 1e-5f && qAbs(a.bottom - b.bottom) < 1e-5f && qAbs(a.right - b.right) < 1e-5f && qAbs(a.top - b.top) < 1e-5f;
     };
-    QVERIFY(near(rectOf("panel1"), panelTarget));
-    QVERIFY(near(rectOf("back1"), backTarget));
+    QVERIFY(sameRect(rectOf("panel1"), panelTarget));
+    QVERIFY(sameRect(rectOf("back1"), backTarget));
     QVERIFY(!frame("back1")->width && !frame("back1")->height);  // 两个锚点定住两个方向，不写宽高
     QVERIFY(qAbs(*frame("panel1")->width - 0.3) < 1e-6);
     // 不合法的整批不改。
@@ -1748,6 +1751,117 @@ void GameUiModuleTests::CanvasResizeSnapAndNudge() {
                         {{"description", "Hud"}, {"rects", QJsonArray{QJsonObject{{"frame", "nope"}, {"left", 0.1}, {"bottom", 0.1}, {"right", 0.2}, {"top", 0.2}}}}})
                  .value("ok")
                  .toBool());
+}
+
+// 节点树：自己的界面在上、原版界面在下（有自己的界面时默认收起）；类型写中文名，显示原始字段时写原名；
+// F2 改显示名；拖放换父控件与先后，与助手工具同一操作。
+void GameUiModuleTests::NodeTreeGroupsRenameAndDrop() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    page->resize(1400, 900);
+    page->show();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    const auto nodeOf = [&module](const char* name) { return *module.Tree()->FindByName(name); };
+    auto* nodes = page->findChild<QTreeWidget*>(QStringLiteral("gameUiNodes"));
+    QVERIFY(nodes);
+    QCOMPARE(nodes->topLevelItemCount(), 2);
+    QTreeWidgetItem* ownGroup = nodes->topLevelItem(0);
+    QTreeWidgetItem* originGroup = nodes->topLevelItem(1);
+    QCOMPARE(ownGroup->text(0), QStringLiteral("我的界面"));
+    QCOMPARE(originGroup->text(0), QStringLiteral("原版界面"));
+    QVERIFY(originGroup->isExpanded());  // 还没有自己的界面
+    QTreeWidgetItem* console = FindItem(nodes, QStringLiteral("ConsoleUI"));
+    QVERIFY(console && console->parent() == originGroup);
+    QVERIFY(!console->icon(0).isNull());
+    QCOMPARE(console->text(1), QStringLiteral("简单容器"));
+    QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleTile"))->text(1), QStringLiteral("贴图"));
+    auto* raw = page->findChild<QCheckBox*>(QStringLiteral("showRawFields"));
+    QVERIFY(raw);
+    raw->setChecked(true);
+    QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleUI"))->text(1), QStringLiteral("SIMPLEFRAME"));
+    raw->setChecked(false);
+    QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleUI"))->text(1), QStringLiteral("简单容器"));
+    // 中文名与原名都能搜。
+    auto* search = page->findChild<QLineEdit*>(QStringLiteral("gameUiSearch"));
+    QVERIFY(search);
+    search->setText(QStringLiteral("SIMPLEFRAME"));
+    QVERIFY(!FindItem(nodes, QStringLiteral("ConsoleUI"))->isHidden());
+    search->setText(QStringLiteral("简单容器"));
+    QVERIFY(!FindItem(nodes, QStringLiteral("ConsoleUI"))->isHidden());
+    search->clear();
+
+    // 有自己的界面后原版界面默认收起；自己的写“显示名（编号）”。
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), QStringLiteral("血条"), &error, true), qPrintable(error));
+    ownGroup = nodes->topLevelItem(0);
+    originGroup = nodes->topLevelItem(1);
+    QVERIFY(!originGroup->isExpanded());
+    QTreeWidgetItem* hud = FindItem(nodes, QStringLiteral("血条（Hud）"));
+    QVERIFY(hud && hud->parent() == ownGroup);
+    QCOMPARE(hud->text(1), QStringLiteral("界面"));
+    QVERIFY(FindItem(nodes, QStringLiteral("面板（panel1）")));
+    // 选中收起分组里的节点时展开到它。
+    QVERIFY(module.SelectFrame(QStringLiteral("ConsoleTile")));
+    QVERIFY(nodes->topLevelItem(1)->isExpanded());
+
+    // F2 改名：编辑框里只有显示名，改完按显示名保存，编号不变；Esc 取消恢复原样。
+    const auto actions = nodes->actions();
+    QVERIFY(std::any_of(actions.begin(), actions.end(), [](QAction* action) { return action->shortcut() == QKeySequence(Qt::Key_F2); }));
+    module.RenameNodeItem(nodeOf("panel1"));
+    auto* editor = nodes->viewport()->findChild<QLineEdit*>();
+    QVERIFY(editor);
+    QCOMPARE(editor->text(), QStringLiteral("面板"));
+    editor->setText(QStringLiteral("主面板"));
+    QTest::keyClick(editor, Qt::Key_Return);
+    QTRY_COMPARE(FindUiFrame(*module.Description(QStringLiteral("Hud")), "panel1")->label, std::string("主面板"));
+    QTRY_VERIFY(FindItem(nodes, QStringLiteral("主面板（panel1）")));
+    module.RenameNodeItem(nodeOf("panel1"));
+    editor = nodes->viewport()->findChild<QLineEdit*>();
+    QVERIFY(editor);
+    editor->setText(QStringLiteral("不要"));
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QVERIFY(FindItem(nodes, QStringLiteral("主面板（panel1）")));
+    QCOMPARE(FindUiFrame(*module.Description(QStringLiteral("Hud")), "panel1")->label, std::string("主面板"));
+    // 界面本身改名。
+    QVERIFY(module.RenameDescriptionNode(QStringLiteral("Hud"), {}, QStringLiteral("状态栏"), &error));
+    QCOMPARE(module.Description(QStringLiteral("Hud"))->label, std::string("状态栏"));
+
+    // 拖放：放进控件里（画面上位置不变），放在前后调整先后；不能放进自己的子控件、原版节点或界面前后。
+    QVERIFY(module.SelectFrame(QStringLiteral("panel1")));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back1"));
+    QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back2"));
+    const auto description = [&module] { return module.Description(QStringLiteral("Hud")); };
+    const auto ids = [](const std::vector<UiFrame>& frames) {
+        QStringList out;
+        for (const auto& frame : frames) out << QString::fromStdString(frame.id);
+        return out;
+    };
+    const GameUi::FrameRect before = *module.DescriptionFrameRect(QStringLiteral("Hud"), QStringLiteral("back2"));
+    QVERIFY(!module.CanDropOnNodeTree(nodeOf("panel1"), nodeOf("back1"), 0));
+    QVERIFY(!module.CanDropOnNodeTree(nodeOf("back2"), nodeOf("ConsoleUI"), 0));
+    QVERIFY(!module.CanDropOnNodeTree(nodeOf("back2"), nodeOf("Hud"), -1));
+    QVERIFY(module.CanDropOnNodeTree(nodeOf("back2"), nodeOf("Hud"), 0));
+    QVERIFY2(module.DropOnNodeTree(nodeOf("back2"), nodeOf("panel1"), 0, &error), qPrintable(error));
+    QCOMPARE(ids(FindUiFrame(*description(), "panel1")->children), (QStringList{QStringLiteral("back1"), QStringLiteral("back2")}));
+    const GameUi::FrameRect after = *module.DescriptionFrameRect(QStringLiteral("Hud"), QStringLiteral("back2"));
+    QVERIFY(qAbs(after.left - before.left) < 1e-5f && qAbs(after.top - before.top) < 1e-5f);
+    QVERIFY2(module.DropOnNodeTree(nodeOf("back2"), nodeOf("back1"), -1, &error), qPrintable(error));
+    QCOMPARE(ids(FindUiFrame(*description(), "panel1")->children), (QStringList{QStringLiteral("back2"), QStringLiteral("back1")}));
+    QVERIFY2(module.DropOnNodeTree(nodeOf("back2"), nodeOf("back1"), 1, &error), qPrintable(error));
+    QCOMPARE(ids(FindUiFrame(*description(), "panel1")->children), (QStringList{QStringLiteral("back1"), QStringLiteral("back2")}));
+    QVERIFY2(module.DropOnNodeTree(nodeOf("back2"), nodeOf("panel1"), 1, &error), qPrintable(error));
+    QCOMPARE(ids(description()->frames), (QStringList{QStringLiteral("panel1"), QStringLiteral("back2")}));
+    const GameUi::FrameRect back = *module.DescriptionFrameRect(QStringLiteral("Hud"), QStringLiteral("back2"));
+    QVERIFY(qAbs(back.left - before.left) < 1e-5f && qAbs(back.top - before.top) < 1e-5f);
+    // 助手工具按 index 放。
+    Modules::GameUiToolService service([&module] { return &module; });
+    const QJsonObject placed = service.Invoke(QStringLiteral("game_ui_frame_reparent"),
+        {{"description", "Hud"}, {"frame", "back2"}, {"parent", ""}, {"index", 0}});
+    QVERIFY2(placed.value("ok").toBool(), qPrintable(QJsonDocument(placed).toJson()));
+    QCOMPARE(ids(description()->frames), (QStringList{QStringLiteral("back2"), QStringLiteral("panel1")}));
 }
 
 int main(int argc, char** argv) {

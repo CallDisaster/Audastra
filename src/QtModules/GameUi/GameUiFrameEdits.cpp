@@ -43,6 +43,11 @@ std::optional<FrameRect> GameUiModule::DescriptionFrameRect(const QString& descr
 }
 
 bool GameUiModule::ReparentDescriptionFrame(const QString& descriptionId, const QString& frameId, const QString& parentId, QString* error) {
+    return PlaceDescriptionFrame(descriptionId, frameId, parentId, std::nullopt, error);
+}
+
+bool GameUiModule::PlaceDescriptionFrame(const QString& descriptionId, const QString& frameId, const QString& parentId,
+    std::optional<std::size_t> index, QString* error) {
     const auto fail = [error](const QString& message) {
         if (error) *error = message;
         return false;
@@ -54,10 +59,25 @@ bool GameUiModule::ReparentDescriptionFrame(const QString& descriptionId, const 
     if (!parentId.isEmpty() && !FindUiFrame(*description, parentId.toStdString()))
         return fail(tr("界面 %1 里没有控件 %2").arg(descriptionId, parentId));
     const QString oldParent = Text(UiFrameParentId(*description, frameId.toStdString()));
-    if (oldParent == parentId) return true;
+    if (oldParent == parentId) {
+        // 同一父控件下只调整先后（后面的画在上面）。
+        if (!index) return true;
+        const auto position = UiFrameSiblingIndex(*description, frameId.toStdString());
+        if (!position) return fail(tr("界面 %1 里没有控件 %2").arg(descriptionId, frameId));
+        const std::size_t target = std::min(*index, position->second - 1);
+        if (target == position->first) return true;
+        QJsonObject move{{"op", "move_frame"}, {"frame", frameId}, {"index", static_cast<qint64>(target)}};
+        if (!parentId.isEmpty()) move.insert("parent", parentId);
+        return EditDescription(descriptionId, CompactEdits({move}), tr("界面 %1：调整 %2 的先后").arg(descriptionId, frameId), error);
+    }
 
     QJsonObject move{{"op", "move_frame"}, {"frame", frameId}};
     if (!parentId.isEmpty()) move.insert("parent", parentId);
+    if (index) {
+        const UiFrame* parent = parentId.isEmpty() ? nullptr : FindUiFrame(*description, parentId.toStdString());
+        const std::size_t count = parent ? parent->children.size() : description->frames.size();
+        move.insert("index", static_cast<qint64>(std::min(*index, count)));
+    }
     QJsonArray edits{move};
     // 以父控件为目标的锚点：偏移加上旧父控件对应点与新父控件对应点之差。
     const auto from = DescriptionFrameRect(descriptionId, oldParent);
@@ -81,6 +101,28 @@ bool GameUiModule::ReparentDescriptionFrame(const QString& descriptionId, const 
     }
     const QString where = parentId.isEmpty() ? tr("界面顶层") : parentId;
     return EditDescription(descriptionId, CompactEdits(edits), tr("界面 %1：%2 移到 %3 下").arg(descriptionId, frameId, where), error);
+}
+
+bool GameUiModule::RenameDescriptionNode(const QString& descriptionId, const QString& frameId, const QString& label, QString* error) {
+    const UiDescription* description = Description(descriptionId);
+    if (!description) {
+        if (error) *error = tr("地图里没有界面 %1").arg(descriptionId);
+        return false;
+    }
+    const QString name = label.trimmed();
+    if (frameId.isEmpty()) {
+        if (Text(description->label) == name) return true;
+        return EditDescription(descriptionId, CompactEdits({QJsonObject{{"op", "set_description"}, {"label", name}}}),
+            tr("界面 %1：改名为 %2").arg(descriptionId, name), error);
+    }
+    const UiFrame* frame = FindUiFrame(*description, frameId.toStdString());
+    if (!frame) {
+        if (error) *error = tr("界面 %1 里没有控件 %2").arg(descriptionId, frameId);
+        return false;
+    }
+    if (Text(frame->label) == name) return true;
+    const QJsonObject edit{{"op", "set_frame"}, {"frame", frameId}, {"fields", QJsonObject{{"label", name}}}};
+    return EditDescription(descriptionId, CompactEdits({edit}), tr("界面 %1：%2 改名为 %3").arg(descriptionId, frameId, name), error);
 }
 
 bool GameUiModule::FillsParent(const UiFrame& frame) {
