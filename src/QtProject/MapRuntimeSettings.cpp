@@ -30,7 +30,15 @@ Result<Settings> ReadSettings(const EditorProject& project) {
         return bytes.Succeeded() ? Services::ParseMapRuntimeSettings(*bytes.value) : Result<Settings>{{},bytes.diagnostics};
     }
     if (project.archiveSession_) {
-        return Services::ReadMapRuntimeSettings(*project.archiveSession_);
+        const auto* archive = project.archiveSession_.get();
+        const auto& sha = archive->SourceSha256();
+        auto& cache = project.runtimeSettingsCache_;
+        if (cache && cache->archive == archive && !sha.empty() && cache->sourceSha256 == sha)
+            return Result<Settings>::Success(cache->settings);
+        auto read = Services::ReadMapRuntimeSettings(*archive);
+        if (read.Succeeded() && read.value && !sha.empty()) cache = EditorProject::RuntimeSettingsCache{archive, sha, *read.value};
+        else cache.reset();
+        return read;
     }
     if (project.directorySnapshot_) {
         const auto& snapshot = project.directorySnapshot_->Snapshot();

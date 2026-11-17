@@ -65,7 +65,9 @@ struct Fixture {
                 {"alev", "levels", "AbilityData", "int", "等级", "stats", "0", "0", "-1", "", "1", "1", "1", "1", "100"},
                 {"Hbz1", "Data", "AbilityData", "unreal", "暴风雪伤害", "stats", "1", "1", "-1", "AHbz", "1", "1", "1"},
                 {"acdn", "Cool", "AbilityData", "real", "冷却时间", "stats", "1", "0", "-1", "", "1", "1", "1"},
-                {"atp1", "Tip", "Profile", "string", "提示", "text", "1", "0", "0", "", "1", "1", "1"}
+                {"atp1", "Tip", "Profile", "string", "提示", "text", "1", "0", "0", "", "1", "1", "1"},
+                {"abpx", "Buttonpos", "Profile", "int", "按钮位置 - 普通 (X)", "art", "0", "0", "0", "", "1", "1", "1", "0", "3"},
+                {"abpy", "Buttonpos", "Profile", "int", "按钮位置 - 普通 (Y)", "art", "0", "0", "1", "", "1", "1", "1", "0", "2"}
             })},
             {"unit.slk", Table({"ID", "HP", "spd", "isbldg", "abilList", "code"}, {
                 {"hfoo", "420", "270.125", "0", "A001,A002", "hfoo"}})},
@@ -137,6 +139,7 @@ private slots:
     void InvalidInheritedValuesStayReadOnly();
     void NearParentValueShadowsFarParentAmbiguity();
     void LevelAutofillWritesAllLevelsAsOneUndo();
+    void PairedFieldsStayAdjacentRegardlessOfEditOrder();
     void LevelCountHidesAndCarriesLevels();
 };
 
@@ -890,6 +893,31 @@ void ObjectFieldModelTests::LevelCountHidesAndCarriesLevels() {
     undo.undo();
     QVERIFY(FindRow(model, "Hbz1", 2) >= 0);
     QCOMPARE(Serialize(*document), original);
+    undo.clear();
+}
+
+// 作者反馈：有的技能“按钮位置 X/Y”挨在一起，有的要另外翻找。已修改字段曾按写进文件的先后排在最前面；
+// 先改 Y、最后才改 X 时两行就被隔开。显示顺序改为全部按分类、名称排序，文件里的修改次序不变。
+void ObjectFieldModelTests::PairedFieldsStayAdjacentRegardlessOfEditOrder() {
+    Fixture fixture;
+    QVERIFY(fixture.valid);
+    auto document = Parse(ObjectType::Ability, "[A000]\n_parent=\"AHbz\"\nabpy=2\nalev=3\nabpx=1\n");
+    QVERIFY(document);
+    const ObjectKey object{ObjectType::Ability, "A000"};
+    ObjectFieldModel model;
+    QUndoStack undo;
+    model.SetUndoStack(&undo);
+    model.SetContext(&fixture.catalog, &fixture.schema);
+    model.SetDocument(document.get(), &object);
+    const int x = FindRow(model, "abpx"), y = FindRow(model, "abpy");
+    QVERIFY(x >= 0 && y >= 0);
+    QCOMPARE(y, x + 1);
+    QCOMPARE(model.index(x, 3).data().toString(), QStringLiteral("1"));
+    QVERIFY(model.setData(model.index(x, 3), QStringLiteral("2"), Qt::EditRole));
+    QCOMPARE(model.index(FindRow(model, "abpx"), 3).data().toString(), QStringLiteral("2"));
+    QCOMPARE(model.index(FindRow(model, "abpy"), 3).data().toString(), QStringLiteral("2"));
+    const auto text = Serialize(*document);
+    QVERIFY(text.find("abpy") < text.find("alev") && text.find("alev") < text.find("abpx"));
     undo.clear();
 }
 

@@ -228,11 +228,7 @@ void ObjectFieldModel::RebuildRows() {
                 row.reason = inheritance.reason;
             }
         }
-        std::stable_sort(rows_.begin() + static_cast<std::ptrdiff_t>(object->modifications.size()), rows_.end(), [](const FieldRow& left, const FieldRow& right) {
-            const QString a = ObjectFieldCategory(left.definition) + ObjectFieldLabel(left.definition) + IndexText(left.canonicalKey);
-            const QString b = ObjectFieldCategory(right.definition) + ObjectFieldLabel(right.definition) + IndexText(right.canonicalKey);
-            return a < b;
-        });
+        // 前 modifications.size() 行仍是子对象自己的修改（文件次序），先在这里查重。
         for (std::size_t i = 0; i < rows_.size(); ++i) {
             for (std::size_t j = i + 1; j < object->modifications.size(); ++j) {
                 if (rows_[i].canonicalKey == rows_[j].canonicalKey) {
@@ -241,6 +237,13 @@ void ObjectFieldModel::RebuildRows() {
                 }
             }
         }
+        // 显示顺序与修改先后无关：已修改和默认字段一起按分类、名称排序，按钮位置 X/Y 这类成对字段始终相邻。
+        // 只排列显示行；地图文件里的修改次序不变（写回按字段地址定位）。
+        std::stable_sort(rows_.begin(), rows_.end(), [](const FieldRow& left, const FieldRow& right) {
+            const QString a = ObjectFieldCategory(left.definition) + ObjectFieldLabel(left.definition) + IndexText(left.canonicalKey);
+            const QString b = ObjectFieldCategory(right.definition) + ObjectFieldLabel(right.definition) + IndexText(right.canonicalKey);
+            return a < b;
+        });
         // 技能只显示不超过“等级”的各级；调低后高等级的修改仍留在地图里，调回时恢复。
         for (const auto& row : rows_)
             if (row.definition && IsLevelCountField(*row.definition)) { levelCount_ = LevelCountValue(row.effective.value); break; }

@@ -511,6 +511,14 @@ public:
     // 仅宿主安装配置注入；不从地图或Agent参数解析本机路径/分发许可。
     std::vector<Services::MapRuntimePackageSource> runtimePackageSources_;
     std::vector<Diagnostic> runtimeCatalogDiagnostics_;
+    // 已打开归档里的运行库设置：同一归档会话（同一来源 SHA）内容不变，只读一次。精确读取每次都要把整张地图
+    // 重新散列（大图一秒多）；来源变化由来源监视另行发现，保存时仍按冻结来源重新读取。
+    struct RuntimeSettingsCache {
+        const MapArchiveSession* archive = nullptr;
+        std::string sourceSha256;
+        Services::MapRuntimeSettings settings;
+    };
+    mutable std::optional<RuntimeSettingsCache> runtimeSettingsCache_;
     std::string runtimeApprovedPackageSha256_;
     // 一般来源档案的owned逐文件声明；保存时进入同一Capture/Verify/Replay，不授予读取资格。
     std::vector<Script::ScriptProfileSourceEncoding> scriptSourceEncodings_;
