@@ -273,7 +273,8 @@ public:
             }, options));
         }
     }
-    std::optional<std::int32_t> Type(const UnitPlacement& placement) {
+    // 摆放的是不是建筑（有效isbldg）；开始位置和单位表里存的物品返回空。MMP图标与小地图点大小共用这一解释。
+    std::optional<bool> Building(const UnitPlacement& placement) {
         if (placement.rawcode == "sloc") return std::nullopt;
         if (!items_) {
             items_ = ReadTable(context_, "Units/ItemData.slk");
@@ -291,8 +292,11 @@ public:
         if (!isUnit) {
             Fail("TERRAIN_MMP_OBJECT_UNKNOWN", "MMP对象既无标准单位/物品定义也无已支持的原生单位父项：" + placement.rawcode);
         }
-        const auto building = Integer(Effective(placement.rawcode, "isbldg", "UnitBalance", balance_), placement.rawcode);
-        if (!building) return std::nullopt;
+        return Integer(Effective(placement.rawcode, "isbldg", "UnitBalance", balance_), placement.rawcode) != 0;
+    }
+    std::optional<std::int32_t> Type(const UnitPlacement& placement) {
+        const auto building = Building(placement);
+        if (!building || !*building) return std::nullopt;
         if (GoldMine(placement.rawcode)) return 0;
         const auto race = Effective(placement.rawcode, "race", "UnitData", data_);
         const auto normalized = Text::LowerAscii(race);
@@ -508,6 +512,14 @@ std::map<std::int32_t, std::array<std::uint8_t, 4>> TeamColors(Context& context,
     return colors;
 }
 
+// 单位语义（UnitSemantics）读取的全部来源，先整批捕获。
+const std::vector<std::string>& SemanticFiles() {
+    static const std::vector<std::string> files{"UI/UnitEditorData.txt", "Units/UnitData.slk", "Units/UnitBalance.slk",
+        "Units/UnitUI.slk", "Units/UnitAbilities.slk", "Units/AbilityData.slk", "Units/UnitMetaData.slk",
+        "Units/ItemData.slk", "war3map.w3u", "war3map.w3a", "war3map.w3t"};
+    return files;
+}
+
 struct Captured {
     Bytes bytes;
     std::vector<TerrainMinimapMarkerDependency> dependencies;
@@ -558,10 +570,7 @@ Captured CaptureMarkers(const MapArchiveSession& source, const std::filesystem::
         return unit.rawcode != "sloc";
     });
     if (ordinary) {
-        const std::vector<std::string> semantic{"UI/UnitEditorData.txt", "Units/UnitData.slk", "Units/UnitBalance.slk",
-            "Units/UnitUI.slk", "Units/UnitAbilities.slk", "Units/AbilityData.slk", "Units/UnitMetaData.slk",
-            "Units/ItemData.slk", "war3map.w3u", "war3map.w3a", "war3map.w3t"};
-        context.Phase(semantic);
+        context.Phase(SemanticFiles());
         UnitSemantics semantics(context);
         for (const auto& unit : placements.units)
             if (const auto type = semantics.Type(unit)) append(unit, *type, {255, 255, 255, 255});
@@ -618,6 +627,41 @@ Result<std::shared_ptr<const TerrainMinimapMarkers>> TerrainMinimapMarkers::Capt
     } catch (const Failure& failure) { Result<Output> result; result.diagnostics = failure.diagnostics; return result; }
     catch (const std::bad_alloc&) { Result<Output> result; result.diagnostics = AllocationFailure().diagnostics; return result; }
     catch (const std::length_error&) { Result<Output> result; result.diagnostics = AllocationFailure().diagnostics; return result; }
+}
+
+Result<std::vector<bool>> ClassifyMinimapBuildings(const MapArchiveSession& source, const std::filesystem::path& gameRoot,
+    std::uint8_t tileset, std::span<const MapData::UnitPlacement> units, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals, const TerrainMinimapMarkerLimits& limits) {
+    try {
+        Validate(limits);
+        if (units.size() > limits.maximumUnits) Fail("TERRAIN_MMP_BUDGET", "单位数量超过小地图预算。");
+        std::vector<bool> buildings(units.size(), false);
+        if (std::none_of(units.begin(), units.end(), [](const auto& unit) { return unit.rawcode != "sloc"; }))
+            return Result<std::vector<bool>>::Success(std::move(buildings));
+        Context context(source, gameRoot, limits, replacements, removals);
+        context.tileset = tileset;
+        context.Phase(SemanticFiles());
+        UnitSemantics semantics(context);
+        std::size_t unknown = 0;
+        std::string example;
+        for (std::size_t i = 0; i < units.size(); ++i) {
+            try {
+                buildings[i] = semantics.Building(units[i]).value_or(false);
+            } catch (const Failure&) {
+                // 单个摆放解释不了只影响它自己的点大小：按普通单位画，并在结果里说明，不让整张小地图失败。
+                if (unknown++ == 0) example = units[i].rawcode;
+            }
+        }
+        Check(context.guard.Verify());
+        auto result = Result<std::vector<bool>>::Success(std::move(buildings));
+        if (unknown)
+            result.diagnostics.push_back(Diagnostic{DiagnosticSeverity::Warning, kSubsystem, "MINIMAP_BUILDING_UNKNOWN",
+                std::to_string(unknown) + " 个摆放单位无法判断是否为建筑（例如 " + example + "），小地图按普通单位大小显示。",
+                std::nullopt});
+        return result;
+    } catch (const Failure& failure) { return {{}, failure.diagnostics}; }
+    catch (const std::bad_alloc&) { return {{}, AllocationFailure().diagnostics}; }
+    catch (const std::length_error&) { return {{}, AllocationFailure().diagnostics}; }
 }
 
 Result<std::shared_ptr<const TerrainMinimapMarkers>> TerrainMinimapMarkers::Compose(

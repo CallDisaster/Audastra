@@ -121,10 +121,10 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     menu->addSeparator();
     for (auto [name, field] : {std::pair{"单位点", &QtProject::MinimapPreviewOptions::units},
                                {"起始位置点", &QtProject::MinimapPreviewOptions::starts},
-                               {"图标点", &QtProject::MinimapPreviewOptions::icons}}) {
+                               {"小地图图标", &QtProject::MinimapPreviewOptions::icons}}) {
         auto* action = menu->addAction(tr(name));
         action->setCheckable(true);
-        action->setToolTip(tr("点状叠加显示"));
+        action->setChecked(options_.*field);
         connect(action, &QAction::toggled, this, [this, field](bool on) {
             options_.*field = on;
             Refresh();
@@ -158,13 +158,14 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     connect(&preview_, &QtProject::ProjectMinimapPreview::Changed, this, [this] {
         Display();
     });
+    // 镜头连续移动时保留上一帧的框，最多每 30 毫秒重算一次；不先清空，否则框会一闪一闪。
+    outlineTimer_ = new QTimer(this);
+    outlineTimer_->setSingleShot(true);
+    outlineTimer_->setInterval(30);
+    connect(outlineTimer_, &QTimer::timeout, this, [this] { Outline(); });
     if (viewport_)
         connect(viewport_, &WorldViewport::MinimapCameraChanged, this, [this] {
-            image_->outline.clear();
-            image_->update();
-            QTimer::singleShot(100, this, [this] {
-                Outline();
-            });
+            if (!outlineTimer_->isActive()) outlineTimer_->start();
         });
     QTimer::singleShot(0, this, [this] {
         Refresh();
@@ -241,8 +242,11 @@ void WorldMinimapPreview::Pan(QPointF normalized) {
         project_.AddDiagnostics(status.diagnostics);
 }
 void WorldMinimapPreview::Outline() {
-    image_->outline.clear();
     const auto &result = preview_.ResultValue();
+    // 底图正在更新且仍显示上一张时，框沿用上一张的坐标系，保持不动。
+    if (preview_.Pending() && property("updating").toBool() && !image_->pixmap().isNull() && !image_->outline.isEmpty())
+        return;
+    image_->outline.clear();
     if (viewport_ && options_.current && !preview_.Pending() && result && result->Succeeded()) {
         const auto &value = *result->value;
         const auto &w = value.worldRectangle;

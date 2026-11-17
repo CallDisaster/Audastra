@@ -211,7 +211,8 @@ private:
     std::atomic<std::uint32_t>* testFault_ = nullptr;
 #endif
     void DrawModels(int pass); // 0 = 不透明/透明测试（写深度），1 = 混合层（只读深度）
-    void DrawModelLayers(int pass);
+    // groundDecals 为真时只画地面贴花层（紧接地形、在模型之前），否则只画普通附加层。
+    void DrawModelLayers(int pass, bool groundDecals = false);
     struct ModelLayerSlot {
         std::shared_ptr<const ModelSceneLayerData> requested, accepted;
         std::unique_ptr<D3D11Scene> gpu;

@@ -25,6 +25,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLineEdit>
 #include <QSortFilterProxyModel>
 #include <QSettings>
 #include <QStandardItemModel>
@@ -192,6 +193,7 @@ private slots:
     void DynamicLookupWarnsWithoutAsking();
     void LiteralCommentAndLookalikeCodeStaysClean();
     void QueuedStaleSessionAndUndoReject();
+    void CategoryRenameByTypingAndVisibleFailures();
     void FrozenGraphIdentityAndCatalogSourceGuardsReject();
     void UnboundIdentityAndRejectedFirstPublicationExposeFailure();
     void ActualSmallMapSaveAndReopen();
@@ -344,6 +346,51 @@ void TriggerRenameTests::QueuedStaleSessionAndUndoReject() {
     const auto saved = f.Pair();
     f.project.ResetEditTracking(); f.project.triggerUndoStack_->undo();
     const auto untouched = f.Pair(); QVERIFY(saved.wtg == untouched.wtg && saved.wct == untouched.wct); QVERIFY(f.SourceBytes());
+}
+
+// 作者报告：类别改名打字没反应、长名静默失败。用真实的就地编辑框逐键输入并回车；没生效的改名必须看得见。
+void TriggerRenameTests::CategoryRenameByTypingAndVisibleFailures() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    auto* page = f.module->Widget(); page->resize(900, 600); page->show();
+    QVERIFY(QTest::qWaitForWindowExposed(page));
+    auto* view = page->findChild<QTreeView*>("triggerExplorer"); QVERIFY(view);
+    auto* proxy = qobject_cast<QSortFilterProxyModel*>(view->model()); QVERIFY(proxy);
+    auto* model = dynamic_cast<TriggerExplorerModel*>(proxy->sourceModel()); QVERIFY(model);
+    const auto categoryId = f.project.triggerDocument_->categories.front().categoryId;
+    const auto categoryName = [&] { return QString::fromStdString(f.project.triggerDocument_->categories.front().name.text); };
+    const auto openEditor = [&](const QModelIndex& source) -> QLineEdit* {
+        const auto index = proxy->mapFromSource(source);
+        view->setFocus(); view->setCurrentIndex(index); view->edit(index);
+        for (auto* editor : view->viewport()->findChildren<QLineEdit*>(QString(), Qt::FindDirectChildrenOnly))
+            if (editor->isVisible()) return editor;
+        return nullptr;
+    };
+    const auto openEditorText = [&] {
+        for (auto* editor : view->viewport()->findChildren<QLineEdit*>(QString(), Qt::FindDirectChildrenOnly))
+            if (editor->isVisible()) return editor->text();
+        return QString();
+    };
+    // 逐键输入长名并回车。
+    auto* editor = openEditor(model->IndexForCategoryId(categoryId)); QVERIFY(editor);
+    editor->selectAll(); QTest::keyClicks(editor, QStringLiteral("111Test")); QTest::keyClick(editor, Qt::Key_Return);
+    QTRY_COMPARE(categoryName(), QStringLiteral("111Test"));
+    // 编辑框里按 Ctrl+G 不当成“新建类别”，不重建整棵树、不关掉正在输入的编辑框。
+    const auto categories = f.project.triggerDocument_->categories.size();
+    editor = openEditor(model->IndexForCategoryId(categoryId)); QVERIFY(editor);
+    QTest::keyClick(editor, Qt::Key_G, Qt::ControlModifier); QCoreApplication::processEvents();
+    QCOMPARE(f.project.triggerDocument_->categories.size(), categories); QVERIFY(editor->isVisible());
+    editor->selectAll(); QTest::keyClicks(editor, QStringLiteral("Second")); QTest::keyClick(editor, Qt::Key_Return);
+    QTRY_COMPARE(categoryName(), QStringLiteral("Second"));
+    // 排队这一拍里撤销栈上多了别的命令（点别的行提交属性、写恢复点），改名照样生效。
+    QVERIFY(proxy->setData(proxy->mapFromSource(model->IndexForCategoryId(categoryId)), QStringLiteral("Third"), Qt::EditRole));
+    f.project.triggerUndoStack_->push(new QUndoCommand(QStringLiteral("other")));
+    QTRY_COMPARE(categoryName(), QStringLiteral("Third"));
+    // 重名：不静默。问题列表写明原因，编辑框在原位置重新打开并保留刚输入的文字。
+    editor = openEditor(model->IndexForTriggerId(f.target)); QVERIFY(editor);
+    editor->selectAll(); QTest::keyClicks(editor, QStringLiteral("Other")); QTest::keyClick(editor, Qt::Key_Return);
+    QTRY_VERIFY(HasDiagnostic(f.project, "TRIGGER_RENAME_REJECTED"));
+    QVERIFY(Named(f.project, "Init"));
+    QTRY_COMPARE(openEditorText(), QStringLiteral("Other"));
 }
 
 void TriggerRenameTests::FrozenGraphIdentityAndCatalogSourceGuardsReject() {

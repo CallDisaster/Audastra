@@ -800,7 +800,10 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
         context_->Draw(gridCount_, 0);
     }
-    // 顺序：base→transition→blight→不透明模型/粒子/层→水只读depth→透明层。
+    // 顺序：base→transition→blight→地面贴花→不透明模型/粒子/层→水只读depth→透明层。
+    // 建筑贴花与原版一样属于地面：紧接地形画，之后的模型、特效与水按深度和混合盖在它上面；
+    // 放在透明层之后会把塔顶光效这类不写深度的特效盖住。
+    DrawModelLayers(1, true);
     DrawModels(0);
     DrawParticles(0);
     DrawModelLayers(0);

@@ -249,6 +249,48 @@ void RejectedCommitReleasesPreparedInputs() {
         fixture.Unchanged();
     }
 }
+// 界面编辑每次都会改一个导入文件（AudastraUI\<编号>.json）。只动了与物编无关的导入（界面描述、模型、贴图）时
+// 不能整份重建物编目录（大图上每次两三秒）；物编表导入照常重建。同步通知期间能读到这次改了哪些路径。
+void UnrelatedImportsKeepObjectCatalog() {
+    using Use = QtProject::EditorProject::ImportUse;
+    Require(QtProject::EditorProject::ClassifyImport("AudastraUI\\perf1.json") == Use::UiDescription
+        && QtProject::EditorProject::ClassifyImport("audastraui/Perf1.JSON") == Use::UiDescription
+        && QtProject::EditorProject::ClassifyImport("Units\\Footman.mdx") == Use::Model
+        && QtProject::EditorProject::ClassifyImport("war3mapImported\\a.blp") == Use::Texture
+        && QtProject::EditorProject::ClassifyImport("Scripts\\main.lua") == Use::Script
+        && QtProject::EditorProject::ClassifyImport("Sound\\a.wav") == Use::Sound
+        && QtProject::EditorProject::ClassifyImport("Units\\UnitData.slk") == Use::Other
+        && QtProject::EditorProject::ClassifyImport("other.json") == Use::Other
+        && QtProject::EditorProject::ClassifyImport("folder.mdx\\file") == Use::Other, "import classification");
+    Fixture fixture;
+    const auto before = QtProject::ProjectEffectiveObjectCatalog(*fixture.project);
+    Require(before != nullptr, "fixture installs an object catalog");
+    int rebuilt = 0;
+    std::vector<bool> onlyUnrelated;
+    QObject::connect(fixture.project.get(), &QtProject::EditorProject::ObjectCatalogChanged, [&] { ++rebuilt; });
+    QObject::connect(fixture.project.get(), &QtProject::EditorProject::ImportsChanged, [&] {
+        onlyUnrelated.push_back(fixture.project->ImportChangeOnly({Use::UiDescription, Use::Model, Use::Texture}));
+    });
+    const auto owned = [](const char* path, const char* text) {
+        QtProject::PendingImport entry;
+        entry.archivePath = QString::fromLatin1(path);
+        entry.ownedPayload = std::make_shared<const std::vector<std::byte>>(Tests::ObjectBytes(text));
+        entry.size = static_cast<qint64>(entry.ownedPayload->size());
+        return entry;
+    };
+    auto state = fixture.project->CaptureAssets();
+    state.imports.push_back(owned("AudastraUI\\perf1.json", "{}"));
+    state.imports.push_back(owned("Units\\Test.mdx", "MDLX"));
+    fixture.project->RestoreAssets(state);
+    Require(onlyUnrelated == std::vector<bool>{true}, "listeners see a known, unrelated change set");
+    Require(rebuilt == 0 && QtProject::ProjectEffectiveObjectCatalog(*fixture.project) == before,
+        "interface description and model imports keep the object catalog");
+    Require(!fixture.project->ChangingImports(), "change set is only visible during the notification");
+    fixture.ImportReadOnlyProfile(true);
+    Require(onlyUnrelated == std::vector<bool>{true, false}, "object table import is reported as relevant");
+    Require(rebuilt == 1 && QtProject::ProjectEffectiveObjectCatalog(*fixture.project) != before,
+        "object table import still rebuilds the object catalog");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -268,6 +310,7 @@ int main(int argc, char** argv) {
         FrozenTaskRejectsSameBytesAtChangedGameSourceIdentity();
         PreparedCatalogIsBoundToArchiveAndOverlay();
         RejectedCommitReleasesPreparedInputs();
+        UnrelatedImportsKeepObjectCatalog();
         std::cout << "object save catalog gates passed\n";
         return 0;
     } catch (const std::exception& error) {

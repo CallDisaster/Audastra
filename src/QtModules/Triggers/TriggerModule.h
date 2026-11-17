@@ -239,10 +239,13 @@ private:
     void FixLegacyTriggerReferences(StableId triggerId);
     void PushDirectoryChange(Trigger::TriggerDirectoryLayout before, const QString& label);
     void ApplyRename(const TriggerDirectoryItem& item, const std::string& name);
+    // 重命名没有生效：问题列表与运行日志各记一条，并在原位置重新打开编辑框（保留刚输入的文字）、在下面写出原因。
+    // 状态栏会被撤销栈的提示立刻覆盖，不能只写在那里。
+    void ReportRenameFailure(const TriggerDirectoryItem& item, const QString& attempted, const QString& reason);
     // 自定义代码触发器的改名、复制：走与 Agent 共用的代码身份服务（同步 InitTrig 与代码里的生成符号），一条撤销命令。
-    // 成功时返回结果触发器（复制为新触发器，改名为原触发器）。
+    // 成功时返回结果触发器（复制为新触发器，改名为原触发器）；失败时 failure 收到原因。
     std::optional<StableId> ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name,
-        std::int32_t categoryId, StableId afterTriggerId);
+        std::int32_t categoryId, StableId afterTriggerId, QString* failure = nullptr);
     // 这些触发器（gg_trg_ 名称）在它们之外的引用：最多渲染 8 行，total 为总数。
     [[nodiscard]] QStringList TriggerReferenceLines(const std::vector<StableId>& triggerIds, std::size_t& total) const;
     [[nodiscard]] bool Confirm(const QString& title, const QString& body, const QStringList& references);

@@ -161,6 +161,9 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         if (!SelectScript(path)) { QSignalBlocker block(directory_); for (int row = 0; row < directory_->topLevelItemCount(); ++row) if (directory_->topLevelItem(row)->data(0, Qt::UserRole).toString() == selectedPath_) directory_->setCurrentItem(directory_->topLevelItem(row)); }
     });
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
+        // 只动了界面描述、声音、模型或贴图时 Lua 目录不变。
+        using Use = QtProject::EditorProject::ImportUse;
+        if (project_.ImportChangeOnly({Use::UiDescription, Use::Sound, Use::Model, Use::Texture})) return;
         RefreshDirectory();
         if (project_.LuaFolderSource().Active()) return;
         if (publishing_ || selectedPath_.isEmpty()) return;

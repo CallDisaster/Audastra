@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/NativeMinimapMarkers.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/Services/MinimapMarkerEdits.h"
+#include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/ProjectSaveControl.h"
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 
 namespace War3Map::Services {
 namespace {
@@ -64,10 +66,64 @@ MapData::PathingGridSnapshot FinalPathing(const CurrentMinimapPreviewInput& inpu
         Fail("MINIMAP_CURRENT_PATHING", "通行图未能读取。");
     return *parsed.Snapshot();
 }
+
+// 256 像素小地图上图标的边长；与游戏里金矿、开始位置图标相对整张小地图的大小一致。
+constexpr int kMinimapIconSize = 16;
+
+// 把图标贴在标记中心：图标颜色乘以标记颜色（开始位置取玩家色），按图标 alpha 叠加。
+// 缩小按区域平均（预乘 alpha），避免最近邻丢细线。
+void DrawMinimapIcon(Image::DecodedImage& target, const Image::DecodedImage& icon, int centerX, int centerY, int size,
+                     const std::array<std::uint8_t, 4>& bgra) {
+    if (!icon.Valid() || !target.Valid() || size <= 0)
+        return;
+    const int left = centerX - size / 2, top = centerY - size / 2;
+    const std::array<double, 3> tint{bgra[2] / 255.0, bgra[1] / 255.0, bgra[0] / 255.0};
+    const auto span = [size](int index, std::uint32_t extent) {
+        const auto begin = static_cast<std::uint32_t>(std::uint64_t(index) * extent / size);
+        const auto end = static_cast<std::uint32_t>(std::uint64_t(index + 1) * extent / size);
+        return std::pair{begin, std::max(end, begin + 1)};
+    };
+    for (int ty = 0; ty < size; ++ty) {
+        const int y = top + ty;
+        if (y < 0 || y >= static_cast<int>(target.height))
+            continue;
+        const auto [y0, y1] = span(ty, icon.height);
+        for (int tx = 0; tx < size; ++tx) {
+            const int x = left + tx;
+            if (x < 0 || x >= static_cast<int>(target.width))
+                continue;
+            const auto [x0, x1] = span(tx, icon.width);
+            std::array<double, 3> sum{};
+            double alpha = 0;
+            std::size_t samples = 0;
+            for (auto sy = y0; sy < y1 && sy < icon.height; ++sy)
+                for (auto sx = x0; sx < x1 && sx < icon.width; ++sx) {
+                    const auto at = (static_cast<std::size_t>(sy) * icon.width + sx) * 4;
+                    const double a = std::to_integer<unsigned>(icon.rgba[at + 3]) / 255.0;
+                    for (std::size_t c = 0; c < 3; ++c)
+                        sum[c] += std::to_integer<unsigned>(icon.rgba[at + c]) * a;
+                    alpha += a;
+                    ++samples;
+                }
+            if (samples == 0 || alpha <= 0)
+                continue;
+            const double coverage = alpha / samples * (bgra[3] / 255.0);
+            const auto at = (static_cast<std::size_t>(y) * target.width + x) * 4;
+            for (std::size_t c = 0; c < 3; ++c) {
+                const double source = sum[c] / alpha * tint[c];
+                const double base = std::to_integer<unsigned>(target.rgba[at + c]);
+                target.rgba[at + c] = static_cast<std::byte>(
+                    std::clamp(static_cast<int>(std::lround(base + (source - base) * coverage)), 0, 255));
+            }
+            target.rgba[at + 3] = std::byte{255};
+        }
+    }
+}
 } // namespace
 
 Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreviewInput& input) {
     const auto start = std::chrono::steady_clock::now();
+    std::vector<Diagnostic> warnings;
     try {
         const auto checkpoint = [&] {
             if (input.control && !input.control->Checkpoint(ProjectSaveStage::Copy))
@@ -121,7 +177,8 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
             const auto lower = Text::LowerAscii(name);
             if (lower != "ui/worldeditdata.txt" && lower != "ui\\worldeditdata.txt" &&
                 !(lower.ends_with(".blp") &&
-                  (lower.starts_with("terrainart") || lower.starts_with("replaceabletextures"))))
+                  (lower.starts_with("terrainart") || lower.starts_with("replaceabletextures") ||
+                   lower.starts_with("ui/minimap/minimapicon/"))))
                 Fail("MINIMAP_CURRENT_RESOURCE", "小地图显示层拒绝非贴图来源。");
             const std::array<std::string, 1> names{name};
             auto capture = Take(CaptureObjectCatalogSources(sources, names, 4U * 1024U * 1024U));
@@ -223,11 +280,12 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                                                          output.sourceRectangle, pathing));
         }
         if (input.units || input.starts || input.icons) {
-            const auto drawDot = [&](int x, int y, std::array<std::uint8_t, 4> bgra) {
-                if (x < -1 || x > 256 || y < -1 || y > 256)
+            // 原版小地图：普通单位是 3×3 的点，建筑是更大的 5×5 方块。
+            const auto drawDot = [&](int x, int y, std::array<std::uint8_t, 4> bgra, int radius = 1) {
+                if (x < -radius || x > 255 + radius || y < -radius || y > 255 + radius)
                     return;
-                for (int dy = -1; dy <= 1; ++dy)
-                    for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -radius; dy <= radius; ++dy)
+                    for (int dx = -radius; dx <= radius; ++dx) {
                         if (x + dx < 0 || x + dx >= 256 || y + dy < 0 || y + dy >= 256)
                             continue;
                         const auto at = (static_cast<std::size_t>(y + dy) * 256 + x + dx) * 4;
@@ -236,8 +294,18 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                         output.image.rgba[at + 3] = std::byte{255};
                     }
             };
+            const auto& placed = assets.Units().units;
+            std::vector<bool> buildings;
+            if (input.units) {
+                // 与保存时生成小地图图标同一套物编解释判断建筑；个别解释不了的按普通单位画并带回警告。
+                auto classified = ClassifyMinimapBuildings(source, input.gameRoot, grid->header.mainTileset, placed,
+                                                           replacements, input.removals);
+                warnings.insert(warnings.end(), classified.diagnostics.begin(), classified.diagnostics.end());
+                buildings = Take(std::move(classified));
+            }
             std::array<std::optional<std::array<std::uint8_t, 4>>, 16> colors;
-            for (const auto &unit : assets.Units().units) {
+            for (std::size_t index = 0; index < placed.size(); ++index) {
+                const auto& unit = placed[index];
                 const bool isStart = unit.rawcode == "sloc";
                 if (isStart ? !input.starts : !input.units)
                     continue;
@@ -252,8 +320,23 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 }
                 const MapData::NativeMinimapMarkerCandidate marker{0, {unit.position[0], unit.position[1]}, *color};
                 const auto dots = Take(MapData::BuildNativeMinimapMarkers(frame, std::span(&marker, 1)));
-                drawDot(dots.records[0].positionRaw[0], dots.records[0].positionRaw[1], *color);
+                const bool building = index < buildings.size() && buildings[index];
+                drawDot(dots.records[0].positionRaw[0], dots.records[0].positionRaw[1], *color, building ? 2 : 1);
             }
+            // 金矿、中立建筑、开始位置用游戏里真实的小地图图标；未知类型仍画点。
+            std::array<std::optional<Image::DecodedImage>, 3> iconArt;
+            const auto drawMarker = [&](const MapData::MinimapMarkerRecord& icon) {
+                static constexpr std::array<const char*, 3> files{"UI/MiniMap/MiniMapIcon/MinimapIconGold.blp",
+                    "UI/MiniMap/MiniMapIcon/MinimapIconNeutralBuilding.blp", "UI/MiniMap/MiniMapIcon/MinimapIconStartLoc.blp"};
+                if (icon.typeRaw < 0 || icon.typeRaw >= static_cast<std::int32_t>(files.size())) {
+                    drawDot(icon.positionRaw[0], icon.positionRaw[1], icon.colorBgra);
+                    return;
+                }
+                auto& art = iconArt[static_cast<std::size_t>(icon.typeRaw)];
+                if (!art)
+                    art = Take(Image::DecodeBlpBudgeted(extra(files[static_cast<std::size_t>(icon.typeRaw)]), extraDecode)).image;
+                DrawMinimapIcon(output.image, *art, icon.positionRaw[0], icon.positionRaw[1], kMinimapIconSize, icon.colorBgra);
+            };
             if (input.icons) {
                 const auto pending = std::find_if(input.replacements.begin(), input.replacements.end(), [](const auto& member) {
                     auto key = Resources::CanonicalImportPath(member.name);
@@ -262,7 +345,7 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 if (pending != input.replacements.end()) {
                     const auto edits = Take(MinimapMarkerEdits::Read(source, pending->data));
                     for (const auto &icon : Take(edits.View()).records)
-                        drawDot(icon.positionRaw[0], icon.positionRaw[1], icon.colorBgra);
+                        drawMarker(icon);
                 } else {
                     const std::array<std::string, 1> names{"war3map.mmp"};
                     auto captured = Take(CaptureObjectCatalogSources(sources, names, 4U * 1024U * 1024U));
@@ -270,7 +353,7 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                     if (file) {
                         auto icons = Take(MapData::ParseMapMinimapMarkers(file->bytes));
                         for (const auto &icon : icons.records)
-                            drawDot(icon.positionRaw[0], icon.positionRaw[1], icon.colorBgra);
+                            drawMarker(icon);
                     }
                     Check(captured.Verify());
                 }
@@ -281,7 +364,9 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
         checkpoint();
         output.generationMilliseconds =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        return Result<MinimapPreview>::Success(std::move(output));
+        auto result = Result<MinimapPreview>::Success(std::move(output));
+        result.diagnostics = std::move(warnings);
+        return result;
     } catch (Failure& failure) {
         return {{}, std::move(failure.diagnostics)};
     } catch (const std::bad_alloc&) {

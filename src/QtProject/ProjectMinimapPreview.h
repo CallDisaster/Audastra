@@ -12,7 +12,8 @@ class EditorProject;
 struct MinimapPreviewOptions {
     bool current = true;
     std::uint32_t layers = 0x8b;
-    bool units = false, starts = false, icons = false;
+    // 与游戏里看到的一致：默认显示单位点和金矿等小地图图标；开始位置由图标层画出。
+    bool units = true, starts = false, icons = true;
     bool operator==(const MinimapPreviewOptions&) const = default;
 };
 // GUI只冻结文档；资源捕获、散列、栅格化和解码均在一个有界worker中执行。

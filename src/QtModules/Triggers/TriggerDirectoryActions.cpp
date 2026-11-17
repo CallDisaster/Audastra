@@ -17,8 +17,12 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 
+#include "War3MapCore/Feedback/RunLog.h"
+
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QToolTip>
 #include <QSortFilterProxyModel>
 #include <QTimer>
 #include <QTreeView>
@@ -201,38 +205,37 @@ bool TriggerModule::RenameDirectoryItem(const TriggerDirectoryItem& item, const 
     if (document == nullptr || project_.triggerUndoStack_ == nullptr) {
         return false;
     }
-    if (!CommitPendingEdits()) return false;
+    if (!CommitPendingEdits()) {
+        ReportRenameFailure(item, name, tr("当前还有没提交成功的修改（见问题列表），先处理它再改名。"));
+        return false;
+    }
     const std::string text = name.trimmed().toStdString();
     const Status valid = item.category ? Directory::ValidateCategoryName(*document, text, item.categoryId)
                                        : Directory::ValidateTriggerName(*document, text, item.triggerId);
     if (!valid.Succeeded()) {
-        ShowStatus(tr("未重命名：%1").arg(FirstMessage(valid.diagnostics, tr("名称无效"))), 6000);
+        ReportRenameFailure(item, name, FirstMessage(valid.diagnostics, tr("名称无效")));
         return false;
     }
-    // 捕获排队前的会话、撤销栈位置与修订，不能在回调时借用另一张图的相同 ID。
-    // 不在排队前后各做整图核对（大图上各要数百毫秒）：发布时核心按当前文档重新签发绑定、
-    // 核对旧名称与新名称，排队这一拍内的变化由栈位置与修订识别。
+    // 捕获排队前的会话，不能在回调时借用另一张图的相同 ID。排队这一拍里同一张图上的其他修改
+    // （点别的行时提交属性、写恢复点等）不作废这次改名：执行时按当前文档重新校验，按稳定 ID 改名，
+    // 发布时核心仍按当前文档重新签发绑定、核对旧名称与新名称。
     const auto generation = project_.editRevision_.Generation();
-    const auto revision = project_.editRevision_.Revision();
-    const int stackIndex = project_.triggerUndoStack_->index();
     const auto* identity = project_.triggerDocument_.get();
     const auto* catalog = project_.uiCatalog_.get();
     if (project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
-        ShowStatus(tr("未重命名：地图来源已发生变化，请先核对来源。"), 10000);
+        ReportRenameFailure(item, name, tr("地图文件在编辑器外被改动过，请先核对来源。"));
         return false;
     }
-    if (!item.category && !catalog) return false;
+    if (!item.category && !catalog) {
+        ReportRenameFailure(item, name, tr("触发器函数目录还没有读入。"));
+        return false;
+    }
     // 编辑器仍在提交数据：排队执行，避免在模型回调中重置模型。
-    QTimer::singleShot(0, this, [this, item, text, generation, revision, stackIndex, identity, catalog]() {
+    QTimer::singleShot(0, this, [this, item, name, text, generation, identity, catalog]() {
         if (project_.triggerDocument_.get() != identity || project_.uiCatalog_.get() != catalog
             || project_.editRevision_.Generation() != generation
             || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
-            ShowStatus(tr("未重命名：当前地图会话或函数目录已变化。"), 10000);
-            return;
-        }
-        if (project_.triggerUndoStack_ == nullptr || project_.triggerUndoStack_->index() != stackIndex
-            || project_.editRevision_.Revision() != revision) {
-            ShowStatus(tr("未重命名：排队期间触发器图或来源已变化。"), 10000);
+            ReportRenameFailure(item, name, tr("改名生效前地图被重新读取或函数目录换了，请再改一次。"));
             return;
         }
         ApplyRename(item, text);
@@ -241,27 +244,44 @@ bool TriggerModule::RenameDirectoryItem(const TriggerDirectoryItem& item, const 
 }
 
 void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::string& name) {
+    const QString attempted = U8(name);
     auto* document = project_.triggerDocument_.get();
     if (document == nullptr || project_.triggerUndoStack_ == nullptr) {
+        ReportRenameFailure(item, attempted, tr("触发器数据已关闭。"));
         return;
     }
-    if (!CommitPendingEdits()) return;
+    if (!CommitPendingEdits()) {
+        ReportRenameFailure(item, attempted, tr("当前还有没提交成功的修改（见问题列表），先处理它再改名。"));
+        return;
+    }
+    // 排队这一拍里文档可能被改过：按当前文档重新校验（重名、空名、脚本名冲突）。
+    const Status valid = item.category ? Directory::ValidateCategoryName(*document, name, item.categoryId)
+                                       : Directory::ValidateTriggerName(*document, name, item.triggerId);
+    if (!valid.Succeeded()) {
+        ReportRenameFailure(item, attempted, FirstMessage(valid.diagnostics, tr("名称无效")));
+        return;
+    }
     if (!item.category) {
         const auto* trigger = FindTrigger(*document, item.triggerId);
         if (trigger && trigger->customTextFlag != 0) {
-            if (trigger->name.text != name) (void)ApplyCustomCodeIdentity(false, item.triggerId, name, trigger->categoryId, 0);
+            if (trigger->name.text == name) return;
+            QString failure;
+            if (!ApplyCustomCodeIdentity(false, item.triggerId, name, trigger->categoryId, 0, &failure))
+                ReportRenameFailure(item, attempted, failure.isEmpty() ? tr("代码里的生成符号无法同步，详见问题列表。") : failure);
             return;
         }
     }
     if (item.category) {
         const auto found = std::find_if(document->categories.begin(), document->categories.end(),
             [&item](const Trigger::CategoryRecord& category) { return category.categoryId == item.categoryId; });
-        if (found == document->categories.end() || found->name.text == name) {
+        if (found == document->categories.end()) {
+            ReportRenameFailure(item, attempted, tr("这个类别已经不在了（可能被撤销或删除）。"));
             return;
         }
+        if (found->name.text == name) return;
         auto before = Directory::CaptureLayout(*document);
         if (const Status renamed = Directory::RenameCategory(*document, item.categoryId, name); !renamed.Succeeded()) {
-            project_.AddDiagnostics(renamed.diagnostics);
+            ReportRenameFailure(item, attempted, FirstMessage(renamed.diagnostics, tr("类别名称无法写入")));
             return;
         }
         PushDirectoryChange(std::move(before), tr("重命名类别"));
@@ -269,9 +289,11 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
         return;
     }
     const auto* trigger = FindTrigger(*document, item.triggerId);
-    if (trigger == nullptr || trigger->name.text == name) {
+    if (trigger == nullptr) {
+        ReportRenameFailure(item, attempted, tr("这个触发器已经不在了（可能被撤销或删除）。"));
         return;
     }
+    if (trigger->name.text == name) return;
     // 先直接提交：核心按同一词法规则核查作者代码（只扫一遍），代码本身不改：
     // - 只是按名称动态调用（ExecuteFunc(s) 等）的块判断不了指向谁，不打断也不提醒（作者 11-14：误报太多）；
     // - 直接按旧名称使用（gg_trg_X、Trig_X_Actions、ExecuteFunc("InitTrig_X")…）的块被核心拒绝，
@@ -292,7 +314,7 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
         auto review = Trigger::TriggerDocumentEditor::ReviewTriggerRenameCode(*document, *project_.uiCatalog_, item.triggerId, name);
         if (!review.Succeeded()) {
             project_.AddDiagnostics(review.diagnostics);
-            ShowStatus(tr("未重命名：%1").arg(FirstMessage(review.diagnostics, tr("代码核查失败"))), 10000);
+            ReportRenameFailure(item, attempted, FirstMessage(review.diagnostics, tr("代码核查失败")));
             return;
         }
         QStringList named;
@@ -308,7 +330,7 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
         }
         if (named.isEmpty()) {
             project_.AddDiagnostics(renamed.diagnostics);
-            ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("代码核查失败"))), 10000);
+            ReportRenameFailure(item, attempted, FirstMessage(renamed.diagnostics, tr("代码核查失败")));
             return;
         }
         const QString title = tr("重命名触发器");
@@ -330,14 +352,21 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
             accepted = box.clickedButton() == rename;
         }
         // 对话框期间文档可能被换掉或改名；核查结果绑定的是打开对话框时的文档。
-        if (!accepted || project_.triggerDocument_.get() != document) return;
+        if (!accepted) return; // 作者取消
+        if (project_.triggerDocument_.get() != document) {
+            ReportRenameFailure(item, attempted, tr("确认期间地图被重新读取，请再改一次。"));
+            return;
+        }
         trigger = FindTrigger(*document, item.triggerId);
-        if (trigger == nullptr || trigger->name.text != expected.text) return;
+        if (trigger == nullptr || trigger->name.text != expected.text) {
+            ReportRenameFailure(item, attempted, tr("确认期间这个触发器被改动过，请再改一次。"));
+            return;
+        }
         renamed = publish(std::move(audits));
     }
     if (!renamed.Succeeded()) {
         project_.AddDiagnostics(renamed.diagnostics);
-        ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("引用同步校验失败"))), 10000);
+        ReportRenameFailure(item, attempted, FirstMessage(renamed.diagnostics, tr("引用同步校验失败")));
         return;
     }
     for (const auto& receipt : renamed.value->renames) {
@@ -351,17 +380,48 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     RefreshExplorer();
 }
 
+void TriggerModule::ReportRenameFailure(const TriggerDirectoryItem& item, const QString& attempted, const QString& reason) {
+    const QString message = tr("未能把%1重命名为“%2”：%3").arg(item.category ? tr("类别") : tr("触发器"), attempted.trimmed(), reason);
+    War3Map::RunLog::Warning("触发器", message.toStdString());
+    project_.AddDiagnostics({Diagnostic{DiagnosticSeverity::Warning, "Trigger.Edit", "TRIGGER_RENAME_REJECTED",
+        message.toStdString(), std::nullopt}});
+    ShowStatus(message, 10000);
+    if (!page_ || !explorerView_) return;
+    // 可能正处在编辑框提交数据的回调里：等这一拍编辑框关掉后，再在原位置重新打开，保留作者刚输入的文字。
+    QTimer::singleShot(0, this, [this, item, attempted, message] {
+        if (!page_ || !explorerView_ || !explorerModel_ || !explorerView_->isVisible()) return;
+        const QModelIndex source = item.category ? explorerModel_->IndexForCategoryId(item.categoryId)
+                                                 : explorerModel_->IndexForTriggerId(item.triggerId);
+        const QModelIndex proxy = filter_->mapFromSource(source).siblingAtColumn(0);
+        if (!proxy.isValid()) return;
+        explorerView_->scrollTo(proxy);
+        const QRect rect = explorerView_->visualRect(proxy);
+        if (explorerView_->state() != QAbstractItemView::EditingState) {
+            explorerView_->setFocus();
+            explorerView_->edit(proxy);
+            for (auto* editor : explorerView_->viewport()->findChildren<QLineEdit*>(QString(), Qt::FindDirectChildrenOnly)) {
+                if (!editor->isVisible()) continue;
+                editor->setText(attempted);
+                editor->selectAll();
+            }
+        }
+        QToolTip::showText(explorerView_->viewport()->mapToGlobal(rect.bottomLeft()), message, explorerView_->viewport(), rect, 12000);
+    });
+}
+
 std::optional<StableId> TriggerModule::ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name,
-    std::int32_t categoryId, StableId afterTriggerId) {
+    std::int32_t categoryId, StableId afterTriggerId, QString* failure) {
     const QString verb = copy ? tr("复制") : tr("重命名");
     const auto fail = [&](const std::vector<Diagnostic>& diagnostics, const QString& fallback) {
         project_.AddDiagnostics(diagnostics);
-        ShowStatus(tr("未%1：%2").arg(verb, FirstMessage(diagnostics, fallback)), 10000);
+        const QString reason = FirstMessage(diagnostics, fallback);
+        if (failure) *failure = reason;
+        ShowStatus(tr("未%1：%2").arg(verb, reason), 10000);
         return std::optional<StableId>{};
     };
     auto* document = project_.triggerDocument_.get();
     const auto* trigger = document ? FindTrigger(*document, triggerId) : nullptr;
-    if (trigger == nullptr || project_.uiCatalog_ == nullptr) return std::nullopt;
+    if (trigger == nullptr || project_.uiCatalog_ == nullptr) return fail({}, trigger ? tr("触发器函数目录还没有读入。") : tr("这个触发器已经不在了。"));
     const auto context = QtProject::CaptureProjectTriggerCodeIdentityContext(project_);
     if (!context.Succeeded()) return fail(context.diagnostics, tr("无法确认触发器来源"));
     const auto binding = Trigger::CaptureTriggerGraphBinding(*document, *project_.uiCatalog_, context.value->mapObjects);

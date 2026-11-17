@@ -259,7 +259,11 @@ Result<WorldTerrainMesh> BuildWorldTerrainMesh(const MapData::TerrainGridSnapsho
 WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPluginApiV2* backend)
     : project_(project), backend_(backend) {
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, &WorldModule::Refresh);
-    connect(&project_, &QtProject::EditorProject::ImportsChanged, this, &WorldModule::Refresh);
+    connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
+        // 只动了界面描述、脚本或声音时场景不变，不整体重读（重读会清掉全部地形与模型）。
+        using Use = QtProject::EditorProject::ImportUse;
+        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound})) Refresh();
+    });
     connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::ObjectDocumentsReplaced, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] {

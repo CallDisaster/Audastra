@@ -7,6 +7,7 @@
 class QLabel;
 class QPushButton;
 class QThread;
+class QTimer;
 class QTabBar;
 class QToolButton;
 namespace War3Map::QtProject {
@@ -33,6 +34,7 @@ private:
     QPushButton* refresh_ = nullptr;
     QTabBar* source_ = nullptr;
     QToolButton* layers_ = nullptr;
+    QTimer* outlineTimer_ = nullptr;
     QtProject::MinimapPreviewOptions options_;
     std::uint64_t displayedGeneration_ = 0;
     bool displayedCurrent_ = false;

@@ -357,8 +357,11 @@ void MainWindow::BuildDiagnosticsView() {
     });
     connect(project_.get(), &War3Map::QtProject::EditorProject::TriggerDocumentChanged, this, &MainWindow::RefreshRuntimeCompatibility);
     connect(project_.get(), &War3Map::QtProject::EditorProject::UiLibrariesChanged, this, &MainWindow::RefreshRuntimeCompatibility);
-    connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsChanged, this, &MainWindow::RefreshRuntimeCompatibility);
-    connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsEdited, this, &MainWindow::RefreshRuntimeCompatibility);
+    // 运行库兼容只看函数库、脚本和运行库批准；只动了界面描述、模型、贴图或声音时不必重查。ImportsEdited 紧随 ImportsChanged，不再重复。
+    connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsChanged, this, [this] {
+        using Use = War3Map::QtProject::EditorProject::ImportUse;
+        if (!project_->ImportChangeOnly({Use::UiDescription, Use::Model, Use::Texture, Use::Sound})) RefreshRuntimeCompatibility();
+    });
     connect(project_.get(), &War3Map::QtProject::EditorProject::EditTrackingBaselineChanged, this, &MainWindow::RefreshRuntimeCompatibility);
     dock->setWidget(list);
     addDockWidget(Qt::BottomDockWidgetArea, dock);

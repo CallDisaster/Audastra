@@ -158,12 +158,21 @@ bool TriggerModule::HandleExplorerKey(QEvent* event) {
     if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride) {
         return false;
     }
-    // 就地重命名时焦点在编辑框里，按键不会经过视图，这里无需额外判断。
+    // 就地重命名时，编辑框不处理的按键（Insert、Ctrl+G、Ctrl+T、Ctrl+D 等）会冒泡到视图；这时不能当成目录快捷键，
+    // 否则会新建或复制条目、重建整棵树，把正在输入的编辑框连同文字一起关掉。
+    if (explorerView_->state() == QAbstractItemView::EditingState) return false;
     auto* key = static_cast<QKeyEvent*>(event);
     const bool ctrl = key->modifiers() == Qt::ControlModifier;
     const bool plain = key->modifiers() == Qt::NoModifier || key->modifiers() == Qt::KeypadModifier;
     std::function<void()> run;
-    if (plain && key->key() == Qt::Key_Delete) run = [this]() { DeleteCurrentItem(); };
+    if (plain && key->key() == Qt::Key_F2) {
+        // 当前格落在右侧状态列时，视图自带的 F2 编辑不到名称列；统一改名称列。
+        run = [this]() {
+            const QModelIndex current = explorerView_->currentIndex();
+            if (current.isValid()) explorerView_->edit(current.siblingAtColumn(0));
+        };
+    }
+    else if (plain && key->key() == Qt::Key_Delete) run = [this]() { DeleteCurrentItem(); };
     else if ((plain && key->key() == Qt::Key_Insert) || (ctrl && key->key() == Qt::Key_T)) run = [this]() { NewTrigger(); };
     else if (ctrl && key->key() == Qt::Key_G) run = [this]() { NewCategory(); };
     else if (ctrl && key->key() == Qt::Key_C) run = [this]() { CopyCurrentTrigger(); };

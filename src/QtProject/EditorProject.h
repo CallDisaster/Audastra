@@ -32,6 +32,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <initializer_list>
 #include <optional>
 #include <set>
 #include <span>
@@ -435,6 +436,14 @@ public:
     void RestoreAssets(const AssetState& state);
     // 队列或归档会话被整体替换（打开 / 重置 / 保存）后调用，界面据此刷新。
     void NotifyImportsChanged(bool userEdit = false);
+    // 导入文件按用途粗分，供各页面判断一次导入变化与自己有没有关系。认不出的一律算 Other（按相关处理）。
+    enum class ImportUse : std::uint8_t { UiDescription, Script, Sound, Model, Texture, Other };
+    [[nodiscard]] static ImportUse ClassifyImport(const QString& path);
+    // 正在同步发出的 ImportsChanged 涉及的归档路径（AssetKey）。只有资源修改发布通知期间有值；
+    // 打开、保存、撤销栈清空等其他来源的通知为空，监听者按“什么都可能变了”处理。
+    [[nodiscard]] const std::optional<QStringList>& ChangingImports() const noexcept { return changingImports_; }
+    // 正在通知的导入变化确定只涉及 uses 里的用途时返回 true（可以跳过整体刷新）；不确定时返回 false。
+    [[nodiscard]] bool ImportChangeOnly(std::initializer_list<ImportUse> uses) const;
 
     // 只优化同次成功标量发布的 UI 刷新；不是编辑、观察或保存资格，不能由 DTO 创建。
     using ScalarUiNotice = std::shared_ptr<const detail::TriggerScalarUiNotice>;
@@ -534,6 +543,7 @@ public:
     // ── 导入资源 ──
     std::vector<PendingImport> pendingImports_;
     std::vector<AssetEdit> assetEdits_;
+    std::optional<QStringList> changingImports_;  // 见 ChangingImports()
     QUndoStack* assetUndoStack_ = nullptr;
 
     // ── 工程文件、修订与恢复 ──

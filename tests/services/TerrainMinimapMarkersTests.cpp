@@ -634,6 +634,22 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
     }
 }
 #include "TerrainMinimapMarkerObjectCases.h"
+
+// 小地图预览的建筑点（比普通单位大）与 MMP 同一套解释：有效 isbldg 决定建筑，开始位置不是建筑；
+// 解释不了的摆放只影响它自己，按普通单位处理并带回警告，不让整张小地图失败。
+void BuildingClassificationSharesMarkerSemantics() {
+    Fixture fixture;
+    auto units = fixture.units.units;
+    units.push_back(Unit("Q404", 0, 0, 0, 9));
+    const auto result = ClassifyMinimapBuildings(*fixture.source, fixture.game, 'L', units);
+    Require(result.Succeeded() && result.value, "建筑分类成功");
+    const std::vector<bool> expected{false, true, true, false, true, true, true, false, false};
+    Require(*result.value == expected, "isbldg 决定建筑，开始位置与非建筑为否");
+    Code(result.diagnostics, "MINIMAP_BUILDING_UNKNOWN");
+    const std::vector<UnitPlacement> starts{Unit("sloc", 3, 128, 512, 1)};
+    const auto onlyStarts = Take(ClassifyMinimapBuildings(*fixture.source, fixture.game, 'L', starts));
+    Require(onlyStarts == std::vector<bool>{false}, "只有开始位置时不读取物编来源");
+}
 }
 
 int main() {
@@ -646,7 +662,7 @@ int main() {
         AuthorMarkersKeepIdentityThroughRegenerationAndLegacySave();
         PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate(); PlanBudgetPreservesOriginalOutputWithoutPartialInstall();
         AdapterConflictsAndFrozenSourceRemainHardFailures(); BeforePublishCannotChangeMarkersOrConsumedDependencies();
-        MinimapMarkerObjectCoverageCases();
+        MinimapMarkerObjectCoverageCases(); BuildingClassificationSharesMarkerSemantics();
         std::cout << "Terrain MMP actual capture tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

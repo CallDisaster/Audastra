@@ -77,11 +77,12 @@ std::vector<War3RenderModelLayerStatusV2> D3D11Scene::ModelLayerStatuses() const
     return result;
 }
 
-void D3D11Scene::DrawModelLayers(int pass) {
+void D3D11Scene::DrawModelLayers(int pass, bool groundDecals) {
     for (std::size_t i = 0; i < additionalModelCount_; ++i) {
         const auto& slot = additionalModels_[i];
         if (const auto& gpu = slot.gpu) {
             const bool decal = slot.accepted && slot.accepted->role == WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW;
+            if (decal != groundDecals) continue;
             if (decal && pass != 1) continue; // typed入口保证只有blend/no-write模型，无粒子。
             if (decal) context_->RSSetState(groundDecalRasterizer_.Get());
             gpu->DrawModels(pass); gpu->DrawParticles(pass);

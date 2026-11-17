@@ -20,7 +20,10 @@ ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* pa
         Invalidate();
     };
     connect(&project_, &EditorProject::MapDocumentChanged, this, changed);
-    connect(&project_, &EditorProject::ImportsChanged, this, changed);
+    connect(&project_, &EditorProject::ImportsChanged, this, [this] {
+        using Use = EditorProject::ImportUse;
+        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound})) Invalidate();
+    });
     connect(&project_, &EditorProject::SourceStateChanged, this, changed);
     connect(&project_, &EditorProject::WorldEditStringsChanged, this, changed);
     connect(&project_, &EditorProject::ObjectCatalogChanged, this, changed);

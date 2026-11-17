@@ -4,6 +4,7 @@
 #include <QSet>
 #include <QHash>
 
+#include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Services/CampaignService.h"
@@ -25,6 +26,27 @@ bool IsMapDataPath(const QString& key) {
 
 QString EditorProject::AssetKey(const QString& path) {
     return QString(path).replace(QLatin1Char('/'), QLatin1Char('\\')).toLower();
+}
+
+EditorProject::ImportUse EditorProject::ClassifyImport(const QString& path) {
+    const QString key = AssetKey(path);
+    const auto folder = QString::fromUtf8(GameUi::kUiDescriptionFolder.data(), static_cast<qsizetype>(GameUi::kUiDescriptionFolder.size())).toLower();
+    if (key.startsWith(folder) && key.endsWith(QLatin1String(".json"))) return ImportUse::UiDescription;
+    const auto dot = key.lastIndexOf(QLatin1Char('.'));
+    if (dot < 0 || key.indexOf(QLatin1Char('\\'), dot) >= 0) return ImportUse::Other;
+    const QStringView extension = QStringView(key).mid(dot + 1);
+    for (const auto* value : {"lua", "j", "ai"}) if (extension == QLatin1String(value)) return ImportUse::Script;
+    for (const auto* value : {"wav", "mp3", "flac", "ogg"}) if (extension == QLatin1String(value)) return ImportUse::Sound;
+    for (const auto* value : {"mdx", "mdl"}) if (extension == QLatin1String(value)) return ImportUse::Model;
+    for (const auto* value : {"blp", "tga", "dds", "png", "jpg", "jpeg"}) if (extension == QLatin1String(value)) return ImportUse::Texture;
+    return ImportUse::Other;
+}
+
+bool EditorProject::ImportChangeOnly(std::initializer_list<ImportUse> uses) const {
+    if (!changingImports_) return false;
+    return std::all_of(changingImports_->begin(), changingImports_->end(), [&](const QString& path) {
+        return std::find(uses.begin(), uses.end(), ClassifyImport(path)) != uses.end();
+    });
 }
 
 QString EditorProject::CheckAssetPath(const QString& path) {

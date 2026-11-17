@@ -30,18 +30,9 @@ std::string Logical(const EditorProject& project, const QString& value, const st
         && key.value->starts_with("MAP\\") && domain.contains(key.value->substr(4))) return key.value->substr(4);
     return {};
 }
-} // namespace
 
-Services::ObjectCatalogSources ProjectObjectCatalogSources::Sources() const {
-    auto output = base; output.replacements = replacements; output.removals = removals;
-    return output;
-}
-
-Result<ProjectObjectCatalogSources> CaptureProjectObjectCatalogSources(const EditorProject& project,
-    std::span<const std::string> requested) {
-    using Output = Result<ProjectObjectCatalogSources>;
-    if (project.sourceChangeSuspected_ || project.sourceChangeConfirmed_)
-        return Output::Failure("Object.Catalog", "OBJECT_CATALOG_SOURCE_CHANGED", "地图来源尚待核验，不能使用旧物编目录。");
+// 物编目录实际读取的文件（不含由游戏 / 工具链管理的字符串表）；会话导入只有落在这里面才会改变目录。
+Result<std::set<std::string>> CatalogDomain(std::span<const std::string> requested) {
     auto names = requested.empty() ? ObjectData::EffectiveObjectCatalog::InputNames()
         : Result<std::vector<std::string>>::Success({requested.begin(), requested.end()});
     if (!names.Succeeded()) return {{}, names.diagnostics};
@@ -56,6 +47,37 @@ Result<ProjectObjectCatalogSources> CaptureProjectObjectCatalogSources(const Edi
         const auto key = Resources::CanonicalImportPath(name);
         if (key.Succeeded()) domain.erase(*key.value);
     }
+    return Result<std::set<std::string>>::Success(std::move(domain));
+}
+
+// 只保留会改变物编目录的导入与改名：界面描述、模型、贴图、脚本等导入变化不必整份重建目录。
+// 物编目录无法列出时保守地返回全部，按任何变化都重建处理。
+AssetState CatalogAssets(const EditorProject& project, const AssetState& assets) {
+    static const auto domain = CatalogDomain({});
+    if (!domain.Succeeded() || !domain.value) return assets;
+    AssetState relevant;
+    for (const auto& entry : assets.imports)
+        if (!Logical(project, entry.archivePath, *domain.value).empty()) relevant.imports.push_back(entry);
+    for (const auto& edit : assets.edits)
+        if (!Logical(project, edit.from, *domain.value).empty() || !Logical(project, edit.to, *domain.value).empty())
+            relevant.edits.push_back(edit);
+    return relevant;
+}
+} // namespace
+
+Services::ObjectCatalogSources ProjectObjectCatalogSources::Sources() const {
+    auto output = base; output.replacements = replacements; output.removals = removals;
+    return output;
+}
+
+Result<ProjectObjectCatalogSources> CaptureProjectObjectCatalogSources(const EditorProject& project,
+    std::span<const std::string> requested) {
+    using Output = Result<ProjectObjectCatalogSources>;
+    if (project.sourceChangeSuspected_ || project.sourceChangeConfirmed_)
+        return Output::Failure("Object.Catalog", "OBJECT_CATALOG_SOURCE_CHANGED", "地图来源尚待核验，不能使用旧物编目录。");
+    auto catalogDomain = CatalogDomain(requested);
+    if (!catalogDomain.Succeeded() || !catalogDomain.value) return {{}, catalogDomain.diagnostics};
+    const auto& domain = *catalogDomain.value;
     ProjectObjectCatalogSources result;
     result.base.archive = project.archiveSession_.get();
     result.base.readOnlyArchive = result.base.archive ? nullptr : project.readOnlyArchive_.get();
@@ -212,7 +234,7 @@ Status EnsureProjectObjectCatalog(EditorProject& project, bool force) {
     if (!project.objectCatalogState_) project.objectCatalogState_ = std::make_shared<ProjectObjectCatalogState>();
     auto& state = *project.objectCatalogState_;
     if (state.refreshing) return Status::Ok();
-    const auto assets = project.CaptureAssets();
+    const auto assets = CatalogAssets(project, project.CaptureAssets());
     const auto strings = project.CurrentWorldEditStrings();
     const auto campaignRevision = project.campaignScope_ ? project.campaignScope_->Revision() : Services::CampaignRevision{};
     const bool same = state.archive == project.archiveSession_.get() && state.readOnly == project.readOnlyArchive_.get()

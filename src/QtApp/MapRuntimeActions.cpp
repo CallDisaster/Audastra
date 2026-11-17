@@ -22,11 +22,15 @@ void MainWindow::RefreshRuntimeCompatibility() {
     runtimeCompatibilityLockedIdentity_.clear();
     project_->ReplaceDiagnostics(tr(kSubsystem), {});
     if (!project_->uiCatalog_ || project_->savingMap_) return;
-    const auto state = project_->QueryMapRuntimeState();
-    if (!state.Succeeded() || state.value->settings.packageSha256.empty()
-        || state.value->settings.mode == War3Map::Services::MapRuntimeMode::Disabled) return;
-    const auto generation = state.value->generation;
-    const auto settings = state.value->settings;
+    // 只读地图里的运行库设置（几百字节）；不在界面线程上整包读取、核对已安装的运行库包（大图上每次要一秒多），
+    // 包的核对与比较都在下面的后台线程里做。条件与 QueryMapRuntimeState 相同：修订或来源未核实、安装目录有问题时不检查。
+    if (!project_->editTrackingReady_ || project_->editTrackingFailed_ || project_->sourceChangeSuspected_
+        || project_->sourceChangeConfirmed_ || !project_->runtimeCatalogDiagnostics_.empty()) return;
+    const auto generation = project_->editRevision_.Generation();
+    const auto read = project_->QueryMapRuntimeSettings();
+    if (!read.Succeeded() || read.value->packageSha256.empty()
+        || read.value->mode == War3Map::Services::MapRuntimeMode::Disabled) return;
+    const auto settings = *read.value;
     const auto sources = project_->runtimePackageSources_;
     const auto tool = project_->compilerDataRoot_.empty() ? project_->UiToolRoot() : project_->compilerDataRoot_;
     const auto ui = project_->compilerDataRoot_.empty() ? project_->ResolveUiDataRoot() : project_->compilerDataRoot_;

@@ -50,7 +50,10 @@ ProjectLuaFolder::ProjectLuaFolder(EditorProject& project) : QObject(&project), 
     connect(&watcher_, &QFileSystemWatcher::fileChanged, &debounce_, qOverload<>(&QTimer::start));
     connect(&watcher_, &QFileSystemWatcher::directoryChanged, &debounce_, qOverload<>(&QTimer::start));
     connect(&debounce_, &QTimer::timeout, this, [this] { Refresh(); });
-    connect(&project_, &EditorProject::ImportsChanged, this, [this] { Refresh(false); });
+    connect(&project_, &EditorProject::ImportsChanged, this, [this] {
+        using Use = EditorProject::ImportUse;
+        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Sound, Use::Model, Use::Texture})) Refresh(false);
+    });
     connect(&project_, &EditorProject::SourceStateChanged, this, [this] { Refresh(false); });
 }
 

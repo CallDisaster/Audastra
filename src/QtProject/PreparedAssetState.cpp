@@ -1,11 +1,46 @@
 #include "PreparedAssetState.h"
 #include "War3MapCore/Feedback/RunLog.h"
 #include "PendingImportPayload.h"
+#include <QHash>
 #include <QPointer>
+#include <QSet>
 #include <set>
 #include <algorithm>
 
 namespace War3Map::QtProject {
+namespace {
+// 两份资源状态之间改动过的归档路径（AssetKey）。批准变化或同名多份等说不清的情况返回空，按全部可能变化处理。
+std::optional<QStringList> ChangedAssetKeys(const AssetState& before, const AssetState& after) {
+    if (before.runtimeApprovedPackageSha256 != after.runtimeApprovedPackageSha256) return std::nullopt;
+    const auto index = [](const std::vector<PendingImport>& imports, QHash<QString, const PendingImport*>& output) {
+        for (const auto& entry : imports) {
+            const auto key = EditorProject::AssetKey(entry.archivePath);
+            if (output.contains(key)) return false;
+            output.insert(key, &entry);
+        }
+        return true;
+    };
+    QHash<QString, const PendingImport*> old, now;
+    if (!index(before.imports, old) || !index(after.imports, now)) return std::nullopt;
+    QSet<QString> keys;
+    for (auto it = old.cbegin(); it != old.cend(); ++it) {
+        const auto found = now.constFind(it.key());
+        if (found == now.cend() || !(**found == *it.value())) keys.insert(it.key());
+    }
+    for (auto it = now.cbegin(); it != now.cend(); ++it) if (!old.contains(it.key())) keys.insert(it.key());
+    const auto addEdits = [&](const std::vector<AssetEdit>& from, const std::vector<AssetEdit>& to) {
+        for (const auto& edit : from) {
+            if (std::find(to.begin(), to.end(), edit) != to.end()) continue;
+            keys.insert(EditorProject::AssetKey(edit.from));
+            if (!edit.to.isEmpty()) keys.insert(EditorProject::AssetKey(edit.to));
+        }
+    };
+    addEdits(before.edits, after.edits);
+    addEdits(after.edits, before.edits);
+    return QStringList(keys.begin(), keys.end());
+}
+} // namespace
+
 Result<std::shared_ptr<PreparedAssetStateEdit>> EditorProject::PrepareAssetStateEdit(AssetState candidate,
     std::uint64_t expectedGeneration, std::uint64_t expectedRevision, std::string description, EditOperation operation) {
     return PrepareAssetStateEditImpl(std::move(candidate), expectedGeneration, expectedRevision, std::move(description), operation, nullptr);
@@ -54,6 +89,7 @@ Result<std::shared_ptr<PreparedAssetStateEdit>> EditorProject::PrepareAssetState
 
 Status EditorProject::PublishPreparedAssetState(PreparedAssetStateEdit& prepared) {
     QPointer<EditorProject> guard;
+    std::optional<QStringList> changed;
     try {
         if (prepared.consumed_ || prepared.owner_ != this || archiveSession_.get() != prepared.archive_ || directorySnapshot_.get() != prepared.directory_
             || sourceArchivePath_ != prepared.sourcePath_ || projectFilePath_ != prepared.projectPath_
@@ -67,6 +103,7 @@ Status EditorProject::PublishPreparedAssetState(PreparedAssetStateEdit& prepared
             if (!hash.Succeeded() || *hash.value != expected)
                 return Status::Failure("Asset", "ASSET_SOURCE_STALE", "候选磁盘导入在准备后发生变化，未发布。");
         }
+        changed = ChangedAssetKeys(prepared.before_, prepared.after_);
         struct State { EditorProject* project; AssetState* candidate; } commitState{this, &prepared.after_};
         guard = this;
         const auto publish = [](void* opaque) noexcept {
@@ -86,10 +123,13 @@ Status EditorProject::PublishPreparedAssetState(PreparedAssetStateEdit& prepared
     // 只修改资源scope，物编和触发器脏标记不变；不在发布后重新分配/捕获整图指纹。
     {
         War3Map::RunLog::SlowScope slowScope("资源：通知导入变化（全部监听者）");
+        // 同步通知期间告诉监听者这次只动了哪些路径；通知结束（含异常）后恢复为“不确定”。
+        changingImports_ = std::move(changed);
+        struct Reset { QPointer<EditorProject> project; ~Reset() { if (project) project->changingImports_.reset(); } } reset{this};
         emit ImportsChanged();
+        War3Map::RunLog::SlowScope slowEdited("资源：通知导入已编辑");
+        if (guard) emit guard->ImportsEdited();
     }
-    War3Map::RunLog::SlowScope slowScope("资源：通知导入已编辑");
-    if (guard) emit guard->ImportsEdited();
     return Status::Ok();
 }
 }

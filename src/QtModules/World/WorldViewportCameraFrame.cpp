@@ -66,11 +66,15 @@ std::vector<std::array<double, 2>> WorldViewport::MinimapCameraOutline() const {
     const double w = frame.value->physicalWidth - 1, h = frame.value->physicalHeight - 1;
     for (const auto point : {Render::PhysicalViewPoint{0, 0}, {w, 0}, {w, h}, {0, h}}) {
         const auto ray = Render::MakeViewRay(*frame.value, point);
-        if (!ray.Succeeded() || std::abs(ray.value->ray.direction[2]) < 1e-9)
+        if (!ray.Succeeded() || !(ray.value->maxDistance > 0))
             return {};
-        const auto t = (camera_.targetZ - ray.value->ray.origin[2]) / ray.value->ray.direction[2];
-        if (t < 0 || t > ray.value->maxDistance)
-            return {};
+        // 视角压低后画面上沿看向地平线，射线碰不到地面或落在可见距离外；这时按可见距离截断，
+        // 框成为远边被截平的梯形，而不是整个消失。
+        double t = ray.value->maxDistance;
+        if (std::abs(ray.value->ray.direction[2]) >= 1e-9) {
+            const auto hit = (camera_.targetZ - ray.value->ray.origin[2]) / ray.value->ray.direction[2];
+            if (hit >= 0 && hit < t) t = hit;
+        }
         result.push_back({ray.value->ray.origin[0] + t * ray.value->ray.direction[0],
                           ray.value->ray.origin[1] + t * ray.value->ray.direction[1]});
     }

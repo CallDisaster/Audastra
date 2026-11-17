@@ -6,7 +6,7 @@
 
 #include <memory>
 
-namespace War3Map::MapData { class TerrainSavePlan; class MapDataEditSession; }
+namespace War3Map::MapData { class TerrainSavePlan; class MapDataEditSession; struct UnitPlacement; }
 
 namespace War3Map::Services {
 
@@ -64,5 +64,12 @@ private:
     bool verifyGeneration_ = true;
     std::size_t markerCount_ = 0;
 };
+
+// 按与 MMP 生成相同的有效物编解释（isbldg 等）逐个回答摆放是否为建筑；开始位置、物品为否。
+// 个别摆放无法解释时按否处理并附一条警告，不让整批失败；来源或预算问题照常失败。
+[[nodiscard]] Result<std::vector<bool>> ClassifyMinimapBuildings(const MapArchiveSession& source,
+    const std::filesystem::path& gameRoot, std::uint8_t tileset, std::span<const MapData::UnitPlacement> units,
+    std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {},
+    const TerrainMinimapMarkerLimits& limits = {});
 
 } // namespace War3Map::Services
