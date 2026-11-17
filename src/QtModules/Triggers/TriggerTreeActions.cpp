@@ -154,13 +154,20 @@ void TriggerModule::ShowTreeContextMenu(const QPoint& pos) {
     }
 }
 
+bool TriggerModule::ExplorerEditorOpen() const {
+    if (!explorerView_) return false;
+    for (const auto* editor : explorerView_->viewport()->findChildren<QLineEdit*>(QString(), Qt::FindDirectChildrenOnly))
+        if (editor->isVisible()) return true;
+    return false;
+}
+
 bool TriggerModule::HandleExplorerKey(QEvent* event) {
     if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride) {
         return false;
     }
     // 就地重命名时，编辑框不处理的按键（Insert、Ctrl+G、Ctrl+T、Ctrl+D 等）会冒泡到视图；这时不能当成目录快捷键，
     // 否则会新建或复制条目、重建整棵树，把正在输入的编辑框连同文字一起关掉。
-    if (explorerView_->state() == QAbstractItemView::EditingState) return false;
+    if (ExplorerEditorOpen()) return false;
     auto* key = static_cast<QKeyEvent*>(event);
     const bool ctrl = key->modifiers() == Qt::ControlModifier;
     const bool plain = key->modifiers() == Qt::NoModifier || key->modifiers() == Qt::KeypadModifier;

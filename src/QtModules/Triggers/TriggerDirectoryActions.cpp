@@ -396,7 +396,7 @@ void TriggerModule::ReportRenameFailure(const TriggerDirectoryItem& item, const 
         if (!proxy.isValid()) return;
         explorerView_->scrollTo(proxy);
         const QRect rect = explorerView_->visualRect(proxy);
-        if (explorerView_->state() != QAbstractItemView::EditingState) {
+        if (!ExplorerEditorOpen()) {
             explorerView_->setFocus();
             explorerView_->edit(proxy);
             for (auto* editor : explorerView_->viewport()->findChildren<QLineEdit*>(QString(), Qt::FindDirectChildrenOnly)) {

@@ -242,6 +242,8 @@ private:
     // 重命名没有生效：问题列表与运行日志各记一条，并在原位置重新打开编辑框（保留刚输入的文字）、在下面写出原因。
     // 状态栏会被撤销栈的提示立刻覆盖，不能只写在那里。
     void ReportRenameFailure(const TriggerDirectoryItem& item, const QString& attempted, const QString& reason);
+    // 目录树上是否开着就地改名的编辑框（视图的编辑状态接口不公开，按可见编辑框判断）。
+    [[nodiscard]] bool ExplorerEditorOpen() const;
     // 自定义代码触发器的改名、复制：走与 Agent 共用的代码身份服务（同步 InitTrig 与代码里的生成符号），一条撤销命令。
     // 成功时返回结果触发器（复制为新触发器，改名为原触发器）；失败时 failure 收到原因。
     std::optional<StableId> ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name,
