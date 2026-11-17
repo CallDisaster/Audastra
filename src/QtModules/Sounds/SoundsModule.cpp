@@ -1,4 +1,5 @@
 #include "SoundsModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "SoundPreviewPlayer.h"
 #include "../NavigationBookmarkDetail.h"
 
@@ -826,6 +827,7 @@ std::vector<SoundsModule::ResourceRow> SoundsModule::ResourceCatalogRows() const
 }
 
 void SoundsModule::RebuildResources() {
+    War3Map::RunLog::SlowScope slowScope("声音页：重建资源");
     if (!resourceTable_) return;
     StartGameIndex();
     auto found = ResourceCatalogRows();

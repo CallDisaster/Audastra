@@ -1,4 +1,5 @@
 #include "GameUiCanvas.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "GameUiModule.h"
 #include "GameUiNodeTree.h"
 
@@ -486,6 +487,7 @@ void GameUiModule::SelectNode(std::uint32_t node) {
 }
 
 void GameUiModule::UpdateProperties() {
+    War3Map::RunLog::SlowScope slowScope("界面页：更新属性面板");
     UpdateDescriptionPanel();
     UpdateAuthoringControls();
     RefreshFrameSettings();

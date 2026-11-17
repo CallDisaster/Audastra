@@ -1,4 +1,5 @@
 #include "WorldModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "WorldDiagnosticJson.h"
 #include "WorldSelectionPresenter.h"
 #include "WorldBuildingSplatPresenter.h"
@@ -470,12 +471,14 @@ Result<std::vector<std::byte>> WorldModule::ReadTerrain() const {
 }
 
 void WorldModule::RecordTerrainLoad(const char* stage, std::vector<Diagnostic> diagnostics, bool failed) {
+    if (terrainLoadStage_ != QLatin1String(stage)) War3Map::RunLog::Info("世界加载", std::string("地形 ") + stage + "，第 " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - loadStarted_).count()) + " 毫秒");
     terrainLoadStage_ = QString::fromLatin1(stage);
     terrainLoadDiagnostics_ = std::move(diagnostics);
     terrainLoadFailed_ = failed;
 }
 
 void WorldModule::RecordModelLoad(const char* stage, std::vector<Diagnostic> diagnostics, bool failed) {
+    if (modelLoadStage_ != QLatin1String(stage)) War3Map::RunLog::Info("世界加载", std::string("模型 ") + stage + "，第 " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - loadStarted_).count()) + " 毫秒");
     modelLoadStage_ = QString::fromLatin1(stage);
     modelLoadDiagnostics_ = std::move(diagnostics);
     modelLoadGeneration_ = generation_;
@@ -493,6 +496,7 @@ WorldViewport* WorldModule::ViewportForTools() const {
 }
 
 void WorldModule::Refresh() {
+    War3Map::RunLog::SlowScope slowScope("世界页：整体重读");
     InvalidateTerrainBoundsControls();
     InvalidateTerrainResizeControls();
     ++selectionCatalogRevision_;
@@ -506,6 +510,7 @@ void WorldModule::Refresh() {
     instanceRegistry_.reset(); stagedInstanceRegistry_.reset(); instanceRevisionGate_.reset();
     pendingPlacements_.Clear(); placementCompletedScene_.reset(); placementCompletedFrame_.reset();
     const auto generation = ++generation_;
+    loadStarted_ = std::chrono::steady_clock::now();
     RecordTerrainLoad("awaiting-page");
     RecordModelLoad("awaiting-terrain");
     terrainPathingPending_ = project_.mapEdits_ && !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();

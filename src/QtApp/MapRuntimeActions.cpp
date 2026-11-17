@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "Commands/TriggerCommands.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "Widgets/ProblemList.h"
@@ -14,6 +15,7 @@ constexpr auto kSubsystem = "地图运行库";
 }
 
 void MainWindow::RefreshRuntimeCompatibility() {
+    War3Map::RunLog::SlowScope slowScope("主窗口：运行时兼容检查");
     const auto serial = ++runtimeCompatibilitySerial_;
     if (runtimeCompatibilityRunning_) return;
     runtimeCompatibility_ = {};

@@ -356,4 +356,29 @@ void Scope::Failed(std::string_view reason) noexcept {
     } catch (...) {}
 }
 
+std::chrono::milliseconds SlowThreshold() noexcept {
+    static const std::chrono::milliseconds threshold = [] {
+        long long value = 200;
+#ifdef _WIN32
+        char text[32]{};
+        std::size_t length = 0;
+        if (getenv_s(&length, text, sizeof(text), "AUDASTRA_SLOW_LOG_MS") == 0 && length > 1) {
+            char* end = nullptr;
+            const long long parsed = std::strtoll(text, &end, 10);
+            if (end && *end == '\0' && parsed >= 0 && parsed <= 600000) value = parsed;
+        }
+#endif
+        return std::chrono::milliseconds(value);
+    }();
+    return threshold;
+}
+
+void ReportSlow(std::string_view what, std::chrono::steady_clock::duration elapsed) noexcept {
+    try {
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+        if (milliseconds < SlowThreshold()) return;
+        Write(Level::Info, "耗时", std::to_string(milliseconds.count()) + " 毫秒：" + std::string(what));
+    } catch (...) {}
+}
+
 } // namespace War3Map::RunLog

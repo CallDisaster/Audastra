@@ -1,4 +1,5 @@
 #include "GameUiModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
 
 #include "GameUiTriggerSimulation.h"
@@ -225,6 +226,7 @@ UiSkin GameUiModule::MakeSkin() const {
 }
 
 void GameUiModule::RebuildScene() {
+    War3Map::RunLog::SlowScope slowScope("界面页：重建场景");
     tree_.reset();
     drawList_ = {};
     sceneDiagnostics_.clear();

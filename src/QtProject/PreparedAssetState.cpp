@@ -1,4 +1,5 @@
 #include "PreparedAssetState.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "PendingImportPayload.h"
 #include <QPointer>
 #include <set>
@@ -83,7 +84,11 @@ Status EditorProject::PublishPreparedAssetState(PreparedAssetStateEdit& prepared
         return Status::Failure("Asset", "ASSET_REVISION_PREPARE_FAILED", "发布前无法复核候选资源，未修改资源。");
     }
     // 只修改资源scope，物编和触发器脏标记不变；不在发布后重新分配/捕获整图指纹。
-    emit ImportsChanged();
+    {
+        War3Map::RunLog::SlowScope slowScope("资源：通知导入变化（全部监听者）");
+        emit ImportsChanged();
+    }
+    War3Map::RunLog::SlowScope slowScope("资源：通知导入已编辑");
     if (guard) emit guard->ImportsEdited();
     return Status::Ok();
 }

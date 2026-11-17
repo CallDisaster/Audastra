@@ -1,4 +1,5 @@
 #include "ObjectModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "ObjectModuleShared.h"
 
 #include "EditorProject.h"
@@ -532,6 +533,7 @@ void ObjectModule::RememberSelection() {
 }
 
 void ObjectModule::ShowObjectType(int index) {
+    War3Map::RunLog::SlowScope slowScope("物编页：显示类别列表");
     if (newObjectPicker_) newObjectPicker_->hide();
     if (index < 0 || index >= static_cast<int>(project_->objectDocuments_.size())) {
         return;

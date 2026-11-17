@@ -1,4 +1,5 @@
 #include "AssetsModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 
 #include "AssetsDetail.h"
 #include "../NavigationBookmarkDetail.h"
@@ -227,6 +228,7 @@ QWidget* AssetsModule::Widget() {
 }
 
 void AssetsModule::Refresh() {
+    War3Map::RunLog::SlowScope slowScope("资源页：整体刷新");
     if (!page_) {
         return;
     }

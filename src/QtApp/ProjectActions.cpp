@@ -223,6 +223,7 @@ void MainWindow::OpenEditorProject() {
     if (!path.isEmpty()) OpenEditorProjectPath(std::filesystem::path(path.toStdWString()));
 }
 void MainWindow::ScheduleRecovery() {
+    War3Map::RunLog::SlowScope slowScope("主窗口：安排恢复点");
     UpdateWindowTitle();
     if (writingRecovery_) { recoveryRequested_ = true; return; }
     // 首次编辑启动周期；持续输入不重置倒计时，避免恢复被无限推迟。

@@ -1,4 +1,5 @@
 #include "AssetCommands.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "PreparedAssetState.h"
 
 #include "War3MapCore/MapArchiveSession.h"
@@ -79,11 +80,17 @@ QString EditorProject::RecordAssetEdit(const QString& label,
         const auto problem = prepare(candidate);
         if (!problem.isEmpty()) return problem;
         if (candidate == before) return {};
-        auto prepared = PrepareAssetStateEdit(candidate, editRevision_.Generation(), editRevision_.Revision(), label.toStdString());
+        auto prepared = [&] {
+            War3Map::RunLog::SlowScope slowScope("资源：准备修订");
+            return PrepareAssetStateEdit(candidate, editRevision_.Generation(), editRevision_.Revision(), label.toStdString());
+        }();
         if (!prepared.Succeeded()) return QString::fromStdString(prepared.diagnostics.front().code + " · " + prepared.diagnostics.front().message);
         auto firstStatus = std::make_shared<Status>();
         auto command = std::make_unique<AssetStateCommand>(*this, std::move(before), std::move(candidate), label, *prepared.value, firstStatus);
-        command->PublishBeforePush();
+        {
+            War3Map::RunLog::SlowScope slowScope("资源：发布修改（含通知）");
+            command->PublishBeforePush();
+        }
         if (!firstStatus->Succeeded()) return QString::fromStdString(firstStatus->diagnostics.front().code + " · " + firstStatus->diagnostics.front().message);
         assetUndoStack_->push(command.release());
         return {};

@@ -59,4 +59,20 @@ private:
     bool finished_ = false;
 };
 
+// 慢步骤：只有超过阈值才写一行“耗时 N 毫秒：what”，用来在错误报告里找出卡住界面的步骤。
+// 阈值默认 200 毫秒，环境变量 AUDASTRA_SLOW_LOG_MS 可改（0 表示每次都记）。what 必须是常量字符串。
+[[nodiscard]] std::chrono::milliseconds SlowThreshold() noexcept;
+void ReportSlow(std::string_view what, std::chrono::steady_clock::duration elapsed) noexcept;
+
+class SlowScope {
+public:
+    explicit SlowScope(std::string_view what) noexcept : what_(what), started_(std::chrono::steady_clock::now()) {}
+    ~SlowScope() { ReportSlow(what_, std::chrono::steady_clock::now() - started_); }
+    SlowScope(const SlowScope&) = delete;
+    SlowScope& operator=(const SlowScope&) = delete;
+private:
+    std::string_view what_;
+    std::chrono::steady_clock::time_point started_;
+};
+
 } // namespace War3Map::RunLog

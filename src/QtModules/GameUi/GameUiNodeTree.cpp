@@ -1,4 +1,5 @@
 #include "GameUiModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
@@ -177,6 +178,7 @@ QString TypeIcon(const FrameNode& node, const UiFrame* own) {
 } // namespace GameUiNodeTree
 
 void GameUiModule::PopulateTree() {
+    War3Map::RunLog::SlowScope slowScope("界面页：重建节点树");
     if (!nodes_) return;
     populating_ = true;
     nodes_->clear();

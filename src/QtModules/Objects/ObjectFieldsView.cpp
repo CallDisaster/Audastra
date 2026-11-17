@@ -1,4 +1,5 @@
 #include "ObjectModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "ObjectModuleShared.h"
 #include "Widgets/RoundedPopups.h"
 #include "Widgets/TablePopupAnchor.h"
@@ -106,6 +107,7 @@ void ObjectModule::RefreshStandardCatalog() {
 
 
 void ObjectModule::UpdateObjectReferenceEntries() {
+    War3Map::RunLog::SlowScope slowScope("物编页：更新引用目录");
     QVector<ObjectViewEntry> standardEntries;
     objectViewEntries_ = QtApp::BuildObjectViewEntries(*project_, &standardEntries);
     if (objectFieldModel_) {

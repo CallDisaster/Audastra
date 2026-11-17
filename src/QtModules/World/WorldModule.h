@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <variant>
 
 #include "Modules/EditorModule.h"
@@ -612,6 +613,7 @@ private:
     std::vector<Diagnostic> modelLoadDiagnostics_;
     std::uint64_t modelLoadGeneration_ = 0;
     bool modelLoadFailed_ = false;
+    std::chrono::steady_clock::time_point loadStarted_ = std::chrono::steady_clock::now();  // 本次整图读取开始，写运行日志时间线
     struct TerrainRenderRequest {
         std::shared_ptr<const MapData::TerrainGridSnapshot> source;
         MapData::TerrainBrush brush;

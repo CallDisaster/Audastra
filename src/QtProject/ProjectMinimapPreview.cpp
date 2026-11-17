@@ -1,4 +1,5 @@
 #include "ProjectMinimapPreview.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "EditorProject.h"
 #include "PendingImportPayload.h"
 #include "../QtCommon/DiagnosticTimings.h"
@@ -62,6 +63,7 @@ void ProjectMinimapPreview::Request(MinimapPreviewOptions options, bool force) {
     Invalidate();
 }
 void ProjectMinimapPreview::Invalidate() {
+    War3Map::RunLog::SlowScope slowScope("小地图预览：失效");
     if (control_)
         (void)control_->RequestCancellation();
     if (requested_ && !options_.current && result_ && result_->Succeeded() && !result_->value->current &&

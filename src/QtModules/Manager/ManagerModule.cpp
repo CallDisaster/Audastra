@@ -1,4 +1,5 @@
 #include "ManagerModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "../World/WorldNavigationBookmark.h"
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -385,6 +386,7 @@ void ManagerModule::ShowPage(Page page) {
 }
 
 void ManagerModule::Refresh(bool force) {
+    War3Map::RunLog::SlowScope slowScope("物体管理：刷新");
     if (!page_ || (!force && !page_->isVisible())) return;
     const std::uint64_t generation = project_.ReferenceGeneration();
     const bool allFunctions = current_ == Page::Function && filters_[static_cast<int>(current_)] == QLatin1String("all");

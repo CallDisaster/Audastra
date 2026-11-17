@@ -1,4 +1,5 @@
 #include "GameUiModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
 
 #include "EditorProject.h"
 #include "GameUiAuthoringJson.h"
@@ -89,6 +90,7 @@ void MarkInvalid(QLineEdit* edit, QLabel* label, const QString& problem) {
 } // namespace
 
 bool GameUiModule::StageDescription(UiDescription description, bool create, const QString& undoLabel, QString* error) {
+    War3Map::RunLog::SlowScope slowScope("界面页：放入界面描述（合计）");
     const auto fail = [error](const QString& message) {
         if (error) *error = message;
         return false;
@@ -112,7 +114,10 @@ bool GameUiModule::StageDescription(UiDescription description, bool create, cons
     std::vector<QtProject::EditorProject::ImportPayload> payloads{{path, std::move(bytes), false}};
     // 自己放入的文件已在下面就地更新，不触发整体重读（重读会清空贴图缓存，画面闪烁）。
     stagingOwnImport_ = true;
-    const QString problem = project_.AddImportPayloads(payloads, !create, undoLabel);
+    const QString problem = [&] {
+        War3Map::RunLog::SlowScope slowScope("界面页：写入导入文件");
+        return project_.AddImportPayloads(payloads, !create, undoLabel);
+    }();
     stagingOwnImport_ = false;
     if (!problem.isEmpty()) return fail(problem);
     if (existing != files.end()) {

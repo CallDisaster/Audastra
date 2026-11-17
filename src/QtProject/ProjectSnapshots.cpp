@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "ProjectDocumentHistory.h"
 #include "PendingImportPayload.h"
 #include "War3MapCore/Hash.h"
@@ -42,6 +43,7 @@ std::optional<std::string> ProjectDocumentHistory::TriggerFingerprint(const Edit
 }
 
 std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes(const AssetState* candidateAssets) const {
+    War3Map::RunLog::SlowScope slowScope("修订：整图指纹");
     EditScopeSnapshot scopes;
     if (projectRoot_.empty()) return scopes;
     // 来源身份参与工程比较；另存地图以后工程必须保存新的完整基线。

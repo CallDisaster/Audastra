@@ -1,4 +1,5 @@
 #include "ProjectObjectCatalog.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "EditorProject.h"
 #include "../QtCommon/DiagnosticTimings.h"
 
@@ -205,6 +206,7 @@ void DiscardPreparedProjectObjectCatalog(EditorProject& project) noexcept {
 }
 
 Status EnsureProjectObjectCatalog(EditorProject& project, bool force) {
+    War3Map::RunLog::SlowScope slowScope("物编目录：核对或重建");
     if (project.war3GameRoot_.empty() && !project.objectCatalogState_ && !project.archiveSession_
         && !project.readOnlyArchive_ && !project.directorySnapshot_ && !project.campaignScope_) return Status::Ok();
     if (!project.objectCatalogState_) project.objectCatalogState_ = std::make_shared<ProjectObjectCatalogState>();

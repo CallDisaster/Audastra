@@ -1,4 +1,5 @@
 #include "TriggerLuaScripts.h"
+#include "War3MapCore/Feedback/RunLog.h"
 
 #include "TriggerCodeChecking.h"
 #include "LuaCodeAssist.h"
@@ -238,6 +239,7 @@ void TriggerLuaScripts::UpdateDraftState() {
     if (!selected) { sourceNote_->clear(); sourceNote_->setToolTip({}); }
 }
 void TriggerLuaScripts::RefreshDirectory() {
+    War3Map::RunLog::SlowScope slowScope("Lua 脚本：刷新目录");
     if (auto* button = findChild<QPushButton*>("luaUnlinkFolder")) button->setEnabled(project_.LuaFolderSource().Linked());
     if (auto* button = findChild<QPushButton*>("luaReconnectFolder")) button->setEnabled(project_.LuaFolderSource().Linked());
     QSignalBlocker block(directory_); directory_->clear();

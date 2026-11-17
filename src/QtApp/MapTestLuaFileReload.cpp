@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "TriggerModule.h"
 #include "TriggerLuaScripts.h"
 #include "AssetOwnedPayload.h"
@@ -83,6 +84,7 @@ void MainWindow::RememberReloadedLuaFile(const QString& path, const std::string&
 }
 
 void MainWindow::UpdateLuaReloadPending() {
+    War3Map::RunLog::SlowScope slowScope("主窗口：Lua 热重载待办");
     if (!luaReloadAction_) return;
     if(!luaFileReload_ || luaFileReloadStopped_ || !LuaTestSessionCurrent())hluaRebuildRequired_=false;
     QStringList paths;
