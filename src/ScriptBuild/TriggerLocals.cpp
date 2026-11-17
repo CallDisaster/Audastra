@@ -55,10 +55,10 @@ std::uint32_t Id(Gui gui) { return static_cast<std::uint32_t>(gui); }
 
 bool ClosureMother(std::uint32_t id) {
     return id == Id(Gui::YDWETimerStartMultiple) || id == Id(Gui::YDWERegisterTriggerMultiple)
-        || (id <= 0xFFFFu && DzCallbackSuffix(static_cast<Gui>(id)) != nullptr);
+        || (id <= 0xFFFFu && (DzCallbackSuffix(static_cast<Gui>(id)) != nullptr || IsMoverClosure(static_cast<Gui>(id))));
 }
 
-// 闭包页：计时器 / 触发器闭包按句柄，Dz 异步回调为常量页。
+// 闭包页：计时器 / 触发器闭包按句柄，Dz 异步回调与运动器为写好的页表达式（以常量开头）。
 std::string ClosurePage(const std::string& handle) {
     return handle.starts_with("0x") ? handle : HandlePage(handle);
 }
@@ -218,6 +218,20 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
             LocalDeclare(kGroup, "KKWE", "Group");
             if (searchHash) LocalSearch(eca.children, searchHash, -1);
             break;
+        case Gui::MHMoverApplyUnit:
+        case Gui::MHMoverApplyItem:
+        case Gui::MHMoverApplyDest:
+        case Gui::MHMoverApplyEffect:
+        case Gui::MHMoverApplyDoodad:
+        case Gui::MHMoverSetOnUpdate:
+        case Gui::MHMoverSetOnReach:
+            // 与计时器闭包相同：编号先存进局部变量，参数区在本函数里生成；回调动作属于运动器页。
+            LocalDeclare(kInteger, "KKWE", "Mover");
+            LocalSearch(eca.children, searchHash, 0);
+            break;
+        case Gui::MHMoverRemove:
+            LocalDeclare(kInteger, "KKWE", "Mover");
+            break;
         case Gui::DzTriggerRegisterMouseEventMultiple:
         case Gui::DzTriggerRegisterKeyEventMultiple:
         case Gui::DzTriggerRegisterMouseWheelEventMultiple:
@@ -236,11 +250,11 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
     }
 }
 
-void TriggerEmitter::LocalBegin(Children children, bool isTimer, bool searchHash) {
+void TriggerEmitter::LocalBegin(Children children, bool isTimer, bool searchHash, long block) {
     localVars_.clear();
     trueLocals_.clear();
     if (searchHash) localInMainProc_ = false;
-    LocalSearch(children, searchHash, -1);
+    LocalSearch(children, searchHash, block);
     if (!isTimer && searchHash && localInMainProc_) {
         usesStorage_ = true;
         out_.Begin();
@@ -560,6 +574,78 @@ void TriggerEmitter::PutModuleRetval(const Eca& eca, const std::string& name, bo
     out_.Begin();
     PutStorageSave(kLocalTable, type, ModulePage("Parent"), StorageKey{ArgValue(eca, 1), array ? &index : nullptr},
         [&] { PutVar(eca, name, array ? 3 : 2); });
+    out_.End();
+}
+
+std::string TriggerEmitter::MoverPage(const std::string& mover) {
+    return detail::StorageKey("Mover") + " + " + mover;
+}
+
+// KKWE 运动器回调：“应用到…”写刷新、到达两个函数，“设置刷新 / 到达回调”写一个。回调里的局部变量都在
+// “StringHash("Mover") + 当前回调的运动器”页上（与 KKWE 相同）；读到但参数区没给的外层局部变量，由应用动作先拷进运动器页。
+void TriggerEmitter::PutMoverFunctions(const Eca& eca, const std::string& name, Gui gui) {
+    const LocvarState saved = locvar_;
+    locvar_.lastMotherId = locvar_.motherId;
+    locvar_.prevHandle = locvar_.handle;
+    locvar_.motherId = Id(gui);
+    locvar_.name = name;
+    locvar_.handle = MoverPage("MHMover_GetTriggerMover()");
+    ++moverDepth_;
+    PutExternTopDown(eca, name);
+    const auto body = [&](const std::string& function, long block) {
+        out_.Line("function " + function + " takes nothing returns nothing");
+        LocalBegin(eca.children, true, false, block);
+        PutBlockAction(eca, name, block);
+        LocalEnd(true, true);
+        out_.Line("endfunction");
+        out_.Line("");
+    };
+    if (gui == Gui::MHMoverSetOnUpdate || gui == Gui::MHMoverSetOnReach) {
+        body(name + "Mover", 1);
+    } else {
+        body(name + "MoverUpdate", 1);
+        body(name + "MoverReach", 2);
+    }
+    --moverDepth_;
+    locvar_ = saved;
+}
+
+// 运动器编号只求值一次（存进 KKWE_Mover），参数区写进它的运动器页，再把回调交给运动器。
+void TriggerEmitter::PutMoverClosure(const Eca& eca, const std::string& name, Gui gui) {
+    out_.Begin();
+    out_.Put("set KKWE_Mover = ");
+    PutVar(eca, name, 0);
+    out_.Line("");
+    out_.End();
+    LocvarParams(eca, name, 0, MoverPage("KKWE_Mover"), gui);
+    out_.Begin();
+    out_.Put("call " + ScriptName(eca) + "(KKWE_Mover, ");
+    if (gui == Gui::MHMoverSetOnUpdate || gui == Gui::MHMoverSetOnReach) {
+        out_.Line("function " + name + "Mover)");
+    } else {
+        PutVar(eca, name, 1);
+        out_.Line(", function " + name + "MoverUpdate, function " + name + "MoverReach)");
+    }
+    out_.End();
+}
+
+// “删除运动器”连同它的运动器页一起清掉（与 KKWE 相同）；“清除当前运动器”用当前回调的运动器，
+// 只在运动器回调里生成，放在其他地方时 KKWE 不生成代码，这里同样处理并提示。
+void TriggerEmitter::PutMoverRemove(const Eca& eca, const std::string& name, bool current) {
+    if (current && moverDepth_ == 0) {
+        Warn("mover-remove-outside", "“清除当前运动器”只能放在运动器的刷新 / 到达动作里，这里不会生成代码（与 KKWE 相同）。");
+        return;
+    }
+    const std::string mover = current ? "MHMover_GetTriggerMover()" : "KKWE_Mover";
+    out_.Begin();
+    if (!current) {
+        out_.Put("set KKWE_Mover = ");
+        PutVar(eca, name, 0);
+        out_.Line("");
+    }
+    usesStorage_ = true;
+    out_.Line("call FlushChildHashtable(" + std::string(kLocalTable) + ", " + MoverPage(mover) + ")");
+    out_.Line("call MHMover_Remove(" + mover + ")");
     out_.End();
 }
 

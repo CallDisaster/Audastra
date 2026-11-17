@@ -68,6 +68,11 @@ const std::unordered_map<std::string_view, Gui>& GuiTable() {
         {"KKAPISetAnyTypeLocalArray", Gui::KKAPISetAnyTypeLocalArray},
         {"KKAPIGetAnyTypeLocalArray", Gui::KKAPIGetAnyTypeLocalArray},
         {"KKAPIEnumUnitsInRangeMultiple", Gui::KKAPIEnumUnitsInRangeMultiple}, {"YDWEExitLoop", Gui::YDWEExitLoop},
+        {"MHMover_ApplyUnit", Gui::MHMoverApplyUnit}, {"MHMover_ApplyItem", Gui::MHMoverApplyItem},
+        {"MHMover_ApplyDest", Gui::MHMoverApplyDest}, {"MHMover_ApplyEffect", Gui::MHMoverApplyEffect},
+        {"MHMover_ApplyDoodad", Gui::MHMoverApplyDoodad}, {"MHMover_SetOnUpdate", Gui::MHMoverSetOnUpdate},
+        {"MHMover_SetOnReach", Gui::MHMoverSetOnReach}, {"MHMover_Remove", Gui::MHMoverRemove},
+        {"MHMover_RemoveTriggerMover", Gui::MHMoverRemoveTriggerMover},
     };
     return table;
 }
@@ -233,6 +238,21 @@ const char* DzCallbackSuffix(Gui gui) {
     }
 }
 
+bool IsMoverClosure(Gui gui) {
+    switch (gui) {
+    case Gui::MHMoverApplyUnit:
+    case Gui::MHMoverApplyItem:
+    case Gui::MHMoverApplyDest:
+    case Gui::MHMoverApplyEffect:
+    case Gui::MHMoverApplyDoodad:
+    case Gui::MHMoverSetOnUpdate:
+    case Gui::MHMoverSetOnReach:
+        return true;
+    default:
+        return false;
+    }
+}
+
 std::string TriggerEmitter::FuncName(const std::string& name, std::size_t index) {
     return Numbered(name + "Func", index);
 }
@@ -337,7 +357,8 @@ void TriggerEmitter::PutExternTopDown(const Eca& eca, const std::string& name) {
             locvar_ = {};
         }
         PutExternItems(eca, name);
-        if (DzCallbackSuffix(parent) == nullptr && CallbackOf(eca) != nullptr) PutCallbackFunction(eca, name);
+        if (DzCallbackSuffix(parent) == nullptr && !IsMoverClosure(parent) && CallbackOf(eca) != nullptr)
+            PutCallbackFunction(eca, name);
         if (module) {
             moduleFunction_ = savedModule;
             locvar_ = savedLocvar;
@@ -373,6 +394,10 @@ void TriggerEmitter::PutExternFunc(const Eca& eca, const std::string& name) {
     const Owned owned(*this, eca);
     const Gui gui = GuiOf(eca);
     const char* dz = DzCallbackSuffix(gui);
+    if (IsMoverClosure(gui)) {
+        PutMoverFunctions(eca, name, gui);
+        return;
+    }
     if (gui != Gui::YDWETimerStartMultiple && gui != Gui::YDWERegisterTriggerMultiple && dz == nullptr) {
         PutExternTopDown(eca, name);
         return;

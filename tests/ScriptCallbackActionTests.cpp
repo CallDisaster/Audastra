@@ -4,6 +4,7 @@
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
 #include "War3MapCore/Script/ScriptPipeline.h"
+#include "War3MapCore/Trigger/TriggerBlocks.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -160,6 +161,7 @@ std::shared_ptr<GraphEcaValue> Action(std::string name, std::vector<GraphArgumen
     result->children = std::move(children); result->enabled = enabled; return result;
 }
 std::shared_ptr<GraphEcaValue> Child(std::shared_ptr<GraphEcaValue> node) { node->childBranch = 0; return node; }
+std::shared_ptr<GraphEcaValue> Branch(int branch, std::shared_ptr<GraphEcaValue> node) { node->childBranch = branch; return node; }
 
 TriggerDocument MakeDocument(const UiCatalog& catalog, const std::vector<std::shared_ptr<const GraphEcaValue>>& actions) {
     auto empty = WtgWctCodec{}.CreateEmpty(catalog); Require(empty.Succeeded(), "empty original pair: " + Details(empty.diagnostics));
@@ -388,9 +390,150 @@ void TestKkweGeneratedEntries(const std::filesystem::path& root) {
         && exitScript.text.find("YDWEExitLoop") == std::string::npos, "exit loop:\n" + exitScript.text);
 }
 
+// KKWE 运动器：应用到单位 / 特效、设置刷新回调、删除运动器、清除当前运动器。原创合成函数库，名称用 KKWE 的定义名。
+// 子块 0 是参数区，“应用到…”的 1、2 块是刷新、到达回调；回调里的局部变量在 StringHash("Mover") + 当前回调的运动器 页上。
+void TestKkweMoverEntries(const std::filesystem::path& root) {
+    const auto tool = root / "kkwe-mover";
+    const auto ui = tool / "share/mpq";
+    WriteText(ui / "config", "probe\n");
+    WriteText(ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\nreal=0,1,1,Real,real\n"
+        "string=0,1,1,String,string\nunit=0,1,1,Unit,unit\neffect=0,1,1,Effect,effect\n"
+        "typename=1,0,0,Type,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
+        "[TriggerParams]\ntypename02_real=0,typename,2,Real\n");
+    WriteText(ui / "probe/action.txt",
+        "[MHMover_ApplyUnit]\nscript_name = MHMover_ApplyWidget\n[[.args]]\ntype=integer\n[[.args]]\ntype=unit\n"
+        "[MHMover_ApplyEffect]\n[[.args]]\ntype=integer\n[[.args]]\ntype=effect\n"
+        "[MHMover_SetOnUpdate]\n[[.args]]\ntype=integer\n"
+        "[MHMover_Remove]\n[[.args]]\ntype=integer\n[MHMover_RemoveTriggerMover]\n"
+        "[YDWESetAnyTypeLocalVariable]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
+        "[RecordReal]\n[[.args]]\ntype=real\n");
+    WriteText(ui / "probe/call.txt",
+        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n"
+        "[MHMover_CreateParabola]\nreturns=integer\n[ProbeMover]\nreturns=integer\n[ProbeHero]\nreturns=unit\n"
+        "[ProbeEffect]\nreturns=effect\n");
+    const std::string common = "type agent extends handle\ntype widget extends agent\ntype unit extends widget\n"
+        "type effect extends agent\ntype trigger extends agent\ntype triggeraction extends handle\ntype hashtable extends agent\n"
+        "native CreateTrigger takes nothing returns trigger\n"
+        "native TriggerAddAction takes trigger t, code action returns triggeraction\n"
+        "native GetTriggeringTrigger takes nothing returns trigger\nnative GetHandleId takes handle h returns integer\n"
+        "native SaveInteger takes hashtable t, integer p, integer c, integer v returns nothing\n"
+        "native LoadInteger takes hashtable t, integer p, integer c returns integer\n"
+        "native SaveReal takes hashtable t, integer p, integer c, real v returns nothing\n"
+        "native LoadReal takes hashtable t, integer p, integer c returns real\n"
+        "native FlushChildHashtable takes hashtable t, integer p returns nothing\n"
+        "native MHMover_ApplyWidget takes integer id, widget subject, code on_update, code on_reach returns boolean\n"
+        "native MHMover_ApplyEffect takes integer id, effect subject, code on_update, code on_reach returns boolean\n"
+        "native MHMover_SetOnUpdate takes integer id, code callback returns boolean\n"
+        "native MHMover_Remove takes integer id returns boolean\nnative MHMover_GetTriggerMover takes nothing returns integer\n"
+        "native MHMover_CreateParabola takes nothing returns integer\nnative ProbeMover takes nothing returns integer\n"
+        "native ProbeHero takes nothing returns unit\nnative ProbeEffect takes nothing returns effect\n"
+        "native RecordReal takes real v returns nothing\n";
+    // 与 KKWE 函数库相同：设置刷新回调的声明多一个末尾 code 参数，会被识别成回调块，但必须按运动器生成。
+    WriteText(tool / "jass/mover.j", common);
+    const auto catalog = UiCatalog::Load(ui);
+    Require(catalog.Succeeded(), "KKWE mover catalog: " + Details(catalog.diagnostics));
+    const auto* apply = FindTriggerBlockBranches("MHMover_ApplyUnit", &*catalog.value);
+    const auto* onUpdate = FindTriggerBlockBranches("MHMover_SetOnUpdate", &*catalog.value);
+    Require(apply != nullptr && apply->size() == 3 && std::string_view((*apply)[1].label) == "刷新"
+        && std::string_view((*apply)[2].label) == "到达" && onUpdate != nullptr && onUpdate->size() == 2
+        && std::string_view((*onUpdate)[0].key) == "params" && std::string_view((*onUpdate)[1].key) == "actions",
+        "mover blocks follow KKWE: parameters, then update / reach (apply) or actions (set callback)");
+
+    const auto callValue = [](std::string function, std::vector<GraphArgumentValue> args) {
+        GraphArgumentValue result;
+        auto call = std::make_shared<GraphEcaValue>();
+        call->function = std::move(function); call->kind = UiDefinitionKind::Call; call->arguments = std::move(args);
+        result.call = call;
+        return result;
+    };
+    const auto readLocal = [&](const char* name) { return callValue("YDWEGetAnyTypeLocalVariable", {Scalar(3, name)}); };
+    const auto setLocal = [](const char* name, const char* value) {
+        return Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename02_real"), Scalar(3, name), Scalar(3, value)});
+    };
+    auto document = MakeDocument(*catalog.value, {
+        setLocal("Bonus", "2.0"),
+        Action("MHMover_ApplyUnit", {callValue("MHMover_CreateParabola", {}), callValue("ProbeHero", {})}, {
+            Branch(0, setLocal("Speed", "3.0")),
+            Branch(1, Action("RecordReal", {readLocal("Speed")})),
+            Branch(1, Action("RecordReal", {readLocal("Bonus")})),
+            Branch(2, Action("RecordReal", {readLocal("Speed")})),
+            Branch(2, Action("MHMover_RemoveTriggerMover")),
+        }),
+        Action("MHMover_SetOnUpdate", {callValue("ProbeMover", {})}, {Branch(1, Action("RecordReal", {readLocal("Bonus")}))}),
+        Action("MHMover_ApplyEffect", {callValue("ProbeMover", {}), callValue("ProbeEffect", {})},
+            {Branch(1, Action("RecordReal", {Scalar(3, "1.0")}))}),
+        Action("MHMover_Remove", {callValue("ProbeMover", {})}),
+        Action("MHMover_RemoveTriggerMover"),
+    });
+    MapScriptInputs inputs; inputs.catalog = &*catalog.value; inputs.triggers = &document;
+    const auto generated = GenerateMapScript(inputs);
+    Require(generated.Succeeded(), "KKWE mover generation: " + Details(generated.diagnostics));
+    const auto& text = generated.text;
+    const auto bodyOf = [&](std::string_view function) {
+        const auto begin = text.find("function " + std::string(function) + " takes");
+        Require(begin != std::string::npos, "missing " + std::string(function) + ":\n" + text);
+        return text.substr(begin, text.find("endfunction", begin) - begin);
+    };
+    const std::string mover = HashKey("Mover");
+    const std::string current = mover + " + MHMover_GetTriggerMover()";
+    const auto update = bodyOf("Trig_CallbackFunc002MoverUpdate");
+    Require(update.find("call RecordReal(LoadReal(YDLOC, " + current + ", " + HashKey("Speed") + "))") != std::string::npos
+        && update.find("call RecordReal(LoadReal(YDLOC, " + current + ", " + HashKey("Bonus") + "))") != std::string::npos
+        && update.find("ydl_localvar_step") == std::string::npos,
+        "update callback reads locals from the current mover's page:\n" + update);
+    const auto reach = bodyOf("Trig_CallbackFunc002MoverReach");
+    const auto clear = reach.find("call FlushChildHashtable(YDLOC, " + current + ")");
+    Require(reach.find("call RecordReal(LoadReal(YDLOC, " + current + ", " + HashKey("Speed") + "))") != std::string::npos
+        && clear != std::string::npos && reach.find("call MHMover_Remove(MHMover_GetTriggerMover())") > clear
+        && reach.find("call MHMover_Remove(MHMover_GetTriggerMover())") != std::string::npos,
+        "clearing the current mover inside its callback clears its page, then removes it:\n" + reach);
+    Require(bodyOf("Trig_CallbackFunc003Mover").find("call RecordReal(LoadReal(YDLOC, " + current + ", " + HashKey("Bonus") + "))")
+            != std::string::npos,
+        "set-update callback uses the same mover page:\n" + text);
+
+    const auto main = bodyOf("Trig_CallbackActions");
+    const std::string param = mover + " + KKWE_Mover";
+    const std::string frame = "GetHandleId(GetTriggeringTrigger())*ydl_localvar_step";
+    const auto assign = main.find("set KKWE_Mover = MHMover_CreateParabola()");
+    const auto speed = main.find("call SaveReal(YDLOC, " + param + ", " + HashKey("Speed") + ", 3.0)");
+    const auto bonus = main.find("call SaveReal(YDLOC, " + param + ", " + HashKey("Bonus") + ", LoadReal(YDLOC, " + frame + ", "
+        + HashKey("Bonus") + "))");
+    const auto applied = main.find("call MHMover_ApplyWidget(KKWE_Mover, ProbeHero(), function Trig_CallbackFunc002MoverUpdate, "
+        "function Trig_CallbackFunc002MoverReach)");
+    Require(main.find("local integer KKWE_Mover") != std::string::npos && assign != std::string::npos && speed != std::string::npos
+        && bonus != std::string::npos && applied != std::string::npos && assign < speed && speed < bonus && bonus < applied
+        && main.find(param + ", " + HashKey("Speed") + ", LoadReal") == std::string::npos,
+        "apply evaluates the mover once, writes parameters and the captured outer local to its page, then passes both callbacks:\n" + main);
+    Require(main.find("call MHMover_SetOnUpdate(KKWE_Mover, function Trig_CallbackFunc003Mover)") != std::string::npos
+        && main.find("call MHMover_ApplyEffect(KKWE_Mover, ProbeEffect(), function Trig_CallbackFunc004MoverUpdate, "
+            "function Trig_CallbackFunc004MoverReach)") != std::string::npos,
+        "set-update and apply-to-effect pass their generated callbacks:\n" + main);
+    const auto removeClear = main.find("call FlushChildHashtable(YDLOC, " + param + ")");
+    Require(removeClear != std::string::npos && main.find("call MHMover_Remove(KKWE_Mover)") > removeClear
+        && main.find("call MHMover_Remove(KKWE_Mover)") != std::string::npos,
+        "removing a mover also clears its page:\n" + main);
+    Require(HasCode(generated.diagnostics, "mover-remove-outside") && !HasCode(generated.diagnostics, "callback-local-scope")
+        && text.find("MHMover_RemoveTriggerMover") == std::string::npos && text.find("MHMover_ApplyUnit") == std::string::npos
+        && text.find("Trig_CallbackFunc003A") == std::string::npos,
+        "no entry is written as an undeclared call and the set-update block is not a generic callback: "
+        + Details(generated.diagnostics) + "\n" + text);
+
+    const auto first = text.find("function Trig_Callback");
+    const auto last = text.find("function InitCustomTriggers");
+    Require(first != std::string::npos && last != std::string::npos && first < last, "trigger section:\n" + text);
+    const std::string checked = "globals\n    hashtable YDLOC = null\n    trigger gg_trg_Callback = null\nendglobals\n"
+        + text.substr(first, text.rfind("//====", last) - first);
+    const std::array<Jass::JassSource, 2> sources{{{"common.j", common}, {"war3map.j", checked}}};
+    Jass::JassCheckOptions checks; checks.threads = 1;
+    const auto result = Jass::CheckJass(sources, checks);
+    Require(result.Succeeded() && result.errorsIgnored == 0, "strict check of the generated mover triggers: " + Details(result.diagnostics)
+        + "\n" + checked);
+}
+
 void Run(const std::filesystem::path& root) {
     TestScanner();
     TestKkweGeneratedEntries(root);
+    TestKkweMoverEntries(root);
     const auto fixture = MakeFixture(root / "valid");
     const auto catalog = UiCatalog::Load(fixture.ui);
     Require(catalog.Succeeded(), "original callback catalog: " + Details(catalog.diagnostics));

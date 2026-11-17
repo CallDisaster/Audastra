@@ -43,10 +43,15 @@ enum class Gui : std::uint16_t {
     // KKWE 生成器自己展开的条目：模块（运行、设置返回值）、真局部变量、选取单位到单位组（多动作），以及 YDWE 跳出循环。
     MHModuleEvaluate, MHModuleSetRetval, MHModuleSetArrayRetval, KKAPISetLocalVariables, KKAPIGetLocalVariables,
     KKAPISetAnyTypeLocalArray, KKAPIGetAnyTypeLocalArray, KKAPIEnumUnitsInRangeMultiple, YDWEExitLoop,
+    // KKWE 运动器：应用到单位 / 物品 / 可破坏物 / 特效 / 装饰物（刷新、到达两个回调）、设置刷新 / 到达回调、删除运动器、清除当前运动器。
+    MHMoverApplyUnit, MHMoverApplyItem, MHMoverApplyDest, MHMoverApplyEffect, MHMoverApplyDoodad,
+    MHMoverSetOnUpdate, MHMoverSetOnReach, MHMoverRemove, MHMoverRemoveTriggerMover,
 };
 
 // Dz“异步注册（多项）”：回调函数名后缀（<名><后缀>T），不是这类动作时为空。
 [[nodiscard]] const char* DzCallbackSuffix(Gui gui);
+// KKWE 运动器闭包（应用到… / 设置刷新、到达回调）：子块 0 为参数区，其余为回调动作。
+[[nodiscard]] bool IsMoverClosure(Gui gui);
 
 // 参数槽的类别：影响参数是写成值，还是写成外部函数引用。
 enum class Slot : std::int8_t { Value = -1, EventCall = 0, BoolExpr = 1, Code = 2 };
@@ -162,7 +167,7 @@ private:
     [[nodiscard]] std::string ArgValue(const Eca& eca, std::size_t index) const;
 
     // —— 局部变量存储（TriggerLocals.cpp）——
-    void LocalBegin(Children children, bool isTimer, bool searchHash);
+    void LocalBegin(Children children, bool isTimer, bool searchHash, long block = -1);
     void LocalEnd(bool isTimer, bool isEnd);
     void LocalSearch(Children children, bool searchHash, long block);
     void LocalSearchVar(const Eca& eca, bool searchHash);
@@ -192,6 +197,11 @@ private:
     [[nodiscard]] std::string ModulePage(std::string_view slot) const;
     void PutModuleEvaluate(const Eca& eca, const std::string& name);
     void PutModuleRetval(const Eca& eca, const std::string& name, bool array);
+    // KKWE 运动器的局部变量页：StringHash("Mover") + 运动器编号表达式。
+    [[nodiscard]] static std::string MoverPage(const std::string& mover);
+    void PutMoverFunctions(const Eca& eca, const std::string& name, Gui gui);
+    void PutMoverClosure(const Eca& eca, const std::string& name, Gui gui);
+    void PutMoverRemove(const Eca& eca, const std::string& name, bool current);
     // KKWE 真局部变量：声明成同名 JASS 局部变量（名称按局部变量名规则转换），数组加 array。
     void TrueLocalDeclare(const Eca& eca, bool array);
     [[nodiscard]] std::string TrueLocalName(const Eca& eca, bool set);
@@ -240,6 +250,8 @@ private:
     // 正在写的 KKWE 模块函数名（模块体及其内部生成的函数）；运行模块参数区的局部变量写进被调模块的页。
     std::optional<std::string> moduleFunction_;
     std::optional<std::string> moduleParamPage_;
+    // 正在写的运动器回调层数（含其中再生成的函数）：“清除当前运动器”只在其中生成。
+    int moverDepth_ = 0;
     std::map<std::string, std::string> saveLoadTypes_;
     bool localInMainProc_ = false;
     bool enumUnitsInRange_ = false;

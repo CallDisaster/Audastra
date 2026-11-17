@@ -408,6 +408,19 @@ void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {
         out_.Line("exitwhen true");
         out_.End();
         break;
+    case Gui::MHMoverApplyUnit:
+    case Gui::MHMoverApplyItem:
+    case Gui::MHMoverApplyDest:
+    case Gui::MHMoverApplyEffect:
+    case Gui::MHMoverApplyDoodad:
+    case Gui::MHMoverSetOnUpdate:
+    case Gui::MHMoverSetOnReach:
+        PutMoverClosure(eca, name, gui);
+        break;
+    case Gui::MHMoverRemove:
+    case Gui::MHMoverRemoveTriggerMover:
+        PutMoverRemove(eca, name, gui == Gui::MHMoverRemoveTriggerMover);
+        break;
     case Gui::KKAPIEnumUnitsInRangeMultiple:
         // 与 KKWE 相同：先把目标单位组存进 KKWE_Group，选取范围内满足条件的单位后逐个执行块内动作。
         out_.Begin();
