@@ -499,6 +499,23 @@ WorldViewport* WorldModule::ViewportForTools() const {
         && !worker_ && !pendingTerrainRender_ ? viewport_ : nullptr;
 }
 
+void WorldModule::DeferHiddenRefresh() {
+    needsRefresh_ = true;
+    if (!backgroundRefresh_) {
+        backgroundRefresh_ = new QTimer(this);
+        backgroundRefresh_->setSingleShot(true);
+        connect(backgroundRefresh_, &QTimer::timeout, this, [this] {
+            // 页面已显示时由 Show 事件接手；后台读取在低优先级线程里做，渲染器仍等页面显示时才创建。
+            if (!page_ || page_->isVisible() || !needsRefresh_ || MapKey().isEmpty()) return;
+            backgroundLoad_ = true;
+            Refresh();
+            backgroundLoad_ = false;
+        });
+    }
+    // 打开地图时会连着来几条通知，静下来再读，只读一次。
+    backgroundRefresh_->start(1500);
+}
+
 void WorldModule::Refresh() {
     War3Map::RunLog::SlowScope slowScope("世界页：整体重读");
     InvalidateTerrainBoundsControls();
@@ -560,7 +577,8 @@ void WorldModule::Refresh() {
     RefreshOutliner();
     ResetSceneFacts();
     UpdateInspector();
-    if (!page_->isVisible()) { needsRefresh_ = true; RecordTerrainLoad("deferred-hidden"); return; }
+    if (!page_->isVisible() && !backgroundLoad_) { DeferHiddenRefresh(); RecordTerrainLoad("deferred-hidden"); return; }
+    if (backgroundLoad_) RecordTerrainLoad("background-preload");
     needsRefresh_ = false;
     if (worker_) {
         reloadQueued_ = true; RecordTerrainLoad("waiting-for-worker");

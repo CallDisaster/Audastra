@@ -45,6 +45,7 @@ class QDoubleSpinBox;
 class QSlider;
 class QSpinBox;
 class QSplitter;
+class QTimer;
 class QMainWindow;
 class QDockWidget;
 class QStackedWidget;
@@ -605,6 +606,11 @@ private:
     std::uint64_t generation_ = 0;
     bool reloadQueued_ = false;
     bool needsRefresh_ = true;
+    // 世界页没显示时也在后台准备地形和模型：打开地图（或修改）后的一串通知静下来后读一次，
+    // 作者切到世界页时多半已经就绪，不用等到第一次显示才开始读。
+    QTimer* backgroundRefresh_ = nullptr;
+    bool backgroundLoad_ = false;
+    void DeferHiddenRefresh();
     // 仅记录当前整图读取这一代的阶段与原始原因，不把后台提交当成完成帧。
     QString terrainLoadStage_ = QStringLiteral("not-requested");
     std::vector<Diagnostic> terrainLoadDiagnostics_;

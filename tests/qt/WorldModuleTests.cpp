@@ -822,6 +822,7 @@ private slots:
     void InstanceCatalogStartsBesidePose_data();
     void InstanceCatalogStartsBesidePose();
     void AmbiguousTerrainAndDeferredLoad();
+    void HiddenPagePreloadsTerrainInBackground();
     void OversizedViewportDoesNotCreate();
     void HoverClickAndPendingFrames();
     void ResizeDprAndLegacyFallback();
@@ -2671,6 +2672,32 @@ void WorldModuleTests::AmbiguousTerrainAndDeferredLoad() {
     QVERIFY(failed["failed"].toBool());
     QCOMPARE(failed["stage"].toString(), QStringLiteral("source-read-failed"));
     QCOMPARE(failed["diagnostics"].toArray().first().toObject()["code"].toString(), QStringLiteral("MAP_MEMBER_UNAVAILABLE"));
+}
+
+// 打开地图后世界页还没显示：一串通知静下来后在后台读一次地形（不创建渲染器）；
+// 切到世界页时直接用已读好的数据创建渲染器，不再从头读取。
+void WorldModuleTests::HiddenPagePreloadsTerrainInBackground() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(Write(directory.filePath("war3map.w3e"), TerrainBytes()));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto snapshot = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(snapshot.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*snapshot.value));
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600);
+    project.MapDocumentChanged(); project.MapDocumentChanged(); QTest::qWait(50);
+    QCOMPARE(module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject()["stage"].toString(),
+        QStringLiteral("deferred-hidden"));
+    QTRY_VERIFY_WITH_TIMEOUT(module.Viewport()->VertexCount() != 0, 15000);
+    QVERIFY(!page->isVisible());
+    QCOMPARE(state.creates, 0);
+    QVERIFY(!module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject()["failed"].toBool());
+    const auto vertices = module.Viewport()->VertexCount();
+    page->show();
+    QTRY_COMPARE(state.creates, 1);
+    QTest::qWait(100);
+    QCOMPARE(module.Viewport()->VertexCount(), vertices);
+    QVERIFY(!module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject()["worker_running"].toBool());
 }
 
 void WorldModuleTests::OversizedViewportDoesNotCreate() {
