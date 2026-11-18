@@ -2,6 +2,7 @@
 #include "AgentSettingsStore.h"
 #include "ApplicationSettingsTransfer.h"
 #include "CredentialStore.h"
+#include "ExternalMcpManager.h"
 #include "ProviderCatalog.h"
 
 #include <QApplication>
@@ -118,6 +119,7 @@ private slots:
     void portableSettingsRoundTripAndStrictWhitelist();
     void portableProvidersKeepOnlyMatchingLocalCredentials();
     void dialogImportStagesUntilHostCommitAndPreservesSecrets();
+    void externalMcpSettingsAndJsonImportIsolateSecrets();
 };
 
 void AgentSettingsTests::settingsRoundtripAndCredentialIsolation() {
@@ -555,6 +557,71 @@ void AgentSettingsTests::dialogImportStagesUntilHostCommitAndPreservesSecrets() 
 #ifdef Q_OS_WIN
     QCOMPARE(credentials.Read(QStringLiteral("fixture-reference"), &error), QStringLiteral("old-local-secret"));
 #endif
+}
+
+void AgentSettingsTests::externalMcpSettingsAndJsonImportIsolateSecrets() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const QString mcpJson = QStringLiteral(R"({
+        "mcpServers": {
+            "war3-autotest": {
+                "command": "node",
+                "args": ["autotest-mcp.mjs", "--headless"],
+                "env": {
+                    "MODE": "ci",
+                    "WAR3_API_KEY": "extracted-stdio-secret-111"
+                }
+            },
+            "local-http-mcp": {
+                "url": "http://127.0.0.1:18900/mcp",
+                "headers": {
+                    "Authorization": "Bearer extracted-http-secret-222"
+                }
+            }
+        }
+    })");
+    QHash<QString, QString> extracted;
+    QString error;
+    auto parsed = ExternalMcpManager::ParseMcpServersJson(mcpJson, &extracted, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(parsed.size(), qsizetype(2));
+    QCOMPARE(extracted.size(), qsizetype(2));
+
+    AgentSettings settings = Configured();
+    settings.maxAutoSteps = 192;
+    settings.externalMcpServers = parsed;
+    settings.externalMcpServers[0].minimumPermission = QStringLiteral("read");
+    settings.externalMcpServers[0].credentialRef = QStringLiteral("forge/external-mcp/ref-1");
+    settings.externalMcpServers[1].minimumPermission = QStringLiteral("full");
+    settings.externalMcpServers[1].credentialRef = QStringLiteral("forge/external-mcp/ref-2");
+
+    AgentSettingsStore store(directory.filePath(QStringLiteral("mcp-settings.json")));
+    QVERIFY2(store.Save(settings, &error), qPrintable(error));
+    const QByteArray raw = Read(store.FilePath());
+    QVERIFY(!raw.contains("extracted-stdio-secret-111"));
+    QVERIFY(!raw.contains("extracted-http-secret-222"));
+
+    const auto loaded = store.Load(&error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(loaded.maxAutoSteps, 192);
+    QCOMPARE(loaded.externalMcpServers.size(), qsizetype(2));
+
+    AgentSettings perms;
+    QVERIFY(ExternalMcpPermissionSatisfied(QStringLiteral("read"), perms));
+    QVERIFY(!ExternalMcpPermissionSatisfied(QStringLiteral("edit"), perms));
+    perms.allowEdits = true;
+    QVERIFY(ExternalMcpPermissionSatisfied(QStringLiteral("edit"), perms));
+    QVERIFY(!ExternalMcpPermissionSatisfied(QStringLiteral("save"), perms));
+    perms.allowSave = true;
+    QVERIFY(ExternalMcpPermissionSatisfied(QStringLiteral("save"), perms));
+    QVERIFY(!ExternalMcpPermissionSatisfied(QStringLiteral("full"), perms));
+    perms.allowCommands = true;
+    QVERIFY(ExternalMcpPermissionSatisfied(QStringLiteral("full"), perms));
+
+    // 禁止在 env 中直接塞入明文 token 字段
+    auto unsafe = loaded;
+    unsafe.externalMcpServers[0].env.push_back({QStringLiteral("token"), QStringLiteral("bad")});
+    QVERIFY(!store.Save(unsafe, &error));
+    QVERIFY(!error.isEmpty());
 }
 
 QTEST_MAIN(AgentSettingsTests)

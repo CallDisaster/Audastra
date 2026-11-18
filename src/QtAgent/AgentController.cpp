@@ -1,7 +1,9 @@
 #include "AgentController.h"
 #include "AgentSessionStore.h"
 #include "CredentialStore.h"
+#include "ProjectMemoryService.h"
 #include "ProviderCatalog.h"
+#include "TokenMeter.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -77,14 +79,30 @@ QJsonArray HistoryUiEvents(const QJsonArray& messages) {
     qsizetype sequence = 0;
     for (const auto& value : messages) {
         const auto message = value.toObject();
+        if (message.value(QStringLiteral("forge_injection")).toString() == QStringLiteral("compaction_summary")) {
+            QString summary = AgentMessageText(message);
+            summary.remove(QStringLiteral("<compacted-summary>"));
+            summary.remove(QStringLiteral("</compacted-summary>"));
+            events.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("context_compacted")},
+                {QStringLiteral("removed_messages"), message.value(QStringLiteral("forge_compacted_count")).toInt()},
+                {QStringLiteral("saved_tokens"), message.value(QStringLiteral("forge_saved_tokens")).toInteger()},
+                {QStringLiteral("summary"), summary.trimmed()},
+                {QStringLiteral("historical"), true},
+            });
+            continue;
+        }
         if (IsHiddenAgentMessage(message)) continue;
         const auto role = message.value(QStringLiteral("role")).toString();
         const auto content = message.value(QStringLiteral("content"));
         QString text = content.isString() ? content.toString() : QString{};
+        QString thinking;
         if (content.isArray()) for (const auto& block : content.toArray()) {
             const auto item = block.toObject();
-            if (item.value(QStringLiteral("type")).toString() == QStringLiteral("text")) text += item.value(QStringLiteral("text")).toString();
-            if (role == QStringLiteral("assistant") && item.value(QStringLiteral("type")).toString() == QStringLiteral("toolCall")) {
+            const QString blockType = item.value(QStringLiteral("type")).toString();
+            if (blockType == QStringLiteral("text")) text += item.value(QStringLiteral("text")).toString();
+            else if (blockType == QStringLiteral("thinking")) thinking += item.value(QStringLiteral("thinking")).toString();
+            if (role == QStringLiteral("assistant") && blockType == QStringLiteral("toolCall")) {
                 const auto originalId = item.value(QStringLiteral("id")).toString();
                 QJsonObject call{{QStringLiteral("type"), QStringLiteral("tool_start")},
                     {QStringLiteral("id"), QStringLiteral("history-%1-%2").arg(++sequence).arg(originalId)},
@@ -93,6 +111,13 @@ QJsonArray HistoryUiEvents(const QJsonArray& messages) {
                     {QStringLiteral("details"), QJsonObject{{QStringLiteral("arguments"), item.value(QStringLiteral("arguments"))}}}};
                 calls.insert(originalId, call); events.append(call);
             }
+        }
+        if (role == QStringLiteral("assistant") && !thinking.trimmed().isEmpty()) {
+            events.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("thinking_block")},
+                {QStringLiteral("text"), thinking},
+                {QStringLiteral("historical"), true},
+            });
         }
         if ((role == QStringLiteral("user") || role == QStringLiteral("assistant")) && !text.isEmpty())
             events.append(QJsonObject{{QStringLiteral("type"), role == QStringLiteral("user") ? QStringLiteral("user_message") : QStringLiteral("assistant_message")},
@@ -108,6 +133,35 @@ QJsonArray HistoryUiEvents(const QJsonArray& messages) {
         }
     }
     return events;
+}
+
+QJsonObject EncodeCompositionEvent(const ContextCompositionSnapshot& comp) {
+    const auto encodeItems = [](const QList<ContextNamedItem>& items) {
+        QJsonArray arr;
+        for (const auto& item : items) {
+            arr.append(QJsonObject{
+                {QStringLiteral("name"), item.name},
+                {QStringLiteral("detail"), item.detail},
+                {QStringLiteral("tokens"), item.tokens},
+            });
+        }
+        return arr;
+    };
+    return {
+        {QStringLiteral("type"), QStringLiteral("context_composition")},
+        {QStringLiteral("messages_tokens"), comp.messagesTokens},
+        {QStringLiteral("editor_tools_tokens"), comp.editorToolsTokens},
+        {QStringLiteral("mcp_tools_tokens"), comp.mcpToolsTokens},
+        {QStringLiteral("system_prompt_tokens"), comp.systemPromptTokens},
+        {QStringLiteral("skills_tokens"), comp.skillsTokens},
+        {QStringLiteral("mcp_instructions_tokens"), comp.mcpInstructionsTokens},
+        {QStringLiteral("memory_files_tokens"), comp.memoryFilesTokens},
+        {QStringLiteral("autocompact_threshold_ratio"), comp.autocompactThresholdRatio},
+        {QStringLiteral("editor_tool_items"), encodeItems(comp.editorToolItems)},
+        {QStringLiteral("mcp_tool_items"), encodeItems(comp.mcpToolItems)},
+        {QStringLiteral("skill_items"), encodeItems(comp.skillItems)},
+        {QStringLiteral("memory_items"), encodeItems(comp.memoryItems)},
+    };
 }
 
 } // namespace
@@ -153,6 +207,113 @@ public:
         });
     }
 
+    QString ComposeFullSystemPrompt() const {
+        QString full = systemPrompt;
+        if (!skillsPrompt.isEmpty()) full += QStringLiteral("\n") + skillsPrompt;
+        if (mcpInstructionsProvider) {
+            const QString mcpInst = mcpInstructionsProvider().trimmed();
+            if (!mcpInst.isEmpty()) full += QStringLiteral("\n\n# 外部 MCP 服务说明\n") + mcpInst;
+        }
+        if (memoryService) {
+            const QString memSection = memoryService->BuildPromptSection();
+            if (!memSection.isEmpty()) full += memSection;
+        }
+        full += QStringLiteral("\n当前地图：") + mapTitle
+            + QStringLiteral("\n恢复历史可能已过期，修改前重新查询当前身份与修订。");
+        return full;
+    }
+
+    ContextCompositionSnapshot BuildCompositionSnapshot(const QJsonArray& activeMessages) const {
+        ContextCompositionSnapshot snap;
+        const QString baseSys = systemPrompt + QStringLiteral("\n当前地图：") + mapTitle
+            + QStringLiteral("\n恢复历史可能已过期，修改前重新查询当前身份与修订。");
+        snap.systemPromptTokens = TokenMeter::EstimateText(baseSys);
+
+        if (!skillItems.isEmpty()) {
+            snap.skillItems = skillItems;
+            for (const auto& item : skillItems) snap.skillsTokens += item.tokens;
+        } else if (!skillsPrompt.isEmpty()) {
+            snap.skillsTokens = TokenMeter::EstimateText(skillsPrompt);
+        }
+
+        if (mcpInstructionsProvider) {
+            const QString inst = mcpInstructionsProvider().trimmed();
+            if (!inst.isEmpty()) snap.mcpInstructionsTokens = TokenMeter::EstimateText(inst);
+        }
+
+        if (memoryService) {
+            for (const auto& mem : memoryService->Snapshots()) {
+                snap.memoryItems.push_back({mem.displayName, mem.filePath, mem.tokens});
+                snap.memoryFilesTokens += mem.tokens;
+            }
+            for (const auto& memToolVal : ProjectMemoryService::ToolDefinitions()) {
+                const auto tool = memToolVal.toObject();
+                const QString name = tool.value(QStringLiteral("name")).toString();
+                if (settings.disabledTools.contains(name)) continue;
+                const qint64 t = TokenMeter::EstimateTool(tool);
+                snap.editorToolsTokens += t;
+                snap.editorToolItems.push_back({name, QStringLiteral("记忆工具"), t});
+            }
+        }
+
+        if (toolsProvider) {
+            try {
+                for (const auto& val : toolsProvider()) {
+                    const auto tool = val.toObject();
+                    const QString name = tool.value(QStringLiteral("name")).toString();
+                    if (name.isEmpty() || settings.disabledTools.contains(name)) continue;
+                    const qint64 t = TokenMeter::EstimateTool(tool);
+                    snap.editorToolsTokens += t;
+                    snap.editorToolItems.push_back({name, QStringLiteral("内置工具"), t});
+                }
+            } catch (...) {}
+        }
+
+        if (externalToolsProvider) {
+            try {
+                for (const auto& val : externalToolsProvider()) {
+                    const auto tool = val.toObject();
+                    const QString name = tool.value(QStringLiteral("name")).toString();
+                    if (name.isEmpty() || settings.disabledTools.contains(name)) continue;
+                    const qint64 t = TokenMeter::EstimateTool(tool);
+                    snap.mcpToolsTokens += t;
+                    snap.mcpToolItems.push_back({name, tool.value(QStringLiteral("description")).toString().section(QLatin1Char('\n'), 0, 0), t});
+                }
+            } catch (...) {}
+        }
+
+        for (const auto& val : activeMessages) {
+            snap.messagesTokens += TokenMeter::EstimateMessage(val.toObject());
+        }
+        return snap;
+    }
+
+    void PublishContextComposition() {
+        const QJsonArray& active = pendingState && !candidateHistory.isEmpty()
+            ? candidateHistory
+            : (currentSession ? currentSession->messages : history);
+        Publish(EncodeCompositionEvent(BuildCompositionSnapshot(active)));
+    }
+
+    void FlushStreamingTranscriptBuffers() {
+        if (!activeThinkingBuffer.trimmed().isEmpty()) {
+            activeTranscriptLog.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("thinking_block")},
+                {QStringLiteral("text"), activeThinkingBuffer},
+                {QStringLiteral("historical"), true},
+            });
+            activeThinkingBuffer.clear();
+        }
+        if (!activeAssistantBuffer.isEmpty()) {
+            activeTranscriptLog.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("assistant_message")},
+                {QStringLiteral("text"), activeAssistantBuffer},
+                {QStringLiteral("historical"), true},
+            });
+            activeAssistantBuffer.clear();
+        }
+    }
+
     bool SelectExisting(QString& error) {
         if (currentSession && currentSession->mapIdentity == sessionMap) return true;
         const AgentSessionStore store(historyDirectory);
@@ -182,17 +343,27 @@ public:
 
     void RestoreSession() {
         Publish({{QStringLiteral("type"), QStringLiteral("conversation_reset")}});
-        if (!currentSession || currentSession->messages.isEmpty()) return;
+        if (!currentSession || (currentSession->messages.isEmpty() && currentSession->transcriptLog.isEmpty())) {
+            PublishContextComposition();
+            return;
+        }
+        const QJsonArray uiEvents = !currentSession->transcriptLog.isEmpty()
+            ? currentSession->transcriptLog
+            : HistoryUiEvents(currentSession->messages);
         QJsonObject restored{{QStringLiteral("type"), QStringLiteral("history_restored")},
             {QStringLiteral("session_id"), currentSession->id},
             {QStringLiteral("text"), QStringLiteral("已恢复此地图的完整历史；继续编辑前会重新查询当前修订。")},
             {QStringLiteral("messages"), currentSession->messages},
-            {QStringLiteral("ui_events"), HistoryUiEvents(currentSession->messages)}};
+            {QStringLiteral("ui_events"), uiEvents}};
         if (QJsonDocument(restored).toJson(QJsonDocument::Compact).size() > kLineBudget - 4096) {
             restored.remove(QStringLiteral("ui_events"));
             restored.insert(QStringLiteral("ui_events_omitted"), true);
         }
         Publish(restored);
+        if (!currentSession->lastUsage.isEmpty()) {
+            Publish(currentSession->lastUsage);
+        }
+        PublishContextComposition();
         memoryBinding = currentSession->id;
     }
 
@@ -202,7 +373,8 @@ public:
         if (!SelectExisting(error)) {
             Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), error}}); return;
         }
-        const auto sessions = AgentSessionStore(historyDirectory).List(sessionMap, &error);
+        QString listWarning;
+        const auto sessions = AgentSessionStore(historyDirectory).List(sessionMap, &error, &listWarning);
         if (!error.isEmpty()) {
             Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), error}}); return;
         }
@@ -214,6 +386,7 @@ public:
             {QStringLiteral("map_identity"), mapIdentity},
             {QStringLiteral("selected_id"), currentSession ? currentSession->id : QString()}});
         if (restore) RestoreSession();
+        else PublishContextComposition();
     }
 
     bool SaveHistory() {
@@ -223,11 +396,23 @@ public:
         session.providerId = taskProvider; session.modelId = taskModel;
         session.updatedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         session.messages = candidateHistory;
-        if (session.title == QStringLiteral("新会话")) for (const auto& value : candidateHistory) {
-            const auto message = value.toObject();
-            if (message.value(QStringLiteral("role")).toString() != QStringLiteral("user") || IsHiddenAgentMessage(message)) continue;
-            const auto text = AgentMessageText(message).simplified();
-            if (!text.isEmpty()) { session.title = text.left(30); break; }
+        if (!activeTranscriptLog.isEmpty()) session.transcriptLog = activeTranscriptLog;
+        if (!activeLastUsage.isEmpty()) session.lastUsage = activeLastUsage;
+        if (session.title == QStringLiteral("新会话")) {
+            for (const auto& value : session.transcriptLog) {
+                const auto ev = value.toObject();
+                if (ev.value(QStringLiteral("type")).toString() != QStringLiteral("user_message")) continue;
+                const auto text = ev.value(QStringLiteral("text")).toString().simplified();
+                if (!text.isEmpty()) { session.title = text.left(30); break; }
+            }
+            if (session.title == QStringLiteral("新会话")) {
+                for (const auto& value : candidateHistory) {
+                    const auto message = value.toObject();
+                    if (message.value(QStringLiteral("role")).toString() != QStringLiteral("user") || IsHiddenAgentMessage(message)) continue;
+                    const auto text = AgentMessageText(message).simplified();
+                    if (!text.isEmpty()) { session.title = text.left(30); break; }
+                }
+            }
         }
         if (!AgentSessionStore(historyDirectory).Save(session)) return false;
         currentSession = std::move(session); memoryBinding = taskBinding; history = candidateHistory;
@@ -256,6 +441,14 @@ public:
     }
 
     void Failure(const QString& text) {
+        if (busy) {
+            FlushStreamingTranscriptBuffers();
+            activeTranscriptLog.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("error")},
+                {QStringLiteral("text"), Redacted(text, secret).toString()},
+                {QStringLiteral("historical"), true},
+            });
+        }
         Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), text}});
         if (busy) Complete(false, stopRequested, QStringLiteral("任务未完成，保留已有地图改动和已记录结果。"));
         pendingStart = {}; ready = false;
@@ -267,14 +460,30 @@ public:
         if (!busy || completing) return;
         completing = true;
         startupTimer->stop(); stopTimer->stop();
-        if (success && !recordingFailed && !SaveHistory()) {
-            Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"),
-                QStringLiteral("本次地图操作已结束，但完整会话未能保存；先前历史和已完成地图改动保留。")}});
-            success = false;
+        FlushStreamingTranscriptBuffers();
+        if (!recordingFailed) {
+            if (!SaveHistory() && success) {
+                Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"),
+                    QStringLiteral("本次地图操作已结束，但完整会话未能保存；先前历史和已完成地图改动保留。")}});
+                success = false;
+            }
         }
-        Publish({{QStringLiteral("type"), QStringLiteral("run_end")}, {QStringLiteral("success"), success && !recordingFailed},
-            {QStringLiteral("cancelled"), cancelled}, {QStringLiteral("text"), text}});
-        busy = false; taskSent = false; pendingStart = {}; candidateHistory = {}; pendingState = false;
+        if (compactingTask) {
+            Publish({{QStringLiteral("type"), QStringLiteral("compact_end")},
+                {QStringLiteral("success"), success && !recordingFailed},
+                {QStringLiteral("cancelled"), cancelled},
+                {QStringLiteral("text"), text}});
+        } else {
+            Publish({{QStringLiteral("type"), QStringLiteral("run_end")},
+                {QStringLiteral("success"), success && !recordingFailed},
+                {QStringLiteral("cancelled"), cancelled},
+                {QStringLiteral("step_limit_reached"), stepLimitReached},
+                {QStringLiteral("text"), text}});
+        }
+        busy = false; compactingTask = false; stepLimitReached = false;
+        taskSent = false; pendingStart = {}; candidateHistory = {}; pendingState = false;
+        activeTranscriptLog = {}; activeLastUsage = {};
+        activeThinkingBuffer.clear(); activeAssistantBuffer.clear();
         eventLog.close(); secret.fill(QChar(0)); secret.clear();
         toolIds.clear(); dispatchedIds.clear();
         completing = false;
@@ -304,6 +513,53 @@ public:
         return true;
     }
 
+    bool CollectEnabledTools(bool toolsSupported, QJsonArray& enabledTools, QString& error) {
+        enabledTools = {};
+        toolIds.clear(); toolTitles.clear();
+        if (!toolsSupported) return true;
+        QJsonArray combined;
+        try {
+            if (toolsProvider) combined = toolsProvider();
+            if (memoryService) {
+                for (const auto& t : ProjectMemoryService::ToolDefinitions()) combined.append(t);
+            }
+            if (externalToolsProvider) {
+                for (const auto& t : externalToolsProvider()) combined.append(t);
+            }
+        } catch (...) {
+            error = QStringLiteral("无法读取编辑器或 MCP 工具目录。");
+            return false;
+        }
+        for (const auto& value : combined) {
+            if (!value.isObject()) { error = QStringLiteral("编辑器工具目录含无效条目。"); return false; }
+            const auto tool = value.toObject();
+            const auto name = tool.value(QStringLiteral("name")).toString();
+            if (name.isEmpty() || toolIds.contains(name) || !tool.value(QStringLiteral("inputSchema")).isObject()) {
+                error = QStringLiteral("编辑器工具目录的名称或参数 schema 无效。"); return false;
+            }
+            if (settings.disabledTools.contains(name)) continue;
+            toolIds.insert(name);
+            toolTitles.insert(name, tool.value(QStringLiteral("description")).toString(name).section(QLatin1Char('\n'), 0, 0));
+            enabledTools.append(tool);
+        }
+        return true;
+    }
+
+    void EnsureWorkerStarted() {
+        if (ready && process->state() == QProcess::Running) {
+            SendStart();
+            return;
+        }
+        output.clear(); ready = false;
+        auto environment = QProcessEnvironment::systemEnvironment();
+        for (const auto& name : {QStringLiteral("OPENAI_API_KEY"), QStringLiteral("ANTHROPIC_API_KEY"),
+            QStringLiteral("GOOGLE_API_KEY"), QStringLiteral("GEMINI_API_KEY"), QStringLiteral("DEEPSEEK_API_KEY")}) environment.remove(name);
+        process->setProcessEnvironment(environment);
+        process->setProgram(nodePath); process->setArguments({workerPath});
+        process->setWorkingDirectory(QFileInfo(workerPath).absolutePath());
+        startupTimer->start(15000); process->start();
+    }
+
     void Start(QString prompt, const QString& providerId, const QString& modelId) {
         if (busy) { Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), QStringLiteral("当前任务仍在运行，请先停止或等待结束。")}}); return; }
         if (!settings.aiEnabled) { Failure(QStringLiteral("内置 AI 已关闭，请先在设置中启用。")); return; }
@@ -328,67 +584,150 @@ public:
         const bool restoreHistory = priorBinding != binding;
         secret = credentials->Read(provider->credentialRef, &error);
         if (!error.isEmpty()) { Failure(error); return; }
-        QJsonArray tools;
-        toolIds.clear(); toolTitles.clear();
-        try { if (toolsProvider && model->toolsSupported) tools = toolsProvider(); }
-        catch (...) { Failure(QStringLiteral("无法读取编辑器工具目录。")); return; }
+
         QJsonArray enabledTools;
-        for (const auto& value : tools) {
-            if (!value.isObject()) { Failure(QStringLiteral("编辑器工具目录含无效条目。")); return; }
-            const auto tool = value.toObject(); const auto name = tool.value(QStringLiteral("name")).toString();
-            if (name.isEmpty() || toolIds.contains(name) || !tool.value(QStringLiteral("inputSchema")).isObject()) {
-                Failure(QStringLiteral("编辑器工具目录的名称或参数 schema 无效。")); return;
-            }
-            if (settings.disabledTools.contains(name)) continue;
-            toolIds.insert(name); toolTitles.insert(name, tool.value(QStringLiteral("description")).toString(name).section(QLatin1Char('\n'), 0, 0));
-            enabledTools.append(tool);
-        }
+        if (!CollectEnabledTools(model->toolsSupported, enabledTools, error)) { Failure(error); return; }
+
         runId = QUuid::createUuid().toString(QUuid::WithoutBraces); eventSequence = 0;
         taskMap = mapIdentity; taskProvider = providerId; taskModel = modelId; taskBinding = binding;
         taskProviderSettings = *provider;
-        candidateHistory = {}; pendingState = false; discardState = false; stopRequested = false; recordingFailed = false;
+        compactingTask = false; stepLimitReached = false;
+        discardState = false; stopRequested = false; recordingFailed = false;
         dispatchedIds.clear(); toolDurations.clear(); loggedBytes = 0;
+        activeThinkingBuffer.clear(); activeAssistantBuffer.clear();
+
+        // 初始化持久完整事件流（旧 v2 会话无 transcript_log 时从 messages 无损提取初值），并立即记录本轮用户原始提问。
+        activeTranscriptLog = !currentSession->transcriptLog.isEmpty()
+            ? currentSession->transcriptLog
+            : HistoryUiEvents(messages);
+        activeLastUsage = currentSession->lastUsage;
+
         const auto logDirectory = QDir(historyDirectory).filePath(QStringLiteral("events"));
         if (!QDir().mkpath(logDirectory)) { Failure(QStringLiteral("无法创建本地 AI 任务记录目录，未启动模型请求。")); return; }
         eventLog.setFileName(QDir(logDirectory).filePath(runId + QStringLiteral(".jsonl")));
         if (!eventLog.open(QIODevice::WriteOnly | QIODevice::NewOnly)) { Failure(QStringLiteral("无法创建本地 AI 任务记录，未启动模型请求。")); return; }
-        pendingStart = {{QStringLiteral("type"), QStringLiteral("start")}, {QStringLiteral("prompt"), prompt},
-            {QStringLiteral("systemPrompt"), systemPrompt + QStringLiteral("\n当前地图：") + mapTitle
-                + QStringLiteral("\n恢复历史可能已过期，修改前重新查询当前身份与修订。")},
+
+        const QString fullSystemPrompt = ComposeFullSystemPrompt();
+        pendingStart = {{QStringLiteral("type"), QStringLiteral("start")},
+            {QStringLiteral("sessionId"), binding},
+            {QStringLiteral("prompt"), prompt},
+            {QStringLiteral("systemPrompt"), fullSystemPrompt},
+            {QStringLiteral("maxSteps"), settings.maxAutoSteps},
             {QStringLiteral("provider"), QJsonObject{{QStringLiteral("id"), provider->id}, {QStringLiteral("name"), provider->name},
                 {QStringLiteral("protocol"), provider->protocol}, {QStringLiteral("baseUrl"), provider->baseUrl}, {QStringLiteral("apiKey"), secret}}},
             {QStringLiteral("model"), QJsonObject{{QStringLiteral("id"), model->id}, {QStringLiteral("name"), model->name},
-                {QStringLiteral("contextWindow"), context.tokens}, {QStringLiteral("maxOutputTokens"), model->maxOutputTokens}}},
+                {QStringLiteral("contextWindow"), context.tokens}, {QStringLiteral("maxOutputTokens"), model->maxOutputTokens},
+                {QStringLiteral("imagesSupported"), model->imagesSupported}}},
             {QStringLiteral("tools"), enabledTools}, {QStringLiteral("messages"), messages}};
         if (QJsonDocument(pendingStart).toJson(QJsonDocument::Compact).size() > kLineBudget) {
             pendingStart = {}; Failure(QStringLiteral("任务与历史超过 8 MiB IPC 预算，未发送模型请求。")); return;
         }
+
         busy = true; taskSent = false; emit q->BusyChanged(true);
-        if (restoreHistory && !messages.isEmpty()) {
+        if (restoreHistory && (!messages.isEmpty() || !activeTranscriptLog.isEmpty())) {
             QJsonObject restored{{QStringLiteral("type"), QStringLiteral("history_restored")},
                 {QStringLiteral("text"), QStringLiteral("已恢复此地图的完整历史；继续编辑前会重新查询当前修订。")},
-                {QStringLiteral("messages"), messages}, {QStringLiteral("ui_events"), HistoryUiEvents(messages)}};
-            // messages 保存完整恢复事实；过大时避免再次复制整份工具结果用于 UI。
+                {QStringLiteral("messages"), messages}, {QStringLiteral("ui_events"), activeTranscriptLog}};
             if (QJsonDocument(restored).toJson(QJsonDocument::Compact).size() > kLineBudget - 4096) {
                 restored.remove(QStringLiteral("ui_events"));
                 restored.insert(QStringLiteral("ui_events_omitted"), true);
             }
             Publish(restored);
         }
+
+        // 提交即落盘：在向模型发起请求之前先把用户长提示词写入磁盘检查点，确保中途失败/停止/断网也绝不丢失！
+        const auto redactedPrompt = Redacted(prompt, secret).toString();
+        activeTranscriptLog.append(QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("user_message")},
+            {QStringLiteral("text"), redactedPrompt},
+            {QStringLiteral("historical"), true},
+            {QStringLiteral("provider_id"), providerId},
+            {QStringLiteral("model_id"), modelId},
+        });
+        candidateHistory = messages;
+        candidateHistory.append(QJsonObject{
+            {QStringLiteral("role"), QStringLiteral("user")},
+            {QStringLiteral("content"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), redactedPrompt}}}},
+            {QStringLiteral("timestamp"), static_cast<double>(QDateTime::currentMSecsSinceEpoch())},
+            {QStringLiteral("forge_provider_id"), providerId},
+            {QStringLiteral("forge_model_id"), modelId},
+        });
+        pendingState = true;
+        (void)SaveHistory();
+
         memoryBinding = binding;
         Publish({{QStringLiteral("type"), QStringLiteral("user_message")}, {QStringLiteral("text"), prompt}});
+        PublishContextComposition();
         if (!busy) return;
-        if (ready && process->state() == QProcess::Running) SendStart();
-        else {
-            output.clear(); ready = false;
-            auto environment = QProcessEnvironment::systemEnvironment();
-            for (const auto& name : {QStringLiteral("OPENAI_API_KEY"), QStringLiteral("ANTHROPIC_API_KEY"),
-                QStringLiteral("GOOGLE_API_KEY"), QStringLiteral("GEMINI_API_KEY"), QStringLiteral("DEEPSEEK_API_KEY")}) environment.remove(name);
-            process->setProcessEnvironment(environment);
-            process->setProgram(nodePath); process->setArguments({workerPath});
-            process->setWorkingDirectory(QFileInfo(workerPath).absolutePath());
-            startupTimer->start(15000); process->start();
+        EnsureWorkerStarted();
+    }
+
+    void Compact(const QString& providerId, const QString& modelId) {
+        if (busy) {
+            Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), QStringLiteral("任务运行中无法手动压缩，请等待本轮结束。")}});
+            return;
         }
+        QString error;
+        auto messages = LoadHistory(error);
+        if (!error.isEmpty()) { Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), error}}); return; }
+        if (!currentSession || messages.size() < 2) {
+            Publish({{QStringLiteral("type"), QStringLiteral("compact_end")}, {QStringLiteral("success"), true},
+                {QStringLiteral("compacted"), false}, {QStringLiteral("text"), QStringLiteral("当前会话内容较短，无需压缩。")}});
+            return;
+        }
+        if (!ResolveRuntime(error)) { Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), error}}); return; }
+
+        const ProviderSettings* provider = nullptr;
+        const ModelSettings* model = nullptr;
+        for (const auto& candidate : settings.providers) if (candidate.id == providerId && candidate.enabled) {
+            provider = &candidate;
+            for (const auto& cm : candidate.models) if (cm.id == modelId && cm.enabled) { model = &cm; break; }
+            break;
+        }
+        qint64 contextTokens = 262144;
+        QJsonObject providerObj, modelObj;
+        secret.clear();
+        if (provider != nullptr && model != nullptr && !ProviderCatalog::Endpoint(*provider, &error).isEmpty()) {
+            secret = credentials->Read(provider->credentialRef, &error);
+            if (error.isEmpty()) {
+                contextTokens = ResolveContextWindow(*model).tokens;
+                providerObj = {{QStringLiteral("id"), provider->id}, {QStringLiteral("name"), provider->name},
+                    {QStringLiteral("protocol"), provider->protocol}, {QStringLiteral("baseUrl"), provider->baseUrl}, {QStringLiteral("apiKey"), secret}};
+                modelObj = {{QStringLiteral("id"), model->id}, {QStringLiteral("name"), model->name},
+                    {QStringLiteral("contextWindow"), contextTokens}, {QStringLiteral("maxOutputTokens"), model->maxOutputTokens}};
+            }
+        }
+        QJsonArray enabledTools;
+        (void)CollectEnabledTools(true, enabledTools, error);
+
+        runId = QUuid::createUuid().toString(QUuid::WithoutBraces); eventSequence = 0;
+        taskMap = mapIdentity;
+        taskProvider = provider ? provider->id : currentSession->providerId;
+        taskModel = model ? model->id : currentSession->modelId;
+        taskBinding = currentSession->id;
+        if (provider) taskProviderSettings = *provider;
+        compactingTask = true; stepLimitReached = false;
+        discardState = false; stopRequested = false; recordingFailed = false;
+        activeThinkingBuffer.clear(); activeAssistantBuffer.clear();
+        activeTranscriptLog = !currentSession->transcriptLog.isEmpty() ? currentSession->transcriptLog : HistoryUiEvents(messages);
+        activeLastUsage = currentSession->lastUsage;
+        candidateHistory = messages; pendingState = false;
+
+        pendingStart = {{QStringLiteral("type"), QStringLiteral("compact")},
+            {QStringLiteral("sessionId"), currentSession->id},
+            {QStringLiteral("systemPrompt"), ComposeFullSystemPrompt()},
+            {QStringLiteral("provider"), providerObj},
+            {QStringLiteral("model"), modelObj.isEmpty() ? QJsonObject{{QStringLiteral("contextWindow"), contextTokens}} : modelObj},
+            {QStringLiteral("tools"), enabledTools},
+            {QStringLiteral("messages"), messages}};
+        if (QJsonDocument(pendingStart).toJson(QJsonDocument::Compact).size() > kLineBudget) {
+            pendingStart = {};
+            Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), QStringLiteral("会话超过 8 MiB IPC 预算。")}});
+            return;
+        }
+        busy = true; taskSent = false; emit q->BusyChanged(true);
+        Publish({{QStringLiteral("type"), QStringLiteral("compaction_status")}, {QStringLiteral("active"), true}, {QStringLiteral("text"), QStringLiteral("正在整理与压缩会话上下文…")}});
+        EnsureWorkerStarted();
     }
 
     bool Send(const QJsonObject& object) {
@@ -425,6 +764,21 @@ public:
         }
     }
 
+    void UpdateCandidateMessages(const QJsonArray& rawMessages) {
+        QJsonArray next;
+        for (const auto& value : Redacted(rawMessages, secret).toArray()) {
+            auto message = value.toObject();
+            if (!message.contains(QStringLiteral("forge_provider_id"))) message.insert(QStringLiteral("forge_provider_id"), taskProvider);
+            if (!message.contains(QStringLiteral("forge_model_id"))) message.insert(QStringLiteral("forge_model_id"), taskModel);
+            if (IsHiddenAgentMessage(message)) message.insert(QStringLiteral("forge_hidden"), true);
+            next.append(message);
+        }
+        if (IsCompleteAgentTranscript(next) && !next.isEmpty()) {
+            candidateHistory = std::move(next);
+            pendingState = true;
+        }
+    }
+
     void Handle(QJsonObject event) {
         const auto type = event.value(QStringLiteral("type")).toString();
         if (type == QStringLiteral("ready")) {
@@ -444,29 +798,79 @@ public:
             QTimer::singleShot(0, q, [this, event] { Dispatch(event); });
             return;
         }
+        if (type == QStringLiteral("turn_checkpoint")) {
+            if (event.value(QStringLiteral("messages")).isArray()) {
+                UpdateCandidateMessages(event.value(QStringLiteral("messages")).toArray());
+                FlushStreamingTranscriptBuffers();
+                if (!recordingFailed) (void)SaveHistory();
+                PublishContextComposition();
+            }
+            return;
+        }
         if (type == QStringLiteral("session_state")) {
             if (!event.value(QStringLiteral("messages")).isArray()) { Failure(QStringLiteral("PI 返回无效会话状态。")); return; }
-            candidateHistory = {};
-            for (const auto& value : Redacted(event.value(QStringLiteral("messages")), secret).toArray()) {
-                auto message = value.toObject();
-                if (!message.contains(QStringLiteral("forge_provider_id"))) message.insert(QStringLiteral("forge_provider_id"), taskProvider);
-                if (!message.contains(QStringLiteral("forge_model_id"))) message.insert(QStringLiteral("forge_model_id"), taskModel);
-                if (IsHiddenAgentMessage(message)) message.insert(QStringLiteral("forge_hidden"), true);
-                candidateHistory.append(message);
-            }
-            pendingState = true;
-            Publish(event); return;
+            if (event.value(QStringLiteral("step_limit_reached")).toBool()) stepLimitReached = true;
+            UpdateCandidateMessages(event.value(QStringLiteral("messages")).toArray());
+            Publish(event);
+            PublishContextComposition();
+            return;
+        }
+        if (type == QStringLiteral("compact_end")) {
+            const bool success = event.value(QStringLiteral("success")).toBool();
+            Complete(success && !stopRequested, stopRequested,
+                event.value(QStringLiteral("text")).toString(QStringLiteral("压缩已完成。")));
+            return;
         }
         if (type == QStringLiteral("run_end")) {
             const bool success = event.value(QStringLiteral("success")).toBool();
             Complete(success && !stopRequested, stopRequested,
-                event.value(QStringLiteral("text")).toString(QStringLiteral("任务结束。"))); return;
+                event.value(QStringLiteral("text")).toString(QStringLiteral("任务结束。")));
+            return;
+        }
+        if (type == QStringLiteral("thinking_delta")) {
+            activeThinkingBuffer += Redacted(event.value(QStringLiteral("text")), secret).toString();
+            Publish(event);
+            return;
+        }
+        if (type == QStringLiteral("assistant_delta")) {
+            if (!activeThinkingBuffer.trimmed().isEmpty()) {
+                activeTranscriptLog.append(QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("thinking_block")},
+                    {QStringLiteral("text"), activeThinkingBuffer},
+                    {QStringLiteral("historical"), true},
+                });
+                activeThinkingBuffer.clear();
+            }
+            activeAssistantBuffer += Redacted(event.value(QStringLiteral("text")), secret).toString();
+            Publish(event);
+            return;
+        }
+        if (type == QStringLiteral("context_compacted")) {
+            FlushStreamingTranscriptBuffers();
+            auto recorded = Redacted(event, secret).toObject();
+            recorded.insert(QStringLiteral("historical"), true);
+            activeTranscriptLog.append(recorded);
+            // 压缩后清掉旧高水位缓存指标，避免旧的 100k 用量掩盖已压缩表层。
+            activeLastUsage = {};
+            Publish(event);
+            return;
+        }
+        if (type == QStringLiteral("usage")) {
+            if (event.value(QStringLiteral("available")).toBool()) {
+                activeLastUsage = Redacted(event, secret).toObject();
+            }
+            Publish(event);
+            return;
         }
         if (type == QStringLiteral("tool_start") || type == QStringLiteral("tool_end")) {
+            FlushStreamingTranscriptBuffers();
             const auto name = event.value(QStringLiteral("tool_name")).toString();
             if (toolTitles.contains(name)) event.insert(QStringLiteral("title"), toolTitles.value(name));
             const auto id = event.value(QStringLiteral("id")).toString();
             if (toolDurations.contains(id)) event.insert(QStringLiteral("duration_ms"), toolDurations.take(id));
+            auto histEvent = Redacted(event, secret).toObject();
+            histEvent.insert(QStringLiteral("historical"), true);
+            activeTranscriptLog.append(histEvent);
         }
         Publish(event);
     }
@@ -478,7 +882,13 @@ public:
         QJsonObject result;
         if (stopRequested || taskMap != mapIdentity) result = ToolError(QStringLiteral("AGENT_TASK_STOPPED"), QStringLiteral("任务已停止或切换地图，未执行此工具。"));
         else if (!toolIds.contains(name) || settings.disabledTools.contains(name)) result = ToolError(QStringLiteral("AGENT_TOOL_DISABLED"), QStringLiteral("此工具未提供或已关闭。"));
-        else if (!dispatcher) result = ToolError(QStringLiteral("AGENT_TOOL_UNAVAILABLE"), QStringLiteral("编辑器工具服务尚未连接。"));
+        else if (memoryService && ProjectMemoryService::IsMemoryTool(name)) {
+            toolExecuting = true;
+            QElapsedTimer elapsed; elapsed.start();
+            result = memoryService->InvokeTool(name, call.value(QStringLiteral("arguments")).toObject(), settings.allowEdits);
+            toolExecuting = false;
+            toolDurations.insert(id, elapsed.elapsed());
+        } else if (!dispatcher) result = ToolError(QStringLiteral("AGENT_TOOL_UNAVAILABLE"), QStringLiteral("编辑器工具服务尚未连接。"));
         else {
             toolExecuting = true;
             QElapsedTimer elapsed; elapsed.start();
@@ -495,6 +905,9 @@ public:
         if (visible.isUndefined()) visible = result.value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("changes"));
         if (visible.isObject()) {
             auto change = visible.toObject(); change.insert(QStringLiteral("type"), QStringLiteral("changes")); change.insert(QStringLiteral("tool_call_id"), id); Publish(change);
+            auto histChange = Redacted(change, secret).toObject();
+            histChange.insert(QStringLiteral("historical"), true);
+            activeTranscriptLog.append(histChange);
         }
         Publish({{QStringLiteral("type"), QStringLiteral("tool_update")}, {QStringLiteral("id"), id},
             {QStringLiteral("tool_name"), name}, {QStringLiteral("details"), QJsonObject{{QStringLiteral("result"), result}}}});
@@ -575,15 +988,21 @@ public:
     std::unique_ptr<CredentialStore> credentials;
     std::function<QJsonObject(QString, QJsonObject)> dispatcher;
     std::function<QJsonArray()> toolsProvider;
+    std::function<QJsonArray()> externalToolsProvider;
+    std::function<QString()> mcpInstructionsProvider;
+    QPointer<ProjectMemoryService> memoryService;
     QString systemPrompt = QStringLiteral("你是 Audastra 地图助手。新增与优化逻辑默认写成作者可编辑的触发器（T，传统事件/条件/动作）。通过提供的工具查询、编辑和保存，不能伪造修改或验收。");
+    QString skillsPrompt;
+    QList<ContextNamedItem> skillItems;
     QString mapTitle, mapIdentity, sessionMap, taskMap, taskProvider, taskModel, taskBinding, runId;
     ProviderSettings taskProviderSettings;
     QString configuredNode, configuredWorker, nodePath, workerPath, historyDirectory, memoryBinding, secret;
     QProcess* process = nullptr;
     QTimer *startupTimer = nullptr, *stopTimer = nullptr;
     QByteArray output;
-    QJsonObject pendingStart;
-    QJsonArray history, candidateHistory;
+    QJsonObject pendingStart, activeLastUsage;
+    QJsonArray history, candidateHistory, activeTranscriptLog;
+    QString activeThinkingBuffer, activeAssistantBuffer;
     std::optional<AgentSession> currentSession;
     QHash<QString, QString> selectedSessions;
     QSet<QString> toolIds, dispatchedIds;
@@ -592,7 +1011,8 @@ public:
     QFile eventLog;
     qint64 loggedBytes = 0, eventSequence = 0;
     bool ready = false, busy = false, taskSent = false, stopRequested = false, toolExecuting = false,
-        pendingState = false, discardState = false, recordingFailed = false, completing = false;
+        pendingState = false, discardState = false, recordingFailed = false, completing = false,
+        compactingTask = false, stepLimitReached = false;
 };
 
 AgentController::AgentController(QObject* parent) : QObject(parent), impl_(std::make_unique<Impl>(this)) {}
@@ -600,7 +1020,6 @@ AgentController::AgentController(QObject* parent) : QObject(parent), impl_(std::
 AgentController::~AgentController() {
     impl_->Stop();
     impl_->secret.fill(QChar(0));
-    // 辅助进程只持有模型任务；地图保存已经在共用工具服务中完成或拒绝。
     if (impl_->process->state() != QProcess::NotRunning) {
         impl_->process->kill(); impl_->process->waitForFinished(1000);
     }
@@ -608,7 +1027,10 @@ AgentController::~AgentController() {
 
 void AgentController::SetSettings(const AgentSettings& settings) {
     impl_->settings = settings;
-    if (!impl_->busy) return;
+    if (!impl_->busy) {
+        impl_->PublishContextComposition();
+        return;
+    }
     bool available = settings.aiEnabled;
     bool found = false;
     for (const auto& provider : settings.providers) if (provider.id == impl_->taskProvider && provider.enabled
@@ -635,6 +1057,26 @@ void AgentController::SetActiveMap(QString title, QString identity, QString conv
 void AgentController::SetToolDispatcher(std::function<QJsonObject(QString, QJsonObject)> dispatcher) { impl_->dispatcher = std::move(dispatcher); }
 void AgentController::SetToolsProvider(std::function<QJsonArray()> provider) { impl_->toolsProvider = std::move(provider); }
 void AgentController::SetSystemPrompt(QString prompt) { impl_->systemPrompt = std::move(prompt); }
+void AgentController::SetSkillsPrompt(QString skillsPrompt, QList<ContextNamedItem> skillItems) {
+    impl_->skillsPrompt = std::move(skillsPrompt);
+    impl_->skillItems = std::move(skillItems);
+}
+void AgentController::SetExternalToolsProvider(std::function<QJsonArray()> provider) {
+    impl_->externalToolsProvider = std::move(provider);
+}
+void AgentController::SetMcpInstructionsProvider(std::function<QString()> provider) {
+    impl_->mcpInstructionsProvider = std::move(provider);
+}
+void AgentController::SetMemoryService(ProjectMemoryService* memory) {
+    if (impl_->memoryService == memory) return;
+    if (impl_->memoryService) disconnect(impl_->memoryService, nullptr, this, nullptr);
+    impl_->memoryService = memory;
+    if (memory) {
+        connect(memory, &ProjectMemoryService::MemoryChanged, this, [this] {
+            if (!impl_->busy) impl_->PublishContextComposition();
+        });
+    }
+}
 
 void AgentController::SetRuntimePaths(QString nodePath, QString workerPath) {
     if (impl_->busy) return;
@@ -656,6 +1098,7 @@ void AgentController::SetHistoryDirectory(QString directory) {
 }
 
 void AgentController::RefreshConversations() { impl_->RefreshConversations(true); }
+void AgentController::RefreshContextComposition() { if (!impl_->busy) impl_->PublishContextComposition(); }
 
 bool AgentController::IsBusy() const { return impl_->busy; }
 qint64 AgentController::RuntimeProcessId() const { return impl_->process->processId(); }
@@ -663,7 +1106,37 @@ QString AgentController::CurrentFeedbackConversationSnippet(qsizetype maxUtf8Byt
     if (maxUtf8Bytes <= 0 || maxUtf8Bytes > 16384 || !impl_->currentSession) return {};
     QStringList snippets;
     qsizetype remaining = maxUtf8Bytes;
-    // 只收集已提交的可见用户/助手正文；工具输出、隐式提示及凭据不在片段中。
+    const auto clipUtf8 = [](QString body, qsizetype budget) {
+        if (body.toUtf8().size() > budget) {
+            qsizetype lower = 0, upper = body.size();
+            while (lower < upper) {
+                const auto middle = lower + (upper - lower + 1) / 2;
+                if (body.left(middle).toUtf8().size() <= budget) lower = middle;
+                else upper = middle - 1;
+            }
+            if (lower > 0 && body[lower - 1].isHighSurrogate()) --lower;
+            body.truncate(lower);
+        }
+        return body;
+    };
+    if (!impl_->currentSession->transcriptLog.isEmpty()) {
+        const auto& log = impl_->currentSession->transcriptLog;
+        for (auto it = log.constEnd(); it != log.constBegin() && remaining > 0;) {
+            const auto ev = (--it)->toObject();
+            const QString type = ev.value(QStringLiteral("type")).toString();
+            if (type != QStringLiteral("user_message") && type != QStringLiteral("assistant_message")) continue;
+            QString body = ev.value(QStringLiteral("text")).toString();
+            if (body.isEmpty()) continue;
+            const QString prefix = type == QStringLiteral("user_message") ? QStringLiteral("用户：") : QStringLiteral("助手：");
+            const auto prefixBytes = prefix.toUtf8().size();
+            if (remaining <= prefixBytes + 1) break;
+            body = clipUtf8(std::move(body), remaining - prefixBytes - 1);
+            const auto snippet = prefix + body + QChar('\n');
+            remaining -= snippet.toUtf8().size();
+            snippets.prepend(snippet);
+        }
+        return snippets.join(QString());
+    }
     const auto& messages = impl_->currentSession->messages;
     for (auto it = messages.constEnd(); it != messages.constBegin() && remaining > 0;) {
         const auto message = (--it)->toObject();
@@ -675,18 +1148,7 @@ QString AgentController::CurrentFeedbackConversationSnippet(qsizetype maxUtf8Byt
         const QString prefix = role == QStringLiteral("user") ? QStringLiteral("用户：") : QStringLiteral("助手：");
         const auto prefixBytes = prefix.toUtf8().size();
         if (remaining <= prefixBytes + 1) break;
-        const qsizetype budget = remaining - prefixBytes - 1;
-        // 按 Unicode 字符裁切，避免回读把截断 UTF-8 当成原文字。
-        if (body.toUtf8().size() > budget) {
-            qsizetype lower = 0, upper = body.size();
-            while (lower < upper) {
-                const auto middle = lower + (upper - lower + 1) / 2;
-                if (body.left(middle).toUtf8().size() <= budget) lower = middle;
-                else upper = middle - 1;
-            }
-            if (lower > 0 && body[lower - 1].isHighSurrogate()) --lower;
-            body.truncate(lower);
-        }
+        body = clipUtf8(std::move(body), remaining - prefixBytes - 1);
         const auto snippet = prefix + body + QChar('\n');
         remaining -= snippet.toUtf8().size();
         snippets.prepend(snippet);
@@ -694,6 +1156,7 @@ QString AgentController::CurrentFeedbackConversationSnippet(qsizetype maxUtf8Byt
     return snippets.join(QString());
 }
 void AgentController::StartPrompt(QString text, QString providerId, QString modelId) { impl_->Start(std::move(text), providerId, modelId); }
+void AgentController::CompactConversation(QString providerId, QString modelId) { impl_->Compact(std::move(providerId), std::move(modelId)); }
 void AgentController::Stop() { impl_->Stop(); }
 void AgentController::NewConversation() { impl_->NewConversation(); }
 void AgentController::SwitchConversation(QString id) { impl_->SwitchConversation(id); }

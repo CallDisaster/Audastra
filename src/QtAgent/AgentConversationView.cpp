@@ -601,6 +601,110 @@ private:
     bool reduced_ = false;
 };
 
+// 思考过程与上下文压缩检查点共用的轻量可展开行（紧凑单行标题 + 可折叠纯文本详情）。
+class TextFoldRow final : public QFrame {
+public:
+    TextFoldRow(const QString& objectName, const QString& iconName, const QString& initialTitle,
+        const QString& initialBadge, QWidget* parent)
+        : QFrame(parent), iconName_(iconName) {
+        setObjectName(objectName);
+        setFrameShape(QFrame::NoFrame);
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+        auto* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(6, 4, 8, 4);
+        layout->setSpacing(4);
+
+        auto* line = new QWidget(this);
+        auto* lineLayout = new QHBoxLayout(line);
+        lineLayout->setContentsMargins(0, 0, 0, 0);
+        lineLayout->setSpacing(6);
+        toggle_ = new QToolButton(line);
+        toggle_->setObjectName(QStringLiteral("agentToolToggle"));
+        toggle_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/chevron-right")));
+        toggle_->setIconSize(QSize(14, 14));
+        toggle_->setFixedSize(20, 22);
+        toggle_->setCursor(Qt::PointingHandCursor);
+        toggle_->setCheckable(true);
+        lineLayout->addWidget(toggle_);
+
+        icon_ = new QLabel(line);
+        icon_->setFixedSize(14, 14);
+        icon_->setAlignment(Qt::AlignCenter);
+        UpdateIcon();
+        lineLayout->addWidget(icon_);
+
+        title_ = new UiKit::ElidedLabel(initialTitle, line);
+        title_->setObjectName(QStringLiteral("agentToolTitle"));
+        title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        lineLayout->addWidget(title_, 1);
+
+        badge_ = new QLabel(initialBadge, line);
+        badge_->setObjectName(QStringLiteral("agentToolState"));
+        badge_->setFont(UiKit::MonoFont(11));
+        lineLayout->addWidget(badge_);
+        layout->addWidget(line);
+
+        preview_ = new QPlainTextEdit(this);
+        preview_->setObjectName(QStringLiteral("agentInlineDetailPreview"));
+        preview_->setReadOnly(true);
+        preview_->setFont(UiKit::MonoFont(12));
+        preview_->setFixedHeight(140);
+        preview_->hide();
+        layout->addWidget(preview_);
+
+        QObject::connect(toggle_, &QToolButton::toggled, this, [this](bool open) {
+            toggle_->setIcon(UiKit::SvgIcon(open ? QStringLiteral("lucide/chevron-down") : QStringLiteral("lucide/chevron-right")));
+            preview_->setVisible(open);
+            if (open && !reduced_) UiKit::FadeIn(preview_, 120, 0.6);
+        });
+    }
+
+    void AppendContent(const QString& delta) {
+        content_ += delta;
+        if (content_.size() <= kDetailsLimit) preview_->setPlainText(content_);
+        else preview_->setPlainText(content_.left(kDetailsLimit) + QStringLiteral("\n… 已达预览上限"));
+        const int lines = std::clamp(static_cast<int>(content_.count(QLatin1Char('\n'))) + 1, 2, 12);
+        preview_->setFixedHeight(lines * preview_->fontMetrics().lineSpacing() + 2 * preview_->frameWidth() + 20);
+    }
+
+    void SetHeader(const QString& title, const QString& badge) {
+        title_->setText(title);
+        title_->setToolTip(title);
+        badge_->setText(badge);
+    }
+
+    void SetReduced(bool reduced) { reduced_ = reduced; }
+
+    [[nodiscard]] const QString& Content() const { return content_; }
+    [[nodiscard]] QString PlainText() const {
+        return title_->text() + QLatin1Char('\n') + badge_->text()
+            + (content_.isEmpty() ? QString() : QLatin1Char('\n') + content_);
+    }
+
+protected:
+    void changeEvent(QEvent* event) override {
+        QFrame::changeEvent(event);
+        ScheduleThemeRetint(event, this, retintQueued_, [this] { UpdateIcon(); });
+    }
+
+private:
+    void UpdateIcon() {
+        if (!icon_) return;
+        const auto& c = UiKit::ThemeManager::ThemeForWidget(this).colors;
+        icon_->setPixmap(UiKit::SvgIcon(iconName_, UiKit::ToQColor(c.accent)).pixmap(14, 14));
+    }
+
+    QString iconName_;
+    QString content_;
+    QToolButton* toggle_ = nullptr;
+    QLabel* icon_ = nullptr;
+    UiKit::ElidedLabel* title_ = nullptr;
+    QLabel* badge_ = nullptr;
+    QPlainTextEdit* preview_ = nullptr;
+    bool reduced_ = false;
+    bool retintQueued_ = false;
+};
+
 } // namespace
 
 static_assert(static_cast<int>(ToolStateKind::Done) + 1 == kToolStateKindCount, "计数数组按枚举值下标");
@@ -662,8 +766,18 @@ QString ShortToolLabel(const QJsonObject& event) {
             {QStringLiteral("editor_edit_trigger_graph"), QStringLiteral("编辑触发器")},
             {QStringLiteral("editor_get_ui_catalog"), QStringLiteral("查询触发器函数库")},
             {QStringLiteral("editor_save_map"), QStringLiteral("保存地图")},
-            {QStringLiteral("editor_true_save"), QStringLiteral("原版编辑器保存")}};
-        title = labels.value(toolName, title.size() > 40 || title.contains(QLatin1Char('\n')) || title.isEmpty() ? toolName : title);
+            {QStringLiteral("editor_true_save"), QStringLiteral("原版编辑器保存")},
+            {QStringLiteral("memory_read"), QStringLiteral("读取项目记忆")},
+            {QStringLiteral("memory_write"), QStringLiteral("记录项目记忆")}};
+        if (labels.contains(toolName)) {
+            title = labels.value(toolName);
+        } else if (toolName.startsWith(QStringLiteral("mcp__"))) {
+            const QString rest = toolName.mid(5);
+            const auto sep = rest.indexOf(QStringLiteral("__"));
+            title = sep > 0 ? (rest.left(sep) + QStringLiteral(" · ") + rest.mid(sep + 2)) : rest;
+        } else {
+            title = title.size() > 40 || title.contains(QLatin1Char('\n')) || title.isEmpty() ? toolName : title;
+        }
     }
     if (title.isEmpty()) title = event.value(QStringLiteral("target")).toString();
     title = title.simplified();
@@ -681,8 +795,10 @@ struct AgentConversationView::Private {
     QBoxLayout* suggestions = nullptr;
     bool retintQueued = false;
     MessageRow* active = nullptr;
+    TextFoldRow* activeThinking = nullptr;
     QList<MessageRow*> messages;
     QList<DisclosureRow*> changes;
+    QList<TextFoldRow*> foldRows;
     QHash<QString, DisclosureRow*> tools;
     bool follow = true;
     bool scrollInternal = false;
@@ -810,6 +926,7 @@ AgentConversationView::AgentConversationView(QWidget* parent) : QScrollArea(pare
 AgentConversationView::~AgentConversationView() = default;
 
 void AgentConversationView::BeginMessage(const QString& speaker, bool user) {
+    EndThinking();
     d_->active = new MessageRow(speaker, user, d_->column);
     d_->messages.append(d_->active);
     connect(d_->active->body->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged,
@@ -832,11 +949,54 @@ void AgentConversationView::ReplaceText(const QString& text) {
 }
 
 void AgentConversationView::EndMessage() {
+    EndThinking();
     if (d_->active != nullptr) d_->active->body->Settle();
     d_->active = nullptr;
 }
 
+void AgentConversationView::AppendThinking(const QString& delta, bool finished) {
+    if (delta.isEmpty() && !finished) return;
+    if (d_->activeThinking == nullptr) {
+        d_->activeThinking = new TextFoldRow(QStringLiteral("agentThinkingRow"), QStringLiteral("lucide/sparkles"),
+            QStringLiteral("思考过程"), QStringLiteral("思考中…"), d_->column);
+        d_->activeThinking->SetReduced(d_->reduced);
+        d_->foldRows.append(d_->activeThinking);
+        d_->Add(d_->activeThinking);
+    }
+    if (!delta.isEmpty()) d_->activeThinking->AppendContent(delta);
+    const qint64 chars = d_->activeThinking->Content().size();
+    d_->activeThinking->SetHeader(QStringLiteral("思考过程"),
+        finished ? QStringLiteral("已思考 %1 字").arg(chars) : QStringLiteral("思考中 · %1 字").arg(chars));
+    if (finished) d_->activeThinking = nullptr;
+    emit ContentsChanged();
+}
+
+void AgentConversationView::EndThinking() {
+    if (d_->activeThinking == nullptr) return;
+    const qint64 chars = d_->activeThinking->Content().size();
+    d_->activeThinking->SetHeader(QStringLiteral("思考过程"), QStringLiteral("已思考 %1 字").arg(chars));
+    d_->activeThinking = nullptr;
+}
+
+void AgentConversationView::AppendCompactionBanner(int removedMessages, qint64 savedTokens, const QString& summary, int prunedResults) {
+    EndThinking();
+    EndMessage();
+    const QString title = removedMessages > 0
+        ? QStringLiteral("上下文已压缩 · 归纳早期 %1 条消息（原记录保留）").arg(removedMessages)
+        : QStringLiteral("上下文已修剪 · 精简 %1 条早期超大工具输出").arg(std::max(1, prunedResults));
+    const QString badge = savedTokens > 0 ? QStringLiteral("释放 %1").arg(FormatTokens(savedTokens)) : QStringLiteral("已整理");
+    auto* banner = new TextFoldRow(QStringLiteral("agentCompactionRow"), QStringLiteral("lucide/layers"), title, badge, d_->column);
+    banner->SetReduced(d_->reduced);
+    banner->AppendContent(summary.trimmed().isEmpty()
+        ? QStringLiteral("早期超大工具输出已在模型活动窗口内裁剪，完整原始输出仍保留在本地会话记录中。")
+        : summary.trimmed());
+    d_->foldRows.append(banner);
+    d_->Add(banner);
+    emit ContentsChanged();
+}
+
 void AgentConversationView::UpdateTool(const QJsonObject& event, const QString& state, const QString& duration) {
+    EndThinking();
     const QString id = event.value(QStringLiteral("id")).toString();
     auto found = d_->tools.find(id);
     if (found == d_->tools.end()) {
@@ -867,6 +1027,7 @@ void AgentConversationView::SetReducedMotion(bool reduced) {
     d_->reduced = reduced;
     for (auto* row : d_->tools) row->SetReduced(reduced);
     for (auto* row : d_->changes) row->SetReduced(reduced);
+    for (auto* row : d_->foldRows) row->SetReduced(reduced);
 }
 
 void AgentConversationView::SetContentWidth(int width) {
@@ -878,9 +1039,11 @@ void AgentConversationView::SetContentWidth(int width) {
 void AgentConversationView::Clear() {
     d_->diagnosticTimer.stop();
     d_->active = nullptr;
+    d_->activeThinking = nullptr;
     d_->messages.clear();
     d_->tools.clear();
     d_->changes.clear();
+    d_->foldRows.clear();
     while (d_->flow->count() > 1) {
         QLayoutItem* item = d_->flow->takeAt(1);
         delete item->widget();
@@ -897,6 +1060,7 @@ QString AgentConversationView::toPlainText() const {
         QWidget* widget = d_->flow->itemAt(i)->widget();
         if (auto* row = dynamic_cast<MessageRow*>(widget)) parts.append(row->body->Source());
         else if (auto* disclosure = dynamic_cast<DisclosureRow*>(widget)) parts.append(disclosure->PlainText());
+        else if (auto* fold = dynamic_cast<TextFoldRow*>(widget)) parts.append(fold->PlainText());
     }
     return parts.join(QStringLiteral("\n\n"));
 }
@@ -962,6 +1126,9 @@ void AgentConversationView::InspectLayoutDiagnostics() {
             row.documentHeight = message->body->document()->size().height();
         } else if (dynamic_cast<DisclosureRow*>(widget)) {
             row.kind = widget->objectName() == QStringLiteral("agentInlineChanges")
+                ? AgentLayoutRowKind::Change : AgentLayoutRowKind::Tool;
+        } else if (dynamic_cast<TextFoldRow*>(widget)) {
+            row.kind = widget->objectName() == QStringLiteral("agentCompactionRow")
                 ? AgentLayoutRowKind::Change : AgentLayoutRowKind::Tool;
         }
         snapshot.rows.append(row);

@@ -29,6 +29,9 @@ public:
     void AppendText(const QString& text);
     void ReplaceText(const QString& text);
     void EndMessage();
+    void AppendThinking(const QString& delta, bool finished = false);
+    void EndThinking();
+    void AppendCompactionBanner(int removedMessages, qint64 savedTokens, const QString& summary, int prunedResults = 0);
     void UpdateTool(const QJsonObject& event, const QString& state, const QString& duration);
     void AppendChanges(const QJsonArray& items);
     void SetReducedMotion(bool reduced);

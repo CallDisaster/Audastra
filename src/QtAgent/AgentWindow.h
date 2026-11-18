@@ -16,6 +16,7 @@ struct AgentConnectorStatus {
     QString mcpError;         // 最近一次启动失败的原因；只进悬停提示
     int registeredTools = 0;  // 编辑器实际注册的内置工具数
     int disabledTools = 0;    // 已注册工具中被设置禁用的数量
+    QList<ExternalMcpRuntimeStatus> externalServers;
 };
 
 // 原生独立助手窗口。这里只呈现实际运行事件，不执行地图编辑或保存。
@@ -42,6 +43,9 @@ public:
 
 signals:
     void PromptSubmitted(QString text, QString providerId, QString modelId);
+    void CompactRequested(QString providerId, QString modelId);
+    void EditMemoryRequested(QString scope);
+    void ExternalMcpReconnectRequested(QString serverId);
     void StopRequested();
     void SettingsRequested();
     void NewConversationRequested();

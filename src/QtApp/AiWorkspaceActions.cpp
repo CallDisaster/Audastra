@@ -25,18 +25,25 @@
 #include "UpdateDialog.h"
 #include "AgentWindow.h"
 #include "CredentialStore.h"
+#include "ExternalMcpManager.h"
 #include "McpHttpTransport.h"
+#include "ProjectMemoryService.h"
+#include "TokenMeter.h"
 #include "TriggerModule.h"
 #include "Dock/DockHost.h"
 #include "Fonts/FontLoader.h"
 
 #include <QApplication>
 #include <QAction>
+#include <QComboBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QEvent>
 #include <QFile>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSettings>
 #include <QFileInfo>
 #include <QLabel>
@@ -64,6 +71,7 @@ public:
     explicit AiWorkspace(QObject* parent) : QObject(parent) {}
     ~AiWorkspace() override {
         if (controller) controller->Stop();
+        if (externalMcp) externalMcp->StopAll();
         if (http) http->Stop();
         if (window) delete window;
     }
@@ -76,6 +84,8 @@ public:
     QString serviceError;
     std::unique_ptr<LiveEditorTools> tools;
     std::unique_ptr<Mcp::McpHttpTransport> http;
+    std::unique_ptr<Agent::ProjectMemoryService> memory;
+    std::unique_ptr<Agent::ExternalMcpManager> externalMcp;
     std::unique_ptr<Agent::AgentController> controller;
     QPointer<Agent::AgentWindow> window;
     QPointer<QStackedWidget> stack;
@@ -154,22 +164,119 @@ std::filesystem::path SkillsDirectory() {
 #endif
 }
 
-QString SystemPrompt() {
-    QString result = QStringLiteral(
+QString BaseSystemPrompt() {
+    return QStringLiteral(
         "你是 Audastra 地图编辑助手。使用实际提供的工具检查当前地图，然后通过同一事务修改。"
         "新增、优化逻辑默认写成作者可读可编辑的触发器（T，传统事件/条件/动作）；未经作者特别要求不转换为 JASS/Lua/WCT。"
         "每次写操作先取得当前地图身份、修订和图绑定；来源变化后重新查询，不猜 ID。"
+        "若待创建的触发器数量较多或单个触发器节点复杂，请分批小步执行（例如先创建触发器骨架，再分批追加事件、条件与动作），避免单次输出过大被截断。"
+        "当作者告知长期作图习惯、命名规范或项目约定时，可在允许修改的前提下使用 memory_write 记录到当前地图专属记忆文件。"
         "修改后回读实际结果，向作者说明修改的触发器、前后值、保存结果与未验证项。"
         "失败保留诊断，不放宽类型或保存门禁。工具未提供的能力准确说明不可用。"
         "当前 editor_* 工具操作 GUI 活动地图；旧独立 stdio 工具属于另一个工作区。\n");
+}
+
+struct LoadedSkills {
+    QString prompt;
+    QList<War3Map::Agent::ContextNamedItem> items;
+};
+
+LoadedSkills LoadSkillsPayload() {
+    LoadedSkills out;
     const auto root = SkillsDirectory();
     for (const auto* skill : {"forge-editor-mcp", "forge-t-event-optimization"}) {
-        QFile file(QString::fromStdWString((root / skill / "SKILL.md").wstring()));
+        const QString skillName = QString::fromLatin1(skill);
+        const QString filePath = QString::fromStdWString((root / skill / "SKILL.md").wstring());
+        QFile file(filePath);
         if (file.open(QIODevice::ReadOnly) && file.size() <= 65536) {
-            result += QStringLiteral("\n") + QString::fromUtf8(file.readAll());
+            const QString body = QString::fromUtf8(file.readAll());
+            out.prompt += QStringLiteral("\n") + body;
+            out.items.push_back({skillName, filePath, War3Map::Agent::TokenMeter::EstimateText(body)});
         }
     }
-    return result;
+    return out;
+}
+
+void OpenProjectMemoryEditor(QWidget* parent, War3Map::Agent::ProjectMemoryService& memory, const QString& initialScope) {
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QStringLiteral("项目与全局持久记忆"));
+    dlg.resize(640, 480);
+    auto* root = new QVBoxLayout(&dlg);
+    root->setSpacing(8);
+
+    auto* topRow = new QHBoxLayout;
+    auto* scopeCombo = new QComboBox(&dlg);
+    const QString projPath = memory.ProjectMemoryFilePath();
+    if (!projPath.isEmpty()) {
+        scopeCombo->addItem(QStringLiteral("当前地图记忆（%1）").arg(QFileInfo(projPath).fileName()), QStringLiteral("project"));
+    }
+    if (!memory.GlobalMemoryFilePath().isEmpty()) {
+        scopeCombo->addItem(QStringLiteral("全局通用记忆（MEMORY.md）"), QStringLiteral("global"));
+    }
+    if (scopeCombo->count() == 0) {
+        scopeCombo->addItem(QStringLiteral("当前未打开地图（请先打开地图后再编辑项目记忆）"), QStringLiteral("none"));
+        scopeCombo->setEnabled(false);
+    } else {
+        const int idx = scopeCombo->findData(initialScope);
+        if (idx >= 0) scopeCombo->setCurrentIndex(idx);
+    }
+    topRow->addWidget(scopeCombo, 1);
+    auto* tokenBadge = new QLabel(&dlg);
+    topRow->addWidget(tokenBadge);
+    root->addLayout(topRow);
+
+    auto* pathLabel = new QLabel(&dlg);
+    pathLabel->setWordWrap(true);
+    pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    root->addWidget(pathLabel);
+
+    auto* editor = new QPlainTextEdit(&dlg);
+    editor->setPlaceholderText(QStringLiteral("# 地图作图习惯与架构记忆\n- 单位/物品/变量命名约定：\n- 核心触发器分类与职责：\n- 特殊注意事项："));
+    root->addWidget(editor, 1);
+
+    auto* statusLabel = new QLabel(&dlg);
+    statusLabel->setWordWrap(true);
+    root->addWidget(statusLabel);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存记忆"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("关闭"));
+    root->addWidget(buttons);
+
+    const auto updateTokenCount = [&] {
+        const qint64 t = War3Map::Agent::TokenMeter::EstimateText(editor->toPlainText());
+        tokenBadge->setText(QStringLiteral("约 %1 tokens").arg(t));
+    };
+    const auto loadCurrentScope = [&] {
+        const QString scope = scopeCombo->currentData().toString();
+        if (scope == QStringLiteral("none")) {
+            editor->setEnabled(false);
+            buttons->button(QDialogButtonBox::Save)->setEnabled(false);
+            pathLabel->setText(QStringLiteral("提示：地图记忆默认保存在地图同级目录 <地图名>.memory.md，随地图文件夹一起迁移。"));
+            return;
+        }
+        const auto snap = memory.ReadScope(scope);
+        pathLabel->setText(QStringLiteral("文件路径：%1%2").arg(snap.filePath, snap.exists ? QString{} : QStringLiteral("（保存后创建）")));
+        editor->setEnabled(true);
+        buttons->button(QDialogButtonBox::Save)->setEnabled(true);
+        editor->setPlainText(snap.content);
+        statusLabel->setText(snap.error);
+        updateTokenCount();
+    };
+    QObject::connect(scopeCombo, &QComboBox::currentIndexChanged, &dlg, loadCurrentScope);
+    QObject::connect(editor, &QPlainTextEdit::textChanged, &dlg, updateTokenCount);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, [&] {
+        const QString scope = scopeCombo->currentData().toString();
+        QString err;
+        if (!memory.WriteScope(scope, editor->toPlainText(), QStringLiteral("replace"), &err)) {
+            statusLabel->setText(err);
+            return;
+        }
+        dlg.accept();
+    });
+    loadCurrentScope();
+    dlg.exec();
 }
 
 War3Map::Mcp::ToolPolicy Policy(const War3Map::Agent::AgentSettings& settings) {
@@ -206,6 +313,7 @@ void PublishConnectorStatus(War3Map::QtApp::AiWorkspace& state) {
         if (registered.contains(name)) disabled.insert(name);
     }
     status.disabledTools = static_cast<int>(disabled.size());
+    if (state.externalMcp) status.externalServers = state.externalMcp->Statuses();
     state.window->SetConnectorStatus(status);
 }
 
@@ -233,6 +341,7 @@ void RestartMcpService(War3Map::QtApp::AiWorkspace& state) {
 
 void ApplySettings(War3Map::QtApp::AiWorkspace& state) {
     state.tools->SetPolicy(Policy(state.settings));
+    if (state.externalMcp) state.externalMcp->ApplySettings(state.settings);
     state.controller->SetSettings(state.settings);
     if (state.window) state.window->SetSettings(state.settings);
     RestartMcpService(state);
@@ -298,12 +407,32 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
         });
     state->tools->SetSkillRoot(SkillsDirectory());
     state->http = std::make_unique<War3Map::Mcp::McpHttpTransport>(state->tools->Server());
+    state->memory = std::make_unique<War3Map::Agent::ProjectMemoryService>();
+    if (readUserConfiguration) state->memory->UseDefaultGlobalMemoryPath();
+    state->externalMcp = std::make_unique<War3Map::Agent::ExternalMcpManager>();
+    state->externalMcp->SetCredentialStore(&state->credentials);
     state->controller = std::make_unique<War3Map::Agent::AgentController>();
-    state->controller->SetSystemPrompt(SystemPrompt());
+    state->controller->SetSystemPrompt(BaseSystemPrompt());
+    const auto skills = LoadSkillsPayload();
+    state->controller->SetSkillsPrompt(skills.prompt, skills.items);
+    state->controller->SetMemoryService(state->memory.get());
     state->controller->SetToolsProvider([state]() { return state->tools->Tools(); });
+    state->controller->SetExternalToolsProvider([state]() {
+        return state->externalMcp ? state->externalMcp->EnabledToolDefinitions() : QJsonArray{};
+    });
+    state->controller->SetMcpInstructionsProvider([state]() {
+        return state->externalMcp ? state->externalMcp->CombinedServerInstructions() : QString{};
+    });
     state->controller->SetToolDispatcher([state](const QString& name, const QJsonObject& args) {
+        if (state->externalMcp && state->externalMcp->OwnsTool(name)) {
+            return state->externalMcp->InvokeTool(name, args);
+        }
         const QScopedValueRollback<bool> dispatchScope(state->controllerDispatchActive, true);
         return state->tools->Invoke(name, args);
+    });
+    connect(state->externalMcp.get(), &War3Map::Agent::ExternalMcpManager::StatusChanged, state, [state]() {
+        PublishConnectorStatus(*state);
+        if (state->controller) state->controller->RefreshContextComposition();
     });
     state->tools->SetBeforeWrite([this]() {
         if (project_->savingMap_) return false;
@@ -384,11 +513,13 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
 void MainWindow::RefreshAgentMapContext() {
     if (!aiWorkspace_) return;
     const auto path = project_->sourceArchivePath_.empty() ? project_->projectRoot_ : project_->sourceArchivePath_;
+    const auto mapPathString = path.empty() ? QString() : QString::fromStdWString(path.wstring());
+    if (aiWorkspace_->memory) aiWorkspace_->memory->SetMapSourcePath(mapPathString);
     const auto title = path.empty() ? tr("未打开地图") : QString::fromStdWString(path.filename().wstring());
-    const auto identity = path.empty() ? QString() : QString::fromStdWString(path.wstring()) + QLatin1Char('|')
+    const auto identity = path.empty() ? QString() : mapPathString + QLatin1Char('|')
         + QString::number(project_->editRevision_.Generation());
     const auto conversationIdentity = path.empty() ? QStringLiteral("forge:no-map")
-        : QDir::cleanPath(QFileInfo(QString::fromStdWString(path.wstring())).absoluteFilePath()).toCaseFolded();
+        : QDir::cleanPath(QFileInfo(mapPathString).absoluteFilePath()).toCaseFolded();
     aiWorkspace_->controller->SetActiveMap(title, identity, conversationIdentity);
     if (aiWorkspace_->window) {
         aiWorkspace_->window->SetActiveMap(title, identity);
@@ -438,6 +569,19 @@ void MainWindow::PresentAgentWorkspace(int mode) {
                 state->controller->StartPrompt(text, provider, model);
                 // Invalid settings/credentials can reject before the controller becomes busy.
                 state->window->SetBusy(state->controller->IsBusy());
+            });
+        connect(state->window, &War3Map::Agent::AgentWindow::CompactRequested, state,
+            [state](const QString& provider, const QString& model) {
+                state->controller->CompactConversation(provider, model);
+                state->window->SetBusy(state->controller->IsBusy());
+            });
+        connect(state->window, &War3Map::Agent::AgentWindow::EditMemoryRequested, this,
+            [this, state](const QString& scope) {
+                if (state->memory) OpenProjectMemoryEditor(this, *state->memory, scope);
+            });
+        connect(state->window, &War3Map::Agent::AgentWindow::ExternalMcpReconnectRequested, state,
+            [state](const QString& serverId) {
+                if (state->externalMcp) state->externalMcp->Reconnect(serverId);
             });
         connect(state->window, &War3Map::Agent::AgentWindow::StopRequested,
             state->controller.get(), &War3Map::Agent::AgentController::Stop);
@@ -665,7 +809,10 @@ void MainWindow::ShowApplicationSettings() {
         connect(updatePage, &War3Map::QtUpdate::UpdateSettingsWidget::InstallationRequested, this, &MainWindow::BeginProductUpdate);
     }
     dialog.SetCredentialStore(&state->credentials);
-    dialog.SetAvailableTools(state->tools->RegisteredToolNames());
+    QStringList allAvailableTools = state->tools->RegisteredToolNames();
+    allAvailableTools << QStringLiteral("memory_read") << QStringLiteral("memory_write");
+    if (state->externalMcp) allAvailableTools.append(state->externalMcp->AllDiscoveredToolNames());
+    dialog.SetAvailableTools(allAvailableTools);
     dialog.SetMcpAccessToken(state->token);
     const QSettings stored;
     const War3Map::Agent::ApplicationPreferences before{

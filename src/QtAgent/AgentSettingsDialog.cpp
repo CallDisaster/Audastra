@@ -1,6 +1,7 @@
 #include "AgentSettingsDialog.h"
 #include "AgentSettingsStore.h"
 #include "CredentialStore.h"
+#include "ExternalMcpManager.h"
 #include "ProviderCatalog.h"
 
 #include "Fonts/FontLoader.h"
@@ -24,6 +25,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPlainTextEdit>
+#include <QProcess>
 #include <QPushButton>
 #include <QRegularExpressionValidator>
 #include <QScrollArea>
@@ -523,14 +526,30 @@ public:
             QObject::connect(check, &QCheckBox::toggled, dialog, [target = entry.second](bool value) { *target = value; });
         }
         layout->addSpacing(12);
+        auto* stepForm = new QFormLayout;
+        maxAutoStepsSpin = new QSpinBox;
+        maxAutoStepsSpin->setObjectName(QStringLiteral("agentMaxAutoSteps"));
+        maxAutoStepsSpin->setRange(8, 512);
+        maxAutoStepsSpin->setSingleStep(16);
+        maxAutoStepsSpin->setMaximumWidth(150);
+        maxAutoStepsSpin->setValue(settings.maxAutoSteps);
+        maxAutoStepsSpin->setToolTip(QStringLiteral("单次提问自动连续调用模型的最大回合数；达到上限时自动保存进度并等待点击继续。"));
+        stepForm->addRow(QStringLiteral("单次自动步数上限"), maxAutoStepsSpin);
+        layout->addLayout(stepForm);
+        QObject::connect(maxAutoStepsSpin, &QSpinBox::valueChanged, dialog, [this](int val) { settings.maxAutoSteps = val; });
         layout->addStretch(1);
         pages->addWidget(page);
     }
 
+    ExternalMcpServerSettings* CurrentExternalMcp() {
+        return externalMcpIndex >= 0 && externalMcpIndex < settings.externalMcpServers.size()
+            ? &settings.externalMcpServers[externalMcpIndex] : nullptr;
+    }
+
     void BuildMcp() {
         QVBoxLayout* layout = nullptr;
-        auto* page = Page(QStringLiteral("MCP 连接"), QStringLiteral("外部 Agent 可独立使用 MCP；无需启用内置 AI 或填写模型 API 密钥。"), layout);
-        mcpEnabled = new QCheckBox(QStringLiteral("启用本机 HTTP MCP"));
+        auto* page = Page(QStringLiteral("MCP 连接"), QStringLiteral("既可开启本机 HTTP MCP 供外部 Agent 接入，也可添加自定义外部 MCP 服务器扩展内置助手工具。"), layout);
+        mcpEnabled = new QCheckBox(QStringLiteral("启用本机 HTTP MCP（供外部客户端连入编辑器）"));
         mcpEnabled->setObjectName(QStringLiteral("agentMcpEnabled"));
         mcpEnabled->setChecked(settings.mcpEnabled);
         layout->addWidget(mcpEnabled);
@@ -551,15 +570,89 @@ public:
         layout->addLayout(connectionButtons);
         mcpStatus = Text(QString(), nullptr, true);
         layout->addWidget(mcpStatus);
-        layout->addSpacing(12);
+
+        auto* extDivider = new QFrame;
+        extDivider->setObjectName(QStringLiteral("agentSettingsDivider"));
+        extDivider->setFixedHeight(1);
+        layout->addWidget(extDivider);
+
+        layout->addWidget(Text(QStringLiteral("外部自定义 MCP 服务器（供内置 AI 助手调用）")));
+        auto* extToolbar = new QHBoxLayout;
+        auto* addExtBtn = Button(QStringLiteral("添加服务器"), QStringLiteral("agentAddExternalMcp"));
+        auto* importExtJsonBtn = Button(QStringLiteral("粘贴导入 JSON…"), QStringLiteral("agentImportExternalMcpJson"));
+        auto* removeExtBtn = Button(QStringLiteral("移除"), QStringLiteral("agentRemoveExternalMcp"));
+        extToolbar->addWidget(addExtBtn);
+        extToolbar->addWidget(importExtJsonBtn);
+        extToolbar->addWidget(removeExtBtn);
+        extToolbar->addStretch(1);
+        layout->addLayout(extToolbar);
+
+        auto* extSplit = new QSplitter(Qt::Horizontal);
+        extMcpList = new QListWidget;
+        extMcpList->setObjectName(QStringLiteral("agentExternalMcpList"));
+        extMcpList->setMinimumHeight(130);
+        extMcpList->setMaximumHeight(200);
+        extSplit->addWidget(extMcpList);
+
+        extMcpEditor = new QWidget;
+        auto* extForm = new QFormLayout(extMcpEditor);
+        extForm->setContentsMargins(8, 0, 0, 0);
+        extForm->setVerticalSpacing(6);
+        extMcpEnabled = new QCheckBox(QStringLiteral("启用此 MCP 服务器"));
+        extMcpEnabled->setObjectName(QStringLiteral("agentExternalMcpEnabled"));
+        extMcpName = Edit(QStringLiteral("agentExternalMcpName"), QStringLiteral("例如 War3 autotest / IDA Pro MCP"));
+        extMcpTransport = new QComboBox;
+        extMcpTransport->setObjectName(QStringLiteral("agentExternalMcpTransport"));
+        extMcpTransport->addItem(QStringLiteral("本地进程 (stdio)"), QStringLiteral("stdio"));
+        extMcpTransport->addItem(QStringLiteral("Streamable HTTP"), QStringLiteral("http"));
+        extMcpPerm = new QComboBox;
+        extMcpPerm->setObjectName(QStringLiteral("agentExternalMcpPermission"));
+        extMcpPerm->addItem(QStringLiteral("需完全访问（默认）"), QStringLiteral("full"));
+        extMcpPerm->addItem(QStringLiteral("需编辑并保存"), QStringLiteral("save"));
+        extMcpPerm->addItem(QStringLiteral("需可编辑"), QStringLiteral("edit"));
+        extMcpPerm->addItem(QStringLiteral("只读可用"), QStringLiteral("read"));
+        extMcpCommand = Edit(QStringLiteral("agentExternalMcpCommand"), QStringLiteral("npx / uvx / node / 可执行文件路径"));
+        extMcpArgs = Edit(QStringLiteral("agentExternalMcpArgs"), QStringLiteral("启动参数（空格分隔，含空格参数可用双引号包裹）"));
+        extMcpCwd = Edit(QStringLiteral("agentExternalMcpCwd"), QStringLiteral("工作目录（可选）"));
+        extMcpUrl = Edit(QStringLiteral("agentExternalMcpUrl"), QStringLiteral("http://127.0.0.1:8080/mcp 或 https://..."));
+        auto* extSecretRow = new QHBoxLayout;
+        extMcpSecret = Edit(QStringLiteral("agentExternalMcpSecret"), QStringLiteral("可选 Bearer Token / 环境变量密钥（加密存储）"));
+        extMcpSecret->setEchoMode(QLineEdit::Password);
+        auto* clearExtSecret = Button(QStringLiteral("清除"), QStringLiteral("agentClearExternalMcpSecret"));
+        extSecretRow->addWidget(extMcpSecret, 1);
+        extSecretRow->addWidget(clearExtSecret);
+
+        extForm->addRow(QStringLiteral("状态"), extMcpEnabled);
+        extForm->addRow(QStringLiteral("名称"), extMcpName);
+        extForm->addRow(QStringLiteral("传输方式"), extMcpTransport);
+        extForm->addRow(QStringLiteral("最低权限"), extMcpPerm);
+        extForm->addRow(QStringLiteral("启动命令"), extMcpCommand);
+        extForm->addRow(QStringLiteral("命令参数"), extMcpArgs);
+        extForm->addRow(QStringLiteral("工作目录"), extMcpCwd);
+        extForm->addRow(QStringLiteral("HTTP 地址"), extMcpUrl);
+        extForm->addRow(QStringLiteral("鉴权密钥"), extSecretRow);
+        extSplit->addWidget(extMcpEditor);
+        extSplit->setSizes({180, 480});
+        layout->addWidget(extSplit);
+
+        layout->addSpacing(8);
+        layout->addWidget(Text(QStringLiteral("工具启用列表（含内置工具与已发现的外部 MCP 工具）"), nullptr, true));
         auto* search = Edit(QStringLiteral("agentToolSearch"), QStringLiteral("筛选工具名称…"));
         search->setClearButtonEnabled(true);
         UiKit::InstallSearchIcon(search);
         layout->addWidget(search);
         toolList = new QListWidget; toolList->setObjectName(QStringLiteral("agentMcpTools"));
         toolList->setAlternatingRowColors(true);
+        toolList->setMinimumHeight(140);
         layout->addWidget(toolList, 1);
-        pages->addWidget(page);
+
+        auto* mcpScroll = new QScrollArea;
+        mcpScroll->setObjectName(QStringLiteral("agentMcpSettingsScroll"));
+        mcpScroll->setFrameShape(QFrame::NoFrame);
+        mcpScroll->setWidgetResizable(true);
+        mcpScroll->setWidget(page);
+        pages->addWidget(mcpScroll);
+
         QObject::connect(mcpEnabled, &QCheckBox::toggled, dialog, [this](bool value) { settings.mcpEnabled = value; });
         QObject::connect(port, &QSpinBox::valueChanged, dialog, [this](int value) { settings.mcpPort = static_cast<quint16>(value); UpdateEndpoint(); });
         QObject::connect(copyAddress, &QPushButton::clicked, dialog, [this] { QApplication::clipboard()->setText(endpoint->text()); });
@@ -571,6 +664,59 @@ public:
             QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(config).toJson(QJsonDocument::Indented)));
             Message(QStringLiteral("已复制含本机访问令牌的客户端配置，请只交给本机可信客户端。"));
         });
+        QObject::connect(extMcpList, &QListWidget::currentRowChanged, dialog, [this](int row) { LoadExternalMcp(row); });
+        QObject::connect(addExtBtn, &QPushButton::clicked, dialog, [this] {
+            ExternalMcpServerSettings srv;
+            srv.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            srv.name = QStringLiteral("新 MCP 服务器");
+            srv.transport = QStringLiteral("stdio");
+            srv.minimumPermission = QStringLiteral("full");
+            settings.externalMcpServers.push_back(srv);
+            RefreshExternalMcps(static_cast<int>(settings.externalMcpServers.size()) - 1);
+            extMcpName->setFocus(); extMcpName->selectAll();
+        });
+        QObject::connect(removeExtBtn, &QPushButton::clicked, dialog, [this] {
+            auto* cur = CurrentExternalMcp();
+            if (cur == nullptr) return;
+            pendingMcpSecrets.remove(cur->id);
+            settings.externalMcpServers.removeAt(externalMcpIndex);
+            RefreshExternalMcps(std::min(externalMcpIndex, static_cast<int>(settings.externalMcpServers.size()) - 1));
+        });
+        QObject::connect(importExtJsonBtn, &QPushButton::clicked, dialog, [this] { PromptImportExternalMcpJson(); });
+        const auto extEdited = [this] {
+            auto* cur = CurrentExternalMcp();
+            if (loading || cur == nullptr) return;
+            cur->enabled = extMcpEnabled->isChecked();
+            cur->name = extMcpName->text().trimmed();
+            cur->transport = extMcpTransport->currentData().toString();
+            cur->minimumPermission = extMcpPerm->currentData().toString();
+            cur->command = extMcpCommand->text().trimmed();
+            cur->args = QProcess::splitCommand(extMcpArgs->text());
+            cur->cwd = extMcpCwd->text().trimmed();
+            cur->url = extMcpUrl->text().trimmed();
+            UpdateExternalMcpTransportVisibility();
+            if (auto* item = extMcpList->item(externalMcpIndex)) {
+                item->setText(cur->name.isEmpty() ? QStringLiteral("未命名 MCP") : cur->name);
+            }
+        };
+        QObject::connect(extMcpEnabled, &QCheckBox::toggled, dialog, extEdited);
+        for (auto* e : {extMcpName, extMcpCommand, extMcpArgs, extMcpCwd, extMcpUrl}) {
+            QObject::connect(e, &QLineEdit::textChanged, dialog, extEdited);
+        }
+        QObject::connect(extMcpTransport, &QComboBox::currentIndexChanged, dialog, extEdited);
+        QObject::connect(extMcpPerm, &QComboBox::currentIndexChanged, dialog, extEdited);
+        QObject::connect(extMcpSecret, &QLineEdit::textChanged, dialog, [this] {
+            if (loading || CurrentExternalMcp() == nullptr) return;
+            if (extMcpSecret->text().isEmpty()) pendingMcpSecrets.remove(CurrentExternalMcp()->id);
+            else pendingMcpSecrets.insert(CurrentExternalMcp()->id, extMcpSecret->text());
+        });
+        QObject::connect(clearExtSecret, &QPushButton::clicked, dialog, [this] {
+            if (CurrentExternalMcp() == nullptr) return;
+            const QSignalBlocker blocker(extMcpSecret);
+            extMcpSecret->clear();
+            extMcpSecret->setPlaceholderText(QStringLiteral("将在保存设置时移除密钥"));
+            pendingMcpSecrets.insert(CurrentExternalMcp()->id, QString{});
+        });
         QObject::connect(toolList, &QListWidget::itemChanged, dialog, [this](QListWidgetItem* item) {
             const auto name = item->data(Qt::UserRole).toString();
             settings.disabledTools.removeAll(name);
@@ -580,6 +726,97 @@ public:
             for (int row = 0; row < toolList->count(); ++row) toolList->item(row)->setHidden(!toolList->item(row)->text().contains(value, Qt::CaseInsensitive));
         });
         UpdateEndpoint();
+        RefreshExternalMcps(settings.externalMcpServers.isEmpty() ? -1 : 0);
+    }
+
+    static QString JoinCommandArgs(const QStringList& args) {
+        QStringList formatted;
+        for (const QString& arg : args) {
+            if (arg.contains(QLatin1Char(' ')) || arg.contains(QLatin1Char('"'))) {
+                QString escaped = arg;
+                escaped.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+                formatted.push_back(QLatin1Char('"') + escaped + QLatin1Char('"'));
+            } else {
+                formatted.push_back(arg);
+            }
+        }
+        return formatted.join(QLatin1Char(' '));
+    }
+
+    void UpdateExternalMcpTransportVisibility() {
+        const bool isHttp = extMcpTransport && extMcpTransport->currentData().toString() == QStringLiteral("http");
+        if (extMcpCommand) extMcpCommand->setEnabled(!isHttp);
+        if (extMcpArgs) extMcpArgs->setEnabled(!isHttp);
+        if (extMcpCwd) extMcpCwd->setEnabled(!isHttp);
+        if (extMcpUrl) extMcpUrl->setEnabled(isHttp);
+    }
+
+    void RefreshExternalMcps(int selected) {
+        {
+            const QSignalBlocker blocker(extMcpList);
+            extMcpList->clear();
+            for (const auto& s : settings.externalMcpServers) {
+                extMcpList->addItem(s.name.isEmpty() ? QStringLiteral("未命名 MCP") : s.name);
+            }
+            extMcpList->setCurrentRow(selected);
+        }
+        LoadExternalMcp(selected);
+    }
+
+    void LoadExternalMcp(int row) {
+        loading = true;
+        externalMcpIndex = row;
+        auto* cur = CurrentExternalMcp();
+        extMcpEditor->setEnabled(cur != nullptr);
+        extMcpEnabled->setChecked(cur != nullptr && cur->enabled);
+        extMcpName->setText(cur != nullptr ? cur->name : QString{});
+        extMcpTransport->setCurrentIndex(cur != nullptr ? std::max(0, extMcpTransport->findData(cur->transport)) : 0);
+        extMcpPerm->setCurrentIndex(cur != nullptr ? std::max(0, extMcpPerm->findData(cur->minimumPermission)) : 0);
+        extMcpCommand->setText(cur != nullptr ? cur->command : QString{});
+        extMcpArgs->setText(cur != nullptr ? JoinCommandArgs(cur->args) : QString{});
+        extMcpCwd->setText(cur != nullptr ? cur->cwd : QString{});
+        extMcpUrl->setText(cur != nullptr ? cur->url : QString{});
+        extMcpSecret->setText(cur != nullptr ? pendingMcpSecrets.value(cur->id) : QString{});
+        extMcpSecret->setPlaceholderText(cur != nullptr && !cur->credentialRef.isEmpty()
+            ? QStringLiteral("已保存密钥，留空保持不变")
+            : QStringLiteral("可选 Bearer Token / 环境变量密钥（加密存储）"));
+        UpdateExternalMcpTransportVisibility();
+        loading = false;
+    }
+
+    void PromptImportExternalMcpJson() {
+        QDialog importDlg(dialog);
+        importDlg.setWindowTitle(QStringLiteral("粘贴导入 MCP 配置 (mcpServers JSON)"));
+        importDlg.resize(540, 360);
+        auto* v = new QVBoxLayout(&importDlg);
+        v->addWidget(Text(QStringLiteral("支持粘贴 Claude Desktop / Claude Code / Cursor 标准 mcpServers JSON 配置；其中的密钥将自动转入本机加密凭据库："), &importDlg, true));
+        auto* editor = new QPlainTextEdit(&importDlg);
+        editor->setPlaceholderText(QStringLiteral("{\n  \"mcpServers\": {\n    \"war3-autotest\": {\n      \"command\": \"node\",\n      \"args\": [\"server.js\"]\n    }\n  }\n}"));
+        v->addWidget(editor, 1);
+        auto* errLabel = Text(QString(), &importDlg, true);
+        v->addWidget(errLabel);
+        auto* btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &importDlg);
+        btns->button(QDialogButtonBox::Ok)->setText(QStringLiteral("解析并添加"));
+        btns->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+        v->addWidget(btns);
+        QObject::connect(btns, &QDialogButtonBox::rejected, &importDlg, &QDialog::reject);
+        QObject::connect(btns, &QDialogButtonBox::accepted, &importDlg, [&] {
+            QHash<QString, QString> secrets;
+            QString err;
+            auto parsed = ExternalMcpManager::ParseMcpServersJson(editor->toPlainText(), &secrets, &err);
+            if (parsed.isEmpty()) {
+                errLabel->setText(err);
+                return;
+            }
+            for (auto& item : parsed) settings.externalMcpServers.push_back(item);
+            for (auto it = secrets.constBegin(); it != secrets.constEnd(); ++it) {
+                pendingMcpSecrets.insert(it.key(), it.value());
+            }
+            RefreshExternalMcps(static_cast<int>(settings.externalMcpServers.size()) - 1);
+            Message(QStringLiteral("已解析添加 %1 个外部 MCP 服务器，点击“保存设置”后生效。").arg(parsed.size()));
+            importDlg.accept();
+        });
+        importDlg.exec();
     }
 
     void UpdateStatus() {
@@ -683,7 +920,10 @@ public:
     void ClearSecrets() {
         for (auto iterator = pendingSecrets.begin(); iterator != pendingSecrets.end(); ++iterator) iterator.value().fill(QChar(0));
         pendingSecrets.clear();
+        for (auto iterator = pendingMcpSecrets.begin(); iterator != pendingMcpSecrets.end(); ++iterator) iterator.value().fill(QChar(0));
+        pendingMcpSecrets.clear();
         const QSignalBlocker blocker(secret); secret->clear();
+        if (extMcpSecret) { const QSignalBlocker b2(extMcpSecret); extMcpSecret->clear(); }
     }
 
     AgentSettingsDialog* dialog;
@@ -693,18 +933,22 @@ public:
     CredentialStore* credentialStore;
     std::function<bool(const AgentSettings&, QString*)> commit;
     QHash<QString, QString> pendingSecrets;
+    QHash<QString, QString> pendingMcpSecrets;
     QString mcpToken;
     bool loading = false;
     int providerIndex = -1;
     int modelIndex = -1;
-    QListWidget *nav = nullptr, *providers = nullptr, *toolList = nullptr;
+    int externalMcpIndex = -1;
+    QListWidget *nav = nullptr, *providers = nullptr, *toolList = nullptr, *extMcpList = nullptr;
     QStackedWidget* pages = nullptr;
-    QWidget *providerEditor = nullptr, *modelEditor = nullptr;
+    QWidget *providerEditor = nullptr, *modelEditor = nullptr, *extMcpEditor = nullptr;
     QCheckBox *aiEnabled = nullptr, *reducedMotion = nullptr, *providerEnabled = nullptr,
-        *toolsSupported = nullptr, *imagesSupported = nullptr, *mcpEnabled = nullptr;
+        *toolsSupported = nullptr, *imagesSupported = nullptr, *mcpEnabled = nullptr, *extMcpEnabled = nullptr;
     QLineEdit *providerName = nullptr, *website = nullptr, *baseUrl = nullptr, *secret = nullptr,
-        *modelId = nullptr, *modelName = nullptr, *context = nullptr, *output = nullptr;
-    QComboBox* protocol = nullptr;
+        *modelId = nullptr, *modelName = nullptr, *context = nullptr, *output = nullptr,
+        *extMcpName = nullptr, *extMcpCommand = nullptr, *extMcpArgs = nullptr, *extMcpCwd = nullptr,
+        *extMcpUrl = nullptr, *extMcpSecret = nullptr;
+    QComboBox *protocol = nullptr, *extMcpTransport = nullptr, *extMcpPerm = nullptr;
     QComboBox* uiFont = nullptr;
     QLabel* fontPreview = nullptr;
     QString uiFontFamily;
@@ -714,7 +958,7 @@ public:
     QLabel *transferFont = nullptr, *transferSummary = nullptr;
     QPushButton *importSettings = nullptr, *exportSettings = nullptr;
     QTableWidget* models = nullptr;
-    QSpinBox* port = nullptr;
+    QSpinBox *port = nullptr, *maxAutoStepsSpin = nullptr;
     QLabel *status = nullptr, *contextStatus = nullptr, *message = nullptr, *endpoint = nullptr, *mcpStatus = nullptr;
     QPushButton *fetchModels = nullptr, *cancelFetch = nullptr, *copyConfig = nullptr;
     ProviderCatalog* catalog = nullptr;
@@ -872,17 +1116,32 @@ void AgentSettingsDialog::accept() {
             created.push_back(reference); provider.credentialRef = reference;
         }
     }
+    for (auto& server : candidate.externalMcpServers) {
+        if (!impl_->pendingMcpSecrets.contains(server.id)) continue;
+        const auto value = impl_->pendingMcpSecrets.value(server.id);
+        if (value.isEmpty()) server.credentialRef.clear();
+        else {
+            const auto reference = QStringLiteral("forge/external-mcp/") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            if (!impl_->credentialStore->Write(reference, value, &error)) {
+                for (const auto& ref : created) static_cast<void>(impl_->credentialStore->Remove(ref));
+                impl_->Message(error); return;
+            }
+            created.push_back(reference); server.credentialRef = reference;
+        }
+    }
     if (impl_->commit && !impl_->commit(candidate, &error)) {
         for (const auto& ref : created) static_cast<void>(impl_->credentialStore->Remove(ref));
         impl_->Message(error.isEmpty() ? QStringLiteral("设置未写入；原设置和密钥保留。") : error); return;
     }
     QSet<QString> retained;
     for (const auto& provider : candidate.providers) if (!provider.credentialRef.isEmpty()) retained.insert(provider.credentialRef);
+    for (const auto& server : candidate.externalMcpServers) if (!server.credentialRef.isEmpty()) retained.insert(server.credentialRef);
     for (const auto& provider : impl_->original.providers) if (!provider.credentialRef.isEmpty() && !retained.contains(provider.credentialRef)) {
-        // 迁移更换地址/提供商不默默删除旧凭据；保留在本机但不转交新endpoint。
-        // 用户明确编辑或清除密钥时仍按原事务清理被替换引用。
         if (!impl_->importedSettings || impl_->pendingSecrets.contains(provider.id))
             static_cast<void>(impl_->credentialStore->Remove(provider.credentialRef));
+    }
+    for (const auto& server : impl_->original.externalMcpServers) if (!server.credentialRef.isEmpty() && !retained.contains(server.credentialRef)) {
+        static_cast<void>(impl_->credentialStore->Remove(server.credentialRef));
     }
     impl_->settings = candidate;
     impl_->original = candidate;

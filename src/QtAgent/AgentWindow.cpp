@@ -4,6 +4,7 @@
 #include "AgentSessionStore.h"
 #include "AnimatedCounter.h"
 #include "ComposerWidgets.h"
+#include "TokenMeter.h"
 #include "Fonts/FontLoader.h"
 #include "Icons/SvgIcons.h"
 #include "Theme/ThemeManager.h"
@@ -187,9 +188,11 @@ QString SessionTimeText(const QJsonObject& session) {
 struct UsageBreakdown {
     bool hasInput = false;
     bool hasCache = false;
+    bool hasCacheWrite = false;
     bool hasOutput = false;
     qint64 input = 0;         // 提供商报告的输入总量（含缓存命中）
     qint64 cacheRead = 0;
+    qint64 cacheWrite = 0;
     qint64 output = 0;
     qint64 uncachedInput = 0; // 输入减去缓存命中
 };
@@ -199,15 +202,48 @@ UsageBreakdown ParseUsageBreakdown(const QJsonObject& usage) {
     const QJsonValue output = usage.value(QStringLiteral("output_tokens"));
     QJsonValue cache = usage.value(QStringLiteral("cache_read_tokens"));
     if (!IsExactCount(cache)) cache = usage.value(QStringLiteral("cached_tokens"));
+    if (!IsExactCount(cache)) cache = usage.value(QStringLiteral("details")).toObject().value(QStringLiteral("cacheRead"));
+    QJsonValue cacheWrite = usage.value(QStringLiteral("cache_write_tokens"));
+    if (!IsExactCount(cacheWrite)) cacheWrite = usage.value(QStringLiteral("details")).toObject().value(QStringLiteral("cacheWrite"));
     UsageBreakdown result;
     result.hasInput = IsExactCount(input);
     result.hasCache = IsExactCount(cache);
+    result.hasCacheWrite = IsExactCount(cacheWrite);
     result.hasOutput = IsExactCount(output);
     result.input = Count(input);
     result.cacheRead = Count(cache);
+    result.cacheWrite = Count(cacheWrite);
     result.output = Count(output);
     result.uncachedInput = result.hasInput ? result.input - std::min(result.input, result.cacheRead) : 0;
     return result;
+}
+
+ContextCompositionSnapshot DecodeCompositionEvent(const QJsonObject& event) {
+    ContextCompositionSnapshot snap;
+    snap.messagesTokens = Count(event.value(QStringLiteral("messages_tokens")));
+    snap.editorToolsTokens = Count(event.value(QStringLiteral("editor_tools_tokens")));
+    snap.mcpToolsTokens = Count(event.value(QStringLiteral("mcp_tools_tokens")));
+    snap.systemPromptTokens = Count(event.value(QStringLiteral("system_prompt_tokens")));
+    snap.skillsTokens = Count(event.value(QStringLiteral("skills_tokens")));
+    snap.mcpInstructionsTokens = Count(event.value(QStringLiteral("mcp_instructions_tokens")));
+    snap.memoryFilesTokens = Count(event.value(QStringLiteral("memory_files_tokens")));
+    const double ratio = event.value(QStringLiteral("autocompact_threshold_ratio")).toDouble(0.80);
+    if (std::isfinite(ratio) && ratio > 0.1 && ratio <= 1.0) snap.autocompactThresholdRatio = ratio;
+    const auto parseItems = [](const QJsonArray& arr) {
+        QList<ContextNamedItem> list;
+        for (const auto& v : arr) {
+            const auto o = v.toObject();
+            list.push_back({o.value(QStringLiteral("name")).toString(),
+                o.value(QStringLiteral("detail")).toString(),
+                Count(o.value(QStringLiteral("tokens")))});
+        }
+        return list;
+    };
+    snap.editorToolItems = parseItems(event.value(QStringLiteral("editor_tool_items")).toArray());
+    snap.mcpToolItems = parseItems(event.value(QStringLiteral("mcp_tool_items")).toArray());
+    snap.skillItems = parseItems(event.value(QStringLiteral("skill_items")).toArray());
+    snap.memoryItems = parseItems(event.value(QStringLiteral("memory_items")).toArray());
+    return snap;
 }
 
 } // namespace
@@ -265,10 +301,31 @@ struct AgentWindow::Private {
     QLabel* inspectorContextTokens = nullptr;
     ContextSegmentBar* inspectorSegmentBar = nullptr;
     std::array<ContextLegendRow, 4> contextRows{};
+    QLabel* inspectorCacheSummary = nullptr;
+    QWidget* inspectorCompositionBox = nullptr;
+    std::array<ContextLegendRow, 9> compositionRows{};
+    QWidget* inspectorMcpToolsSection = nullptr;
+    QToolButton* inspectorMcpToolsToggle = nullptr;
+    QLabel* inspectorMcpToolsCount = nullptr;
+    QWidget* inspectorMcpToolsBody = nullptr;
+    QVBoxLayout* inspectorMcpToolsLayout = nullptr;
+    QWidget* inspectorMemorySection = nullptr;
+    QToolButton* inspectorMemoryToggle = nullptr;
+    QLabel* inspectorMemoryCount = nullptr;
+    QPushButton* inspectorEditMemoryBtn = nullptr;
+    QWidget* inspectorMemoryBody = nullptr;
+    QVBoxLayout* inspectorMemoryLayout = nullptr;
+    QLabel* inspectorAutocompactLeft = nullptr;
+    QPushButton* inspectorCompactBtn = nullptr;
+    ContextCompositionSnapshot composition;
+    bool hasComposition = false;
+
     QLabel* inspectorBuiltinDot = nullptr;
     QLabel* inspectorBuiltinState = nullptr;
     QLabel* inspectorMcpDot = nullptr;
     QPushButton* inspectorMcpBtn = nullptr;
+    QWidget* inspectorExternalMcpContainer = nullptr;
+    QVBoxLayout* inspectorExternalMcpLayout = nullptr;
     // 宿主推送的连接器实际状态；推送前连接器行显示“—”。
     AgentConnectorStatus connector;
     bool connectorKnown = false;
@@ -326,6 +383,9 @@ struct AgentWindow::Private {
     QLabel* contextBreakdown = nullptr;
     QLabel* contextSource = nullptr;
     QJsonObject actualUsage;
+    QJsonObject lastRestoredEvent;
+    bool showAllRestoredHistory = false;
+    bool stepLimitPaused = false;
     QToolButton* permissions = nullptr;
     QMenu* permissionMenu = nullptr;
     std::array<PermissionOption*, 4> permissionOptions{};
@@ -384,7 +444,7 @@ struct AgentWindow::Private {
     void UpdateTool(const QJsonObject& event, const QString& type);
     void UpdateChanges(const QJsonObject& event);
     void UpdateElapsed();
-    void RestoreHistory(const QJsonObject& event);
+    void RestoreHistory(QJsonObject event);
     void BuildSessionPopover();
     void UpdateSessions();
     void BuildContextPopover();
@@ -716,6 +776,152 @@ void AgentWindow::Private::BuildRightInspector(QHBoxLayout* root) {
             legendBox->addLayout(row);
         }
         sections->addLayout(legendBox);
+
+        inspectorCacheSummary = new QLabel(body);
+        inspectorCacheSummary->setObjectName(QStringLiteral("agentCacheHitRateLabel"));
+        inspectorCacheSummary->setFont(UiKit::MonoFont(11));
+        inspectorCacheSummary->hide();
+        sections->addWidget(inspectorCacheSummary);
+
+        // Claude Code 风格上下文窗口真实构成拆解（分项使用独立色块名 agentContextPartSwatch，保留原 4 项契约）。
+        inspectorCompositionBox = new QWidget(body);
+        inspectorCompositionBox->setObjectName(QStringLiteral("agentCompositionContainer"));
+        auto* compLayout = new QVBoxLayout(inspectorCompositionBox);
+        compLayout->setContentsMargins(0, 4, 0, 0);
+        compLayout->setSpacing(5);
+
+        auto* compHeader = new QLabel(QStringLiteral("窗口构成"), inspectorCompositionBox);
+        compHeader->setObjectName(QStringLiteral("agentInspectorHeading"));
+        compLayout->addWidget(compHeader);
+
+        constexpr std::array<const char*, 9> kPartNames{
+            "消息历史", "内置工具", "MCP 工具", "系统提示词",
+            "技能", "MCP 服务说明", "记忆文件", "自动压缩缓冲", "可用剩余"
+        };
+        for (std::size_t i = 0; i < kPartNames.size(); ++i) {
+            auto* row = new QHBoxLayout;
+            row->setContentsMargins(0, 0, 0, 0);
+            row->setSpacing(7);
+            auto* swatch = new QFrame(inspectorCompositionBox);
+            swatch->setObjectName(QStringLiteral("agentContextPartSwatch"));
+            swatch->setFixedSize(7, 7);
+            row->addWidget(swatch);
+            const QString partTitle = QString::fromUtf8(kPartNames[i]);
+            auto* name = new QLabel(partTitle, inspectorCompositionBox);
+            name->setObjectName(QStringLiteral("agentInspectorMuted"));
+            row->addWidget(name, 1);
+            auto* tok = new QLabel(QStringLiteral("—"), inspectorCompositionBox);
+            tok->setObjectName(QStringLiteral("agentInspectorMuted"));
+            tok->setAccessibleName(partTitle + QStringLiteral(" 构成用量"));
+            tok->setFont(UiKit::MonoFont(11));
+            tok->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            row->addWidget(tok);
+            auto* pct = new QLabel(QStringLiteral("—"), inspectorCompositionBox);
+            pct->setObjectName(QStringLiteral("agentInspectorLabel"));
+            pct->setFont(UiKit::MonoFont(11));
+            pct->setFixedWidth(40);
+            pct->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            row->addWidget(pct);
+            compositionRows[i] = {swatch, tok, pct};
+            compLayout->addLayout(row);
+        }
+
+        // 可展开 MCP 工具明细（对齐 Claude Code 右栏 MCP 工具列表）
+        inspectorMcpToolsSection = new QWidget(inspectorCompositionBox);
+        auto* mcpSecLayout = new QVBoxLayout(inspectorMcpToolsSection);
+        mcpSecLayout->setContentsMargins(0, 4, 0, 0);
+        mcpSecLayout->setSpacing(3);
+        auto* mcpHead = new QHBoxLayout;
+        mcpHead->setContentsMargins(0, 0, 0, 0);
+        mcpHead->setSpacing(4);
+        inspectorMcpToolsToggle = new QToolButton(inspectorMcpToolsSection);
+        inspectorMcpToolsToggle->setObjectName(QStringLiteral("agentMcpToolsFoldToggle"));
+        inspectorMcpToolsToggle->setText(QStringLiteral("▸ MCP 工具"));
+        inspectorMcpToolsToggle->setCheckable(true);
+        inspectorMcpToolsToggle->setCursor(Qt::PointingHandCursor);
+        mcpHead->addWidget(inspectorMcpToolsToggle);
+        mcpHead->addStretch();
+        inspectorMcpToolsCount = new QLabel(QStringLiteral("0"), inspectorMcpToolsSection);
+        inspectorMcpToolsCount->setObjectName(QStringLiteral("agentInspectorMuted"));
+        inspectorMcpToolsCount->setFont(UiKit::MonoFont(11));
+        mcpHead->addWidget(inspectorMcpToolsCount);
+        mcpSecLayout->addLayout(mcpHead);
+        inspectorMcpToolsBody = new QWidget(inspectorMcpToolsSection);
+        inspectorMcpToolsLayout = new QVBoxLayout(inspectorMcpToolsBody);
+        inspectorMcpToolsLayout->setContentsMargins(8, 2, 0, 2);
+        inspectorMcpToolsLayout->setSpacing(3);
+        inspectorMcpToolsBody->hide();
+        mcpSecLayout->addWidget(inspectorMcpToolsBody);
+        QObject::connect(inspectorMcpToolsToggle, &QToolButton::toggled, q, [this](bool open) {
+            inspectorMcpToolsToggle->setText(open ? QStringLiteral("▾ MCP 工具") : QStringLiteral("▸ MCP 工具"));
+            inspectorMcpToolsBody->setVisible(open);
+        });
+        inspectorMcpToolsSection->hide();
+        compLayout->addWidget(inspectorMcpToolsSection);
+
+        // 可展开记忆文件明细 + 快速编辑入口
+        inspectorMemorySection = new QWidget(inspectorCompositionBox);
+        auto* memSecLayout = new QVBoxLayout(inspectorMemorySection);
+        memSecLayout->setContentsMargins(0, 4, 0, 0);
+        memSecLayout->setSpacing(3);
+        auto* memHead = new QHBoxLayout;
+        memHead->setContentsMargins(0, 0, 0, 0);
+        memHead->setSpacing(4);
+        inspectorMemoryToggle = new QToolButton(inspectorMemorySection);
+        inspectorMemoryToggle->setObjectName(QStringLiteral("agentMemoryFilesFoldToggle"));
+        inspectorMemoryToggle->setText(QStringLiteral("▾ 记忆文件"));
+        inspectorMemoryToggle->setCheckable(true);
+        inspectorMemoryToggle->setChecked(true);
+        inspectorMemoryToggle->setCursor(Qt::PointingHandCursor);
+        memHead->addWidget(inspectorMemoryToggle);
+        memHead->addStretch();
+        inspectorEditMemoryBtn = new QPushButton(QStringLiteral("编辑"), inspectorMemorySection);
+        inspectorEditMemoryBtn->setObjectName(QStringLiteral("agentEditMemoryBtn"));
+        inspectorEditMemoryBtn->setCursor(Qt::PointingHandCursor);
+        QObject::connect(inspectorEditMemoryBtn, &QPushButton::clicked, q, [this] {
+            emit q->EditMemoryRequested(QStringLiteral("project"));
+        });
+        memHead->addWidget(inspectorEditMemoryBtn);
+        inspectorMemoryCount = new QLabel(QStringLiteral("0"), inspectorMemorySection);
+        inspectorMemoryCount->setObjectName(QStringLiteral("agentInspectorMuted"));
+        inspectorMemoryCount->setFont(UiKit::MonoFont(11));
+        memHead->addWidget(inspectorMemoryCount);
+        memSecLayout->addLayout(memHead);
+        inspectorMemoryBody = new QWidget(inspectorMemorySection);
+        inspectorMemoryLayout = new QVBoxLayout(inspectorMemoryBody);
+        inspectorMemoryLayout->setContentsMargins(8, 2, 0, 2);
+        inspectorMemoryLayout->setSpacing(3);
+        memSecLayout->addWidget(inspectorMemoryBody);
+        QObject::connect(inspectorMemoryToggle, &QToolButton::toggled, q, [this](bool open) {
+            inspectorMemoryToggle->setText(open ? QStringLiteral("▾ 记忆文件") : QStringLiteral("▸ 记忆文件"));
+            inspectorMemoryBody->setVisible(open);
+        });
+        compLayout->addWidget(inspectorMemorySection);
+
+        inspectorCompositionBox->hide();
+        sections->addWidget(inspectorCompositionBox);
+
+        // 底部自动压缩余量与手动「压缩会话」按钮
+        auto* compactFooter = new QHBoxLayout;
+        compactFooter->setContentsMargins(0, 4, 0, 0);
+        compactFooter->setSpacing(6);
+        inspectorAutocompactLeft = new QLabel(QStringLiteral("距自动压缩 —"), body);
+        inspectorAutocompactLeft->setObjectName(QStringLiteral("agentAutocompactRemaining"));
+        inspectorAutocompactLeft->setFont(UiKit::MonoFont(11));
+        compactFooter->addWidget(inspectorAutocompactLeft, 1);
+        inspectorCompactBtn = new QPushButton(QStringLiteral("压缩会话"), body);
+        inspectorCompactBtn->setObjectName(QStringLiteral("agentCompactSessionBtn"));
+        inspectorCompactBtn->setCursor(Qt::PointingHandCursor);
+        inspectorCompactBtn->setFixedHeight(22);
+        QObject::connect(inspectorCompactBtn, &QPushButton::clicked, q, [this] {
+            if (busy || !settings.aiEnabled) return;
+            const QVariantMap selected = models ? models->currentData().toMap() : QVariantMap{};
+            emit q->CompactRequested(
+                selected.value(QStringLiteral("provider_id")).toString(),
+                selected.value(QStringLiteral("model_id")).toString());
+        });
+        compactFooter->addWidget(inspectorCompactBtn);
+        sections->addLayout(compactFooter);
     }
 
     sections->addWidget(MakeInspectorDivider(body));
@@ -763,6 +969,13 @@ void AgentWindow::Private::BuildRightInspector(QHBoxLayout* root) {
         QObject::connect(inspectorMcpBtn, &QPushButton::clicked, q, &AgentWindow::SettingsRequested);
         row2->addWidget(inspectorMcpBtn);
         connBox->addLayout(row2);
+
+        inspectorExternalMcpContainer = new QWidget(body);
+        inspectorExternalMcpContainer->setObjectName(QStringLiteral("agentInspectorListContainer"));
+        inspectorExternalMcpLayout = new QVBoxLayout(inspectorExternalMcpContainer);
+        inspectorExternalMcpLayout->setContentsMargins(0, 2, 0, 0);
+        inspectorExternalMcpLayout->setSpacing(6);
+        connBox->addWidget(inspectorExternalMcpContainer);
 
         sections->addLayout(connBox);
     }
@@ -969,9 +1182,19 @@ void AgentWindow::Private::Build() {
 
     historyNotice = new QLabel(centerWorkspace);
     historyNotice->setObjectName(QStringLiteral("agentHistoryNotice"));
+    historyNotice->setTextFormat(Qt::RichText);
     historyNotice->setWordWrap(true);
     historyNotice->setContentsMargins(16, 6, 16, 6);
     historyNotice->hide();
+    QObject::connect(historyNotice, &QLabel::linkActivated, q, [this](const QString& link) {
+        if (link == QStringLiteral("load-older") && !lastRestoredEvent.isEmpty()) {
+            const QJsonObject savedEvent = lastRestoredEvent;
+            const QJsonObject savedUsage = actualUsage;
+            showAllRestoredHistory = true;
+            RestoreHistory(savedEvent);
+            if (!savedUsage.isEmpty()) q->AppendEvent(savedUsage);
+        }
+    });
     centerLayout->addWidget(historyNotice);
 
     conversation = new AgentConversationView(centerWorkspace);
@@ -1097,8 +1320,13 @@ void AgentWindow::Private::Build() {
     queueNotice->setTextFormat(Qt::RichText);
     queueNotice->hide();
     QObject::connect(queueNotice, &QLabel::linkActivated, q, [this](const QString& link) {
-        if (link == QStringLiteral("clear")) { queued.clear(); UpdateQueue(); }
+        if (link == QStringLiteral("clear")) { queued.clear(); stepLimitPaused = false; UpdateQueue(); }
         else if (link == QStringLiteral("next") && !busy && !queued.isEmpty()) Dispatch(queued.takeFirst());
+        else if (link == QStringLiteral("continue-run") && !busy) {
+            stepLimitPaused = false;
+            UpdateQueue();
+            Dispatch({QStringLiteral("请继续完成上一步未执行完的剩余地图任务。"), QStringLiteral("继续执行剩余步骤")});
+        }
     });
     cardLayout->addWidget(queueNotice);
     cardLayout->addWidget(prompt);
@@ -1314,9 +1542,23 @@ void AgentWindow::Private::ApplyAgentStyleSheet() {
         "QToolButton#agentEnvFollowSwitch:checked { background:%11; border-color:%12; color:%10; font-weight:600; }"
         "QLabel#agentConnectorDot { border-radius:3px; background:%9; }"
         "QLabel#agentConnectorDot[active=\"true\"] { background:%10; }"
-        "QPushButton#agentInspectorLinkBtn {"
-        " border:0; background:transparent; color:%10; font-size:12px; padding:0 2px; }"
-        "QPushButton#agentInspectorLinkBtn:hover { text-decoration:underline; }"
+        "QLabel#agentExternalMcpDot { border-radius:3px; background:%9; }"
+        "QLabel#agentExternalMcpDot[stateKind=\"active\"] { background:%10; }"
+        "QLabel#agentExternalMcpDot[stateKind=\"warn\"] { background:%14; }"
+        "QLabel#agentExternalMcpDot[stateKind=\"error\"] { background:%15; }"
+        "QPushButton#agentInspectorLinkBtn, QPushButton#agentEditMemoryBtn, QPushButton#agentExternalMcpReconnectBtn {"
+        " border:0; background:transparent; color:%10; font-size:11px; padding:0 2px; }"
+        "QPushButton#agentInspectorLinkBtn:hover, QPushButton#agentEditMemoryBtn:hover, QPushButton#agentExternalMcpReconnectBtn:hover {"
+        " text-decoration:underline; }"
+        "QPushButton#agentExternalMcpReconnectBtn[warn=\"true\"] { color:%14; font-weight:500; }"
+        "QToolButton#agentMcpToolsFoldToggle, QToolButton#agentMemoryFilesFoldToggle {"
+        " border:0; background:transparent; color:%8; font-size:11px; font-weight:600; padding:0; }"
+        "QToolButton#agentMcpToolsFoldToggle:hover, QToolButton#agentMemoryFilesFoldToggle:hover { color:%6; }"
+        "QLabel#agentCacheHitRateLabel, QLabel#agentAutocompactRemaining { font-size:11px; color:%8; }"
+        "QPushButton#agentCompactSessionBtn {"
+        " background:%3; border:1px solid %5; border-radius:6px; padding:0 8px; font-size:11px; color:%7; }"
+        "QPushButton#agentCompactSessionBtn:hover { background:%4; border-color:%12; color:%6; }"
+        "QPushButton#agentCompactSessionBtn:disabled { color:%9; background:transparent; }"
         "QFrame#agentInspectorItemRow {"
         " background:%2; border:1px solid %5; border-radius:6px; }"
         "QPushButton#agentInspectorJumpBtn {"
@@ -1368,6 +1610,9 @@ void AgentWindow::Private::ApplyAgentStyleSheet() {
         "QTextBrowser#agentMessageBody { background:transparent; border:0; padding:0; font-size:14px; color:%7; }"
         "QFrame#agentToolRow { background:transparent; border:0; border-radius:7px; }"
         "QFrame#agentToolRow:hover { background:%3; }"
+        "QFrame#agentThinkingRow { background:transparent; border:0; border-radius:7px; }"
+        "QFrame#agentThinkingRow:hover { background:%3; }"
+        "QFrame#agentCompactionRow { background:%1; border:1px solid %12; border-radius:9px; }"
         "QFrame#agentInlineChanges { background:%1; border:1px solid %5; border-radius:10px; }"
         "QLabel#agentToolTitle { font-size:13px; color:%8; }"
         "QLabel#agentToolTitle[changeRow=\"true\"] { font-weight:500; color:%6; }"
@@ -1737,7 +1982,13 @@ void AgentWindow::Private::UpdateContext() {
     QStringList details;
     if (usage.hasInput) details.append(QStringLiteral("输入 ") + FormatTokens(usage.input));
     if (usage.hasOutput) details.append(QStringLiteral("输出 ") + FormatTokens(usage.output));
-    if (usage.hasCache) details.append(QStringLiteral("缓存命中 ") + FormatTokens(usage.cacheRead));
+    if (usage.hasCache) {
+        const int hitRate = usage.input > 0 ? static_cast<int>(std::llround(static_cast<double>(usage.cacheRead) / static_cast<double>(usage.input) * 100.0)) : 0;
+        details.append(QStringLiteral("缓存命中 %1 (%2%)").arg(FormatTokens(usage.cacheRead)).arg(hitRate));
+    }
+    if (usage.hasCacheWrite && usage.cacheWrite > 0) {
+        details.append(QStringLiteral("缓存写入 ") + FormatTokens(usage.cacheWrite));
+    }
     contextBreakdown->setText(details.join(QStringLiteral(" · ")));
     contextSource->setText(limit > 0 ? QStringLiteral("上限来源：%1%2").arg(ring->Source(), ring->IsEstimated() ? QStringLiteral("（估算）") : QString()) : QString());
 
@@ -1754,11 +2005,23 @@ void AgentWindow::Private::UpdateContext() {
 
     // 右侧检查栏：分段条与四项明细只显示提供商实际给出的数；未知一律“—”。
     if (!inspectorSegmentBar) return;
-    inspectorSegmentBar->SetBreakdown(limit, used, usage.uncachedInput, usage.cacheRead, usage.output);
+    const qint64 effectiveUsed = hasUsage ? used : (hasComposition ? composition.TotalEstimatedUsed() : -1);
+    const bool hasAnyEstimate = effectiveUsed >= 0 && limit > 0;
+    if (hasUsage) {
+        inspectorSegmentBar->SetBreakdown(limit, used, usage.uncachedInput, usage.cacheRead, usage.output);
+    } else if (hasComposition && limit > 0) {
+        inspectorSegmentBar->SetBreakdown(limit, effectiveUsed, effectiveUsed, 0, 0);
+    } else {
+        inspectorSegmentBar->SetBreakdown(limit, used, 0, 0, 0);
+    }
     if (inspectorContextSource) inspectorContextSource->setText(sourceBadge);
     if (hasUsage) {
         inspectorContextPercent->setText(QStringLiteral("已使用 %1%").arg(percentage));
         inspectorContextTokens->setText(QStringLiteral("%1 / %2").arg(FormatTokens(used), FormatTokens(limit)));
+    } else if (hasAnyEstimate) {
+        const int estPct = std::clamp(qRound(static_cast<double>(effectiveUsed) / static_cast<double>(limit) * 100.0), 0, 100);
+        inspectorContextPercent->setText(QStringLiteral("已使用 %1%").arg(estPct));
+        inspectorContextTokens->setText(QStringLiteral("~%1 / %2").arg(FormatTokens(effectiveUsed), FormatTokens(limit)));
     } else {
         inspectorContextPercent->setText(QStringLiteral("暂无用量"));
         inspectorContextTokens->setText(limit > 0 ? QStringLiteral("上限 %1").arg(FormatTokens(limit)) : QStringLiteral("未选模型"));
@@ -1781,6 +2044,133 @@ void AgentWindow::Private::UpdateContext() {
         if (!contextRows[i].tokens || !contextRows[i].percent) continue;
         contextRows[i].tokens->setText(values[i].known ? FormatTokens(values[i].tokens) : QStringLiteral("—"));
         contextRows[i].percent->setText(values[i].known ? formatPct(values[i].tokens) : QStringLiteral("—"));
+    }
+
+    if (inspectorCacheSummary) {
+        if (usage.hasCache && usage.input > 0) {
+            const int hitRate = static_cast<int>(std::llround(static_cast<double>(usage.cacheRead) / static_cast<double>(usage.input) * 100.0));
+            QString summaryText = QStringLiteral("本轮缓存命中率 %1%（命中 %2 / 总输入 %3）")
+                .arg(hitRate).arg(FormatTokens(usage.cacheRead), FormatTokens(usage.input));
+            if (usage.hasCacheWrite && usage.cacheWrite > 0) {
+                summaryText += QStringLiteral(" · 新写入 %1").arg(FormatTokens(usage.cacheWrite));
+            }
+            inspectorCacheSummary->setText(summaryText);
+            inspectorCacheSummary->show();
+        } else {
+            inspectorCacheSummary->hide();
+        }
+    }
+
+    // 更新 Claude Code 风格上下文窗口真实构成表与展开明细。
+    if (inspectorCompositionBox) {
+        inspectorCompositionBox->setVisible(hasComposition);
+        if (hasComposition) {
+            const auto projected = usage.hasInput && usage.input > 0
+                ? TokenMeter::ProjectToActualInput(composition, usage.input)
+                : composition;
+            const double thresholdRatio = std::clamp(projected.autocompactThresholdRatio, 0.20, 0.98);
+            const qint64 autocompactBuffer = limit > 0
+                ? std::max<qint64>(0, limit - static_cast<qint64>(std::llround(static_cast<double>(limit) * thresholdRatio)))
+                : 0;
+            const qint64 totalCurrentUsed = hasUsage ? used : projected.TotalEstimatedUsed();
+            const qint64 freeBeforeCompact = limit > 0
+                ? std::max<qint64>(0, limit - autocompactBuffer - totalCurrentUsed)
+                : 0;
+
+            const std::array<qint64, 9> partTokens{{
+                projected.messagesTokens,
+                projected.editorToolsTokens,
+                projected.mcpToolsTokens,
+                projected.systemPromptTokens,
+                projected.skillsTokens,
+                projected.mcpInstructionsTokens,
+                projected.memoryFilesTokens,
+                autocompactBuffer,
+                freeBeforeCompact,
+            }};
+            for (std::size_t i = 0; i < compositionRows.size(); ++i) {
+                if (!compositionRows[i].tokens || !compositionRows[i].percent) continue;
+                compositionRows[i].tokens->setText(FormatTokens(partTokens[i]));
+                compositionRows[i].percent->setText(formatPct(partTokens[i]));
+            }
+
+            if (inspectorMcpToolsSection && inspectorMcpToolsLayout && inspectorMcpToolsCount) {
+                ClearInspectorRows(inspectorMcpToolsLayout);
+                inspectorMcpToolsCount->setText(QString::number(projected.mcpToolItems.size()));
+                inspectorMcpToolsSection->setVisible(!projected.mcpToolItems.isEmpty());
+                for (const auto& item : projected.mcpToolItems) {
+                    auto* r = new QWidget(inspectorMcpToolsBody);
+                    auto* rl = new QHBoxLayout(r);
+                    rl->setContentsMargins(0, 1, 0, 1);
+                    rl->setSpacing(6);
+                    QString shortName = item.name;
+                    if (shortName.startsWith(QStringLiteral("mcp__"))) {
+                        const QString sub = shortName.mid(5);
+                        const auto sep = sub.indexOf(QStringLiteral("__"));
+                        if (sep > 0) shortName = sub.left(sep) + QStringLiteral(" · ") + sub.mid(sep + 2);
+                    }
+                    auto* lbl = new UiKit::ElidedLabel(shortName, r);
+                    lbl->setObjectName(QStringLiteral("agentInspectorMuted"));
+                    lbl->setMinimumWidth(0);
+                    lbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                    lbl->setToolTip(item.name + QLatin1Char('\n') + item.detail);
+                    rl->addWidget(lbl, 1);
+                    auto* tk = new QLabel(FormatTokens(item.tokens), r);
+                    tk->setObjectName(QStringLiteral("agentInspectorMuted"));
+                    tk->setFont(UiKit::MonoFont(11));
+                    rl->addWidget(tk);
+                    inspectorMcpToolsLayout->addWidget(r);
+                }
+            }
+
+            if (inspectorMemorySection && inspectorMemoryLayout && inspectorMemoryCount) {
+                ClearInspectorRows(inspectorMemoryLayout);
+                int existingCount = 0;
+                for (const auto& item : projected.memoryItems) if (item.tokens > 0) ++existingCount;
+                inspectorMemoryCount->setText(QString::number(existingCount));
+                if (projected.memoryItems.isEmpty()) {
+                    auto* empty = new QLabel(QStringLiteral("尚未创建地图记忆（点击编辑可新建）"), inspectorMemoryBody);
+                    empty->setObjectName(QStringLiteral("agentInspectorMuted"));
+                    inspectorMemoryLayout->addWidget(empty);
+                } else {
+                    for (const auto& item : projected.memoryItems) {
+                        auto* r = new QWidget(inspectorMemoryBody);
+                        auto* rl = new QHBoxLayout(r);
+                        rl->setContentsMargins(0, 1, 0, 1);
+                        rl->setSpacing(6);
+                        auto* btn = new QPushButton(item.name, r);
+                        btn->setObjectName(QStringLiteral("agentInspectorLinkBtn"));
+                        btn->setCursor(Qt::PointingHandCursor);
+                        btn->setToolTip(item.detail.isEmpty() ? item.name : item.detail);
+                        const QString scope = item.name.contains(QStringLiteral("全局")) ? QStringLiteral("global") : QStringLiteral("project");
+                        QObject::connect(btn, &QPushButton::clicked, q, [this, scope] {
+                            emit q->EditMemoryRequested(scope);
+                        });
+                        rl->addWidget(btn, 0, Qt::AlignLeft);
+                        rl->addStretch();
+                        auto* tk = new QLabel(item.tokens > 0 ? FormatTokens(item.tokens) : QStringLiteral("未建档"), r);
+                        tk->setObjectName(QStringLiteral("agentInspectorMuted"));
+                        tk->setFont(UiKit::MonoFont(11));
+                        rl->addWidget(tk);
+                        inspectorMemoryLayout->addWidget(r);
+                    }
+                }
+            }
+        }
+    }
+
+    if (inspectorAutocompactLeft) {
+        if (limit > 0 && (hasUsage || hasComposition)) {
+            const double thresholdRatio = hasComposition ? std::clamp(composition.autocompactThresholdRatio, 0.20, 0.98) : 0.80;
+            const qint64 thresholdTokens = static_cast<qint64>(std::llround(static_cast<double>(limit) * thresholdRatio));
+            const qint64 remainToCompact = std::max<qint64>(0, thresholdTokens - effectiveUsed);
+            inspectorAutocompactLeft->setText(QStringLiteral("距自动压缩还剩 %1").arg(FormatTokens(remainToCompact)));
+        } else {
+            inspectorAutocompactLeft->setText(QStringLiteral("距自动压缩 —"));
+        }
+    }
+    if (inspectorCompactBtn) {
+        inspectorCompactBtn->setEnabled(!busy && settings.aiEnabled);
     }
 }
 
@@ -1852,6 +2242,65 @@ void AgentWindow::Private::UpdateInspectorEnvironment() {
         SetStyleProperty(inspectorMcpDot, "active", active);
         inspectorMcpBtn->setText(text);
         inspectorMcpBtn->setToolTip(tip);
+    }
+    if (inspectorExternalMcpLayout) {
+        ClearInspectorRows(inspectorExternalMcpLayout);
+        if (connectorKnown) {
+            for (const auto& srv : connector.externalServers) {
+                auto* row = new QWidget(inspectorExternalMcpContainer);
+                auto* rl = new QHBoxLayout(row);
+                rl->setContentsMargins(0, 1, 0, 1);
+                rl->setSpacing(8);
+                auto* dot = new QLabel(row);
+                dot->setObjectName(QStringLiteral("agentExternalMcpDot"));
+                dot->setFixedSize(7, 7);
+                QString dotState = QStringLiteral("idle");
+                if (!srv.enabled) dotState = QStringLiteral("idle");
+                else if (srv.connecting) dotState = QStringLiteral("warn");
+                else if (srv.connected && !srv.blockedByPermission) dotState = QStringLiteral("active");
+                else if (srv.connected && srv.blockedByPermission) dotState = QStringLiteral("warn");
+                else if (!srv.error.isEmpty()) dotState = QStringLiteral("error");
+                SetStyleProperty(dot, "stateKind", dotState);
+                rl->addWidget(dot);
+
+                auto* nameLbl = new UiKit::ElidedLabel(srv.name, row);
+                nameLbl->setObjectName(QStringLiteral("agentInspectorLabel"));
+                nameLbl->setMinimumWidth(0);
+                nameLbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                QStringList tips;
+                tips << QStringLiteral("%1 (%2)").arg(srv.name, srv.transport);
+                if (!srv.enabled) tips << QStringLiteral("状态：已禁用");
+                else if (srv.connecting) tips << QStringLiteral("状态：正在连接…");
+                else if (srv.connected) {
+                    tips << QStringLiteral("状态：已连接 · %1 个工具").arg(srv.toolCount);
+                    if (srv.blockedByPermission) tips << QStringLiteral("当前会话权限低于该服务器最低要求，暂未向模型暴露工具");
+                } else {
+                    tips << (srv.error.isEmpty() ? QStringLiteral("状态：未连接") : QStringLiteral("错误：%1").arg(srv.error));
+                }
+                nameLbl->setToolTip(tips.join(QLatin1Char('\n')));
+                rl->addWidget(nameLbl, 1);
+
+                if (srv.enabled) {
+                    auto* reconn = new QPushButton(srv.connecting ? QStringLiteral("连接中")
+                        : (srv.connected ? QStringLiteral("%1 项 · 重连").arg(srv.toolCount) : QStringLiteral("重新连接")), row);
+                    reconn->setObjectName(QStringLiteral("agentExternalMcpReconnectBtn"));
+                    SetStyleProperty(reconn, "warn", !srv.connected);
+                    reconn->setCursor(Qt::PointingHandCursor);
+                    reconn->setEnabled(!srv.connecting);
+                    reconn->setToolTip(nameLbl->toolTip());
+                    const QString sid = srv.id;
+                    QObject::connect(reconn, &QPushButton::clicked, q, [this, sid] {
+                        emit q->ExternalMcpReconnectRequested(sid);
+                    });
+                    rl->addWidget(reconn);
+                } else {
+                    auto* off = new QLabel(QStringLiteral("已停用"), row);
+                    off->setObjectName(QStringLiteral("agentInspectorMuted"));
+                    rl->addWidget(off);
+                }
+                inspectorExternalMcpLayout->addWidget(row);
+            }
+        }
     }
     if (sidebarAccount && sidebarStatusDot) {
         const bool ready = settings.aiEnabled && models && models->currentIndex() >= 0;
@@ -1976,13 +2425,30 @@ void AgentWindow::Private::UpdateInspectorTools() {
 
 void AgentWindow::Private::UpdateContextLegendColors() {
     if (!inspectorSegmentBar) return;
-    // 与分段条取同一份令牌配色（同一控件解析主题），色块和分段逐一相同。
-    const ContextSegmentColors colors = ResolveContextSegmentColors(UiKit::ThemeManager::ThemeForWidget(inspectorSegmentBar));
+    const auto& theme = UiKit::ThemeManager::ThemeForWidget(inspectorSegmentBar);
+    const ContextSegmentColors colors = ResolveContextSegmentColors(theme);
     const std::array<QColor, 4> fills{colors.input, colors.cache, colors.output, colors.remaining};
     for (std::size_t i = 0; i < contextRows.size(); ++i) {
         if (!contextRows[i].swatch) continue;
         const QString css = QStringLiteral("background:%1; border-radius:2px; border:0;").arg(fills[i].name());
         if (contextRows[i].swatch->styleSheet() != css) contextRows[i].swatch->setStyleSheet(css);
+    }
+    const auto& c = theme.colors;
+    const std::array<QColor, 9> partFills{
+        UiKit::ToQColor(c.blue),
+        UiKit::ToQColor(c.amber),
+        UiKit::ToQColor(c.accent),
+        UiKit::ToQColor(c.violet),
+        UiKit::ToQColor(c.inlineCodeAccent),
+        colors.cache,
+        UiKit::ToQColor(c.red),
+        UiKit::ToQColor(c.muted),
+        colors.remaining,
+    };
+    for (std::size_t i = 0; i < compositionRows.size(); ++i) {
+        if (!compositionRows[i].swatch) continue;
+        const QString css = QStringLiteral("background:%1; border-radius:2px; border:0;").arg(partFills[i].name());
+        if (compositionRows[i].swatch->styleSheet() != css) compositionRows[i].swatch->setStyleSheet(css);
     }
     inspectorSegmentBar->update();
 }
@@ -2053,10 +2519,11 @@ void AgentWindow::Private::UpdateAvailability() {
     sessionsButton->setToolTip(busy ? QStringLiteral("任务运行中不能切换会话，请先停止并等待结束") : QStringLiteral("会话"));
     newConversation->setToolTip(busy ? QStringLiteral("任务运行中不能新建会话，请先停止并等待结束") : QStringLiteral("新会话"));
     if (busy) sessionsPopover->Dismiss();
+    if (inspectorCompactBtn) inspectorCompactBtn->setEnabled(configured && !busy);
     QString reason;
     if (!settings.aiEnabled) reason = QStringLiteral("在设置中启用 AI 并添加模型后即可开始");
     else if (models->currentIndex() < 0) reason = QStringLiteral("在设置中添加提供商并启用模型后即可开始");
-    prompt->setPlaceholderText(reason.isEmpty() ? QStringLiteral("描述要完成的地图工作…") : reason);
+    prompt->setPlaceholderText(reason.isEmpty() ? QStringLiteral("描述要完成的地图工作…（支持 /compact · /memory · /new · /mcp）") : reason);
     if (!busy && !configured) SetStatus(reason);
     send->setToolTip(configured ? QStringLiteral("发送 · Enter；换行 · Shift+Enter；运行中排队 · Ctrl+Enter") : reason);
     UpdateSendIcons();
@@ -2250,11 +2717,38 @@ void AgentWindow::Private::Dispatch(const QueuedPrompt& next) {
 
 void AgentWindow::Private::Submit() {
     QGuiApplication::inputMethod()->commit();
+    const QString rawCmd = prompt->toPlainText().trimmed();
+    if (!busy && rawCmd.startsWith(QLatin1Char('/')) && attachments.isEmpty()) {
+        if (rawCmd == QStringLiteral("/compact") || rawCmd == QStringLiteral("/压缩")) {
+            prompt->clear();
+            const QVariantMap selected = models->currentData().toMap();
+            emit q->CompactRequested(
+                selected.value(QStringLiteral("provider_id")).toString(),
+                selected.value(QStringLiteral("model_id")).toString());
+            return;
+        }
+        if (rawCmd == QStringLiteral("/memory") || rawCmd == QStringLiteral("/记忆")) {
+            prompt->clear();
+            emit q->EditMemoryRequested(QStringLiteral("project"));
+            return;
+        }
+        if (rawCmd == QStringLiteral("/new") || rawCmd == QStringLiteral("/新会话")) {
+            prompt->clear();
+            emit q->NewConversationRequested();
+            return;
+        }
+        if (rawCmd == QStringLiteral("/mcp")) {
+            prompt->clear();
+            emit q->SettingsRequested();
+            return;
+        }
+    }
     if (busy) {
-        if (!prompt->toPlainText().trimmed().isEmpty()) SetStatus(QStringLiteral("运行中 · Ctrl+Enter 排队，或先停止"));
+        if (!rawCmd.isEmpty()) SetStatus(QStringLiteral("运行中 · Ctrl+Enter 排队，或先停止"));
         return;
     }
     if (!settings.aiEnabled || models->currentIndex() < 0) return;
+    stepLimitPaused = false;
     QueuedPrompt next;
     if (TakePrompt(next)) Dispatch(next);
 }
@@ -2275,6 +2769,11 @@ void AgentWindow::Private::Queue() {
 }
 
 void AgentWindow::Private::UpdateQueue(bool paused) {
+    if (queued.isEmpty() && stepLimitPaused) {
+        queueNotice->setText(QStringLiteral("已达到单次自动步数上限，已完成改动与上下文均已保存　<a href=\"continue-run\">继续执行剩余步骤</a>　<a href=\"clear\">关闭提示</a>"));
+        queueNotice->show();
+        return;
+    }
     queueNotice->setVisible(!queued.isEmpty());
     if (queued.isEmpty()) return;
     const auto count = QString::number(queued.size());
@@ -2377,16 +2876,78 @@ void AgentWindow::Private::UpdateElapsed() {
     if (runElapsed.isValid()) elapsed->setText(DurationText(runElapsed.elapsed()));
 }
 
-void AgentWindow::Private::RestoreHistory(const QJsonObject& event) {
+void AgentWindow::Private::RestoreHistory(QJsonObject event) {
+    const bool expandAll = showAllRestoredHistory;
     q->ClearConversation();
+    lastRestoredEvent = event;
+    showAllRestoredHistory = expandAll;
+
+    const QJsonArray uiEvents = event.value(QStringLiteral("ui_events")).toArray();
+    if (!uiEvents.isEmpty()) {
+        constexpr qsizetype kInitialUiEventLimit = 40;
+        const qsizetype first = expandAll ? 0 : std::max<qsizetype>(0, uiEvents.size() - kInitialUiEventLimit);
+        historyNotice->setText(first > 0
+            ? QStringLiteral("已恢复本地会话 · 最近 %1 条，较早记录保留在本地　<a href=\"load-older\">加载全部 %2 条记录</a>")
+                .arg(uiEvents.size() - first).arg(uiEvents.size())
+            : QStringLiteral("已恢复本地会话 · 共 %1 条记录").arg(uiEvents.size()));
+        historyNotice->show();
+        qsizetype remaining = expandAll ? kMaximumHistoryCharacters * 4 : kMaximumHistoryCharacters;
+        bool limited = false;
+        for (qsizetype i = first; i < uiEvents.size(); ++i) {
+            const QJsonObject ev = uiEvents.at(i).toObject();
+            const QString evType = ev.value(QStringLiteral("type")).toString();
+            if (evType == QStringLiteral("user_message") || evType == QStringLiteral("assistant_message") || evType == QStringLiteral("error")) {
+                const QString text = ev.value(QStringLiteral("text")).toString();
+                if (text.isEmpty()) continue;
+                const bool isUser = evType == QStringLiteral("user_message");
+                conversation->BeginMessage(evType == QStringLiteral("error") ? QStringLiteral("错误")
+                    : (isUser ? QStringLiteral("你（历史）") : QStringLiteral("助手（历史）")), isUser);
+                if (text.size() <= remaining) { conversation->AppendText(text); remaining -= text.size(); }
+                else { conversation->AppendText(QStringLiteral("消息超出历史显示预算，完整内容保留在本地。")); limited = true; }
+                conversation->EndMessage();
+            } else if (evType == QStringLiteral("thinking_block")) {
+                conversation->AppendThinking(ev.value(QStringLiteral("text")).toString(), true);
+            } else if (evType == QStringLiteral("context_compacted")) {
+                conversation->AppendCompactionBanner(
+                    ev.value(QStringLiteral("removed_messages")).toInt(),
+                    Count(ev.value(QStringLiteral("saved_tokens"))),
+                    ev.value(QStringLiteral("summary")).toString(),
+                    ev.value(QStringLiteral("pruned_results")).toInt());
+            } else if (evType == QStringLiteral("tool_start") || evType == QStringLiteral("tool_end")) {
+                const QString id = ev.value(QStringLiteral("id")).toString();
+                if (id.isEmpty()) continue;
+                QJsonObject toolEv = ev;
+                if (ev.value(QStringLiteral("details")).toObject().contains(QStringLiteral("arguments"))) {
+                    toolEv.insert(QStringLiteral("arguments"), ev.value(QStringLiteral("details")).toObject().value(QStringLiteral("arguments")));
+                }
+                if (ev.value(QStringLiteral("details")).toObject().contains(QStringLiteral("result"))) {
+                    toolEv.insert(QStringLiteral("result"), ev.value(QStringLiteral("details")).toObject().value(QStringLiteral("result")));
+                }
+                if (evType == QStringLiteral("tool_start")) {
+                    conversation->UpdateTool(toolEv, QStringLiteral("历史调用"), QStringLiteral("历史"));
+                } else {
+                    const bool ok = ev.value(QStringLiteral("success")).toBool(true);
+                    conversation->UpdateTool(toolEv, ok ? QStringLiteral("已结束（历史）") : QStringLiteral("失败（历史）"), QStringLiteral("历史"));
+                }
+            } else if (evType == QStringLiteral("changes")) {
+                conversation->AppendChanges(ev.value(QStringLiteral("items")).toArray());
+            }
+        }
+        if (limited) historyNotice->setText(historyNotice->text() + QStringLiteral(" · 已达展示预算"));
+        assistantOpen = false;
+        return;
+    }
+
     QJsonArray messages;
     for (const auto& value : event.value(QStringLiteral("messages")).toArray())
         if (value.isObject() && !IsHiddenAgentMessage(value.toObject())) messages.append(value);
-    const qsizetype first = std::max<qsizetype>(0, messages.size() - kMaximumHistoryMessages);
-    historyNotice->setText(first > 0 ? QStringLiteral("已恢复本地会话 · 最近 %1 条，较早记录保留在本地").arg(messages.size() - first)
+    const qsizetype first = expandAll ? 0 : std::max<qsizetype>(0, messages.size() - kMaximumHistoryMessages);
+    historyNotice->setText(first > 0
+        ? QStringLiteral("已恢复本地会话 · 最近 %1 条，较早记录保留在本地　<a href=\"load-older\">加载全部 %2 条</a>")
+            .arg(messages.size() - first).arg(messages.size())
         : QStringLiteral("已恢复本地会话 · %1 条消息").arg(messages.size()));
     historyNotice->show();
-    qsizetype remaining = kMaximumHistoryCharacters;
+    qsizetype remaining = expandAll ? kMaximumHistoryCharacters * 4 : kMaximumHistoryCharacters;
     bool limited = false;
     QHash<QString, QJsonObject> restored;
     for (qsizetype i = first; i < messages.size(); ++i) {
@@ -2395,8 +2956,12 @@ void AgentWindow::Private::RestoreHistory(const QJsonObject& event) {
         if (role == QStringLiteral("assistant")) {
             for (const auto& value : message.value(QStringLiteral("content")).toArray()) {
                 const auto block = value.toObject();
+                if (block.value(QStringLiteral("type")).toString() == QStringLiteral("thinking")) {
+                    conversation->AppendThinking(block.value(QStringLiteral("thinking")).toString(), true);
+                    continue;
+                }
                 if (block.value(QStringLiteral("type")).toString() != QStringLiteral("toolCall")) continue;
-                if (restored.size() >= 64) { limited = true; break; }
+                if (!expandAll && restored.size() >= 64) { limited = true; break; }
                 const QString id = QStringLiteral("history:") + block.value(QStringLiteral("id")).toString();
                 QJsonObject restoredEvent{{QStringLiteral("id"), id}, {QStringLiteral("title"), QStringLiteral("历史 · %1").arg(block.value(QStringLiteral("name")).toString())},
                     {QStringLiteral("arguments"), block.value(QStringLiteral("arguments"))}, {QStringLiteral("history"), true}};
@@ -2406,7 +2971,7 @@ void AgentWindow::Private::RestoreHistory(const QJsonObject& event) {
         }
         if (role == QStringLiteral("toolResult")) {
             const QString id = QStringLiteral("history:") + message.value(QStringLiteral("toolCallId")).toString();
-            if (restored.size() >= 64 && !restored.contains(id)) { limited = true; continue; }
+            if (!expandAll && restored.size() >= 64 && !restored.contains(id)) { limited = true; continue; }
             QJsonObject restoredEvent = restored.value(id);
             restoredEvent.insert(QStringLiteral("id"), id);
             if (!restoredEvent.contains(QStringLiteral("title"))) restoredEvent.insert(QStringLiteral("title"), QStringLiteral("历史 · %1").arg(message.value(QStringLiteral("toolName")).toString()));
@@ -2539,6 +3104,10 @@ void AgentWindow::ClearConversation() {
     d_->output->SetValue(0);
     d_->usage->setText(QStringLiteral("上下文用量未提供"));
     d_->actualUsage = {};
+    d_->lastRestoredEvent = {};
+    d_->showAllRestoredHistory = false;
+    d_->stepLimitPaused = false;
+    d_->UpdateQueue();
     d_->ring->ClearUsed();
     d_->UpdateContext();
     d_->UpdateInspectorChanges();
@@ -2555,9 +3124,54 @@ void AgentWindow::AppendEvent(const QJsonObject& event) {
         d_->selectedSession = event.value(QStringLiteral("selected_id")).toString();
         d_->UpdateSessions(); return;
     }
-    if (type == QStringLiteral("history_restored")) { d_->RestoreHistory(event); return; }
+    if (type == QStringLiteral("history_restored")) { d_->showAllRestoredHistory = false; d_->RestoreHistory(event); return; }
     if (type == QStringLiteral("run_start")) { SetBusy(true); return; }
+    if (type == QStringLiteral("status") || type == QStringLiteral("compaction_status")) {
+        const QString statusText = event.value(QStringLiteral("text")).toString();
+        if (!statusText.isEmpty()) d_->SetStatus(statusText);
+        return;
+    }
+    if (type == QStringLiteral("thinking_delta")) {
+        const QString delta = event.value(QStringLiteral("text")).toString();
+        if (!delta.isEmpty()) {
+            d_->conversation->AppendThinking(delta, false);
+            if (d_->busy) d_->SetStatus(QStringLiteral("思考中…"));
+        }
+        return;
+    }
+    if (type == QStringLiteral("thinking_block")) {
+        d_->conversation->AppendThinking(event.value(QStringLiteral("text")).toString(), true);
+        return;
+    }
+    if (type == QStringLiteral("context_compacted")) {
+        d_->Flush();
+        d_->assistantOpen = false;
+        d_->conversation->AppendCompactionBanner(
+            event.value(QStringLiteral("removed_messages")).toInt(),
+            Count(event.value(QStringLiteral("saved_tokens"))),
+            event.value(QStringLiteral("summary")).toString(),
+            event.value(QStringLiteral("pruned_results")).toInt());
+        d_->actualUsage = {};
+        d_->ring->ClearUsed();
+        d_->UpdateContext();
+        return;
+    }
+    if (type == QStringLiteral("compact_end")) {
+        const bool ok = event.value(QStringLiteral("success")).toBool(true);
+        d_->SetStatus(event.value(QStringLiteral("text")).toString(ok ? QStringLiteral("会话已压缩") : QStringLiteral("压缩失败")), !ok);
+        SetBusy(false);
+        return;
+    }
+    if (type == QStringLiteral("context_composition")) {
+        d_->composition = DecodeCompositionEvent(event);
+        d_->hasComposition = true;
+        d_->UpdateContext();
+        d_->UpdateGeometry();
+        return;
+    }
     if (type == QStringLiteral("assistant_delta")) {
+        d_->conversation->EndThinking();
+        if (d_->busy && d_->status->text() == QStringLiteral("思考中…")) d_->SetStatus(QStringLiteral("运行中"));
         const QString text = event.value(QStringLiteral("text")).toString();
         if (!d_->assistantOpen && d_->pending.isEmpty()) d_->BeginAssistant();
         d_->pending += text;
@@ -2630,8 +3244,14 @@ void AgentWindow::AppendEvent(const QJsonObject& event) {
             d_->conversation->UpdateTool(tool.event, tool.state, tool.duration);
         }
         d_->UpdateInspectorTools();
-        d_->SetStatus(cancelled ? QStringLiteral("已停止") : failed ? QStringLiteral("运行失败")
-            : event.value(QStringLiteral("success")).toBool() ? QStringLiteral("本轮完成") : QStringLiteral("本轮结束"), failed);
+        if (event.value(QStringLiteral("step_limit_reached")).toBool()) {
+            d_->stepLimitPaused = true;
+            d_->UpdateQueue();
+            d_->SetStatus(QStringLiteral("已达单次步数上限 · 可继续"), false);
+        } else {
+            d_->SetStatus(cancelled ? QStringLiteral("已停止") : failed ? QStringLiteral("运行失败")
+                : event.value(QStringLiteral("success")).toBool() ? QStringLiteral("本轮完成") : QStringLiteral("本轮结束"), failed);
+        }
         SetBusy(false);
     }
 }

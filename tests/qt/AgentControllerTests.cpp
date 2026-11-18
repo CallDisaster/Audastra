@@ -1,6 +1,10 @@
 #include "AgentController.h"
 #include "AgentSessionStore.h"
+#include "AgentSettingsStore.h"
 #include "CredentialStore.h"
+#include "ExternalMcpManager.h"
+#include "ProjectMemoryService.h"
+#include "TokenMeter.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -282,6 +286,8 @@ private slots:
     void modelSwitchContinuesSameSessionWithLoopbackOnly();
     void invalidTranscriptDoesNotSendModelRequests();
     void missingRuntimeAndInvalidOutputLeaveDispatcherUntouched();
+    void failedRunAndCompactionNeverDropLongUserPrompt();
+    void projectMemoryAndExternalMcpEndToEnd();
 
 private:
     void Configure(AgentController& controller, const QString& directory, const QString& url);
@@ -714,12 +720,11 @@ void AgentControllerTests::portableRuntimeUsesApplicationDirectoryWithoutOverrid
     QVERIFY2(CopyPortableFile(node, QDir(deployed).filePath(QStringLiteral("node.exe")), copyError), qPrintable(copyError));
     // 该测试宿主的 Qt/VC 导入依赖也须真正 app-local 部署。Svg 与 atomic_wait
     // 是宿主的直接导入；仅复制 Core/Test 或依赖父进程 PATH 都不能证明冷启动。
-    const QStringList dependencies{QStringLiteral("Qt6Core.dll"), QStringLiteral("Qt6Gui.dll"),
-        QStringLiteral("Qt6Widgets.dll"), QStringLiteral("Qt6Network.dll"), QStringLiteral("Qt6Test.dll"),
-        QStringLiteral("Qt6Svg.dll"), QStringLiteral("msvcp140.dll"), QStringLiteral("msvcp140_1.dll"),
+    const QStringList requiredDependencies{QStringLiteral("Qt6Core.dll"), QStringLiteral("Qt6Network.dll"),
+        QStringLiteral("Qt6Test.dll"), QStringLiteral("msvcp140.dll"), QStringLiteral("msvcp140_1.dll"),
         QStringLiteral("msvcp140_2.dll"), QStringLiteral("msvcp140_atomic_wait.dll"),
         QStringLiteral("vcruntime140.dll"), QStringLiteral("vcruntime140_1.dll")};
-    for (const auto& dependency : dependencies)
+    for (const auto& dependency : requiredDependencies)
         QVERIFY2(CopyPortableFile(QDir(QCoreApplication::applicationDirPath()).filePath(dependency),
             QDir(bin).filePath(dependency), copyError), qPrintable(copyError));
 
@@ -781,7 +786,233 @@ void AgentControllerTests::portableRuntimeUsesApplicationDirectoryWithoutOverrid
     QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, diagnostic.constData());
     QVERIFY2(emptyAfterExit && cleaned, diagnostic.constData());
     QVERIFY2(output.contains("0 failed"), diagnostic.constData());
-    qInfo().noquote() << "Portable child cold start: 12 app-local DLLs; restricted PATH; default runtime; Job empty\n" << output;
+    qInfo().noquote() << "Portable child cold start: app-local DLLs; restricted PATH; default runtime; Job empty\n" << output;
+}
+
+void AgentControllerTests::failedRunAndCompactionNeverDropLongUserPrompt() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    SseFixture server; QVERIFY(server.Start());
+    const QString longPrompt = QStringLiteral("长串核心需求：英雄每升一级全属性+5，三件铁剑自动合成玄铁剑，Boss血量低于30%开启狂暴触发器，绝不能丢失这段原始要求！");
+
+    // 模拟第一轮执行完一次工具调用后中途运行失败（如服务端报错或中断），第二轮用户发“继续做完”，随后执行手动压缩“整理会话”。
+    server.respond = [](const auto&, qsizetype index) -> QByteArray {
+        if (index == 1) return ToolResponse(QStringLiteral("editor_state"), QStringLiteral("step-1"));
+        if (index == 2) {
+            const QJsonObject errChunk{{QStringLiteral("error"), QJsonObject{{QStringLiteral("message"), QStringLiteral("simulated mid-run failure")}}}};
+            return QByteArray("data: ") + QJsonDocument(errChunk).toJson(QJsonDocument::Compact) + "\n\ndata: [DONE]\n\n";
+        }
+        if (index == 3) return TextResponse(QStringLiteral("已按您的长串要求继续完成触发器创建。"));
+        return TextResponse(QStringLiteral("<compacted-summary>\n## 原始需求与核心约束\n- 英雄每升一级全属性+5，三件铁剑自动合成玄铁剑，Boss血量低于30%开启狂暴触发器。\n</compacted-summary>"));
+    };
+
+    AgentController controller; Configure(controller, directory.path(), server.Url());
+    controller.SetToolsProvider([] { return QJsonArray{Tool(QStringLiteral("editor_state"))}; });
+    controller.SetToolDispatcher([](QString, QJsonObject) {
+        return QJsonObject{{QStringLiteral("revision"), QStringLiteral("rev-mid-1")}};
+    });
+    QSignalSpy events(&controller, &AgentController::Event);
+
+    // 1. 第一轮中途失败：核验磁盘已通过提交即落盘 + 回合检查点保存了长提示词与已完成工具步！
+    controller.StartPrompt(longPrompt, QStringLiteral("fixture-provider"), QStringLiteral("fixture"));
+    QTRY_VERIFY_WITH_TIMEOUT(HasEvent(events, QStringLiteral("run_end")), 15000);
+    QVERIFY(!LastEvent(events, QStringLiteral("run_end")).value(QStringLiteral("success")).toBool());
+
+    const AgentSessionStore store(directory.filePath(QStringLiteral("history")));
+    const auto afterFailure = store.List(QStringLiteral("map-A"));
+    QCOMPARE(afterFailure.size(), qsizetype(1));
+    QVERIFY(QJsonDocument(afterFailure.front().messages).toJson().contains(QStringLiteral("三件铁剑自动合成玄铁剑").toUtf8()));
+    QVERIFY(QJsonDocument(afterFailure.front().messages).toJson().contains("rev-mid-1"));
+
+    // 2. 第二轮发送“继续做完”：核验发给模型的上下文依然完整携带第一轮长需求，绝不被覆盖清空！
+    events.clear();
+    controller.StartPrompt(QStringLiteral("继续做完"), QStringLiteral("fixture-provider"), QStringLiteral("fixture"));
+    QTRY_VERIFY_WITH_TIMEOUT(HasEvent(events, QStringLiteral("run_end")), 15000);
+    QVERIFY2(LastEvent(events, QStringLiteral("run_end")).value(QStringLiteral("success")).toBool(),
+        qPrintable(RunDiagnostic(events, controller, server.bodies.size())));
+    const QByteArray resumeRequest = QJsonDocument(server.bodies.back()).toJson(QJsonDocument::Compact);
+    QVERIFY(resumeRequest.contains(QStringLiteral("三件铁剑自动合成玄铁剑").toUtf8()));
+    QVERIFY(resumeRequest.contains(QStringLiteral("继续做完").toUtf8()));
+
+    // 3. 手动压缩“整理会话”：核验模型表层已压缩，而持久 transcriptLog 依然 100% 保留原始长提示词气泡！
+    events.clear();
+    controller.CompactConversation(QStringLiteral("fixture-provider"), QStringLiteral("fixture"));
+    QTRY_VERIFY_WITH_TIMEOUT(HasEvent(events, QStringLiteral("compact_end")), 15000);
+    QVERIFY(LastEvent(events, QStringLiteral("compact_end")).value(QStringLiteral("success")).toBool());
+    QVERIFY(HasEvent(events, QStringLiteral("context_compacted")));
+
+    const auto afterCompact = store.List(QStringLiteral("map-A"));
+    QCOMPARE(afterCompact.size(), qsizetype(1));
+    QVERIFY(QJsonDocument(afterCompact.front().transcriptLog).toJson().contains(longPrompt.toUtf8()));
+    QVERIFY(controller.CurrentFeedbackConversationSnippet().contains(QStringLiteral("三件铁剑自动合成玄铁剑")));
+
+    // 4. 单文件损坏容错：同目录下多出一个损坏文件时，正常会话依然可列出，不会整图消失！
+    const QDir mapSessionDir(directory.filePath(QStringLiteral("history/sessions/") + AgentSessionStore::MapHash(QStringLiteral("map-A"))));
+    QFile brokenSibling(mapSessionDir.filePath(QStringLiteral("00000000-0000-4000-8000-000000000099.json")));
+    QVERIFY(brokenSibling.open(QIODevice::WriteOnly));
+    brokenSibling.write("{corrupt-sibling");
+    brokenSibling.close();
+    QString listErr, listWarn;
+    const auto resilientList = store.List(QStringLiteral("map-A"), &listErr, &listWarn);
+    QVERIFY(listErr.isEmpty());
+    QVERIFY(!listWarn.isEmpty());
+    QCOMPARE(resilientList.size(), qsizetype(1));
+}
+
+void AgentControllerTests::projectMemoryAndExternalMcpEndToEnd() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(TokenMeter::EstimateText(QStringLiteral("中文触发器测试")) > 0);
+
+    // 1. 地图同目录 <地图名>.memory.md 解析、只读门禁与读写注入测试
+    const QString fakeMapPath = directory.filePath(QStringLiteral("Maps/SynthRPG.w3x"));
+    QVERIFY(QDir().mkpath(QFileInfo(fakeMapPath).absolutePath()));
+    QFile fakeMap(fakeMapPath); QVERIFY(fakeMap.open(QIODevice::WriteOnly)); fakeMap.write("HM3W"); fakeMap.close();
+
+    ProjectMemoryService memory;
+    memory.SetMapSourcePath(fakeMapPath);
+    QCOMPARE(QFileInfo(memory.ProjectMemoryFilePath()).fileName(), QStringLiteral("SynthRPG.memory.md"));
+    QVERIFY(!QFileInfo::exists(memory.ProjectMemoryFilePath()));
+
+    // 只读档位拒绝 AI 写入记忆且不在磁盘生成空文件
+    const auto denied = memory.InvokeTool(QStringLiteral("memory_write"),
+        {{QStringLiteral("content"), QStringLiteral("不应写入")}}, false);
+    QVERIFY(denied.value(QStringLiteral("isError")).toBool());
+    QVERIFY(!QFileInfo::exists(memory.ProjectMemoryFilePath()));
+
+    // 允许修改档位下成功写入 <地图名>.memory.md 并生成上下文段落
+    const auto written = memory.InvokeTool(QStringLiteral("memory_write"),
+        {{QStringLiteral("content"), QStringLiteral("- 习惯：所有刷怪触发器放入【刷怪系统】目录")}}, true);
+    QVERIFY(written.value(QStringLiteral("ok")).toBool());
+    QVERIFY(QFileInfo::exists(memory.ProjectMemoryFilePath()));
+    QVERIFY(memory.BuildPromptSection().contains(QStringLiteral("刷怪系统")));
+
+    // 2. 外部自定义 MCP 客户端（真实本机 stdio 子进程 + Streamable HTTP 双协议联调 + 最低权限门禁）
+    const QString stdioScriptPath = directory.filePath(QStringLiteral("mock-mcp-stdio.mjs"));
+    {
+        QFile script(stdioScriptPath);
+        QVERIFY(script.open(QIODevice::WriteOnly));
+        script.write(R"(
+import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of rl) {
+  if (!line.trim()) continue;
+  const req = JSON.parse(line);
+  if (req.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {
+      protocolVersion: '2025-03-26', capabilities: { tools: {} },
+      serverInfo: { name: 'mock-stdio', version: '1.0' },
+      instructions: '使用 ping_map 验证连通性'
+    } }) + '\n');
+  } else if (req.method === 'tools/list') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {
+      tools: [{ name: 'ping_map', description: '测试连通', inputSchema: { type: 'object', properties: { tag: { type: 'string' } } } }]
+    } }) + '\n');
+  } else if (req.method === 'tools/call') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {
+      content: [{ type: 'text', text: JSON.stringify({ pong: req.params.arguments.tag || 'ok' }) }]
+    } }) + '\n');
+  }
+}
+)");
+        script.close();
+    }
+
+    QTcpServer httpMcpServer;
+    QVERIFY(httpMcpServer.listen(QHostAddress::LocalHost));
+    connect(&httpMcpServer, &QTcpServer::newConnection, this, [&httpMcpServer] {
+        while (httpMcpServer.hasPendingConnections()) {
+            auto* sock = httpMcpServer.nextPendingConnection();
+            auto buf = std::make_shared<QByteArray>();
+            connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+            connect(sock, &QTcpSocket::readyRead, sock, [sock, buf] {
+                buf->append(sock->readAll());
+                const auto hdrEnd = buf->indexOf("\r\n\r\n");
+                if (hdrEnd < 0) return;
+                qint64 len = 0;
+                for (auto line : buf->left(hdrEnd).split('\n')) {
+                    if (line.trimmed().toLower().startsWith("content-length:")) len = line.trimmed().mid(15).trimmed().toLongLong();
+                }
+                if (buf->size() < hdrEnd + 4 + len) return;
+                const auto req = QJsonDocument::fromJson(buf->mid(hdrEnd + 4, len)).object();
+                buf->clear();
+                const QString method = req.value(QStringLiteral("method")).toString();
+                QJsonObject resp{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")}, {QStringLiteral("id"), req.value(QStringLiteral("id"))}};
+                if (method == QStringLiteral("initialize")) {
+                    resp.insert(QStringLiteral("result"), QJsonObject{
+                        {QStringLiteral("protocolVersion"), QStringLiteral("2025-03-26")},
+                        {QStringLiteral("capabilities"), QJsonObject{}},
+                        {QStringLiteral("serverInfo"), QJsonObject{{QStringLiteral("name"), QStringLiteral("mock-http")}}},
+                    });
+                } else if (method == QStringLiteral("tools/list")) {
+                    resp.insert(QStringLiteral("result"), QJsonObject{
+                        {QStringLiteral("tools"), QJsonArray{QJsonObject{
+                            {QStringLiteral("name"), QStringLiteral("query_doc")},
+                            {QStringLiteral("description"), QStringLiteral("查询外部文档")},
+                            {QStringLiteral("inputSchema"), QJsonObject{{QStringLiteral("type"), QStringLiteral("object")}, {QStringLiteral("properties"), QJsonObject{}}}},
+                        }}},
+                    });
+                } else if (method == QStringLiteral("tools/call")) {
+                    resp.insert(QStringLiteral("result"), QJsonObject{
+                        {QStringLiteral("content"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), QStringLiteral("http-doc-ok")}}}},
+                    });
+                } else {
+                    const QByteArray accepted("HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    sock->write(accepted); sock->disconnectFromHost(); return;
+                }
+                const QByteArray payload = QJsonDocument(resp).toJson(QJsonDocument::Compact);
+                sock->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nMcp-Session-Id: sess-42\r\nContent-Length: "
+                    + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
+                sock->disconnectFromHost();
+            });
+        }
+    });
+
+    ExternalMcpManager mcpManager;
+    AgentSettings mcpSettings;
+    mcpSettings.allowEdits = false; // 初始只读档位
+    ExternalMcpServerSettings stdioCfg;
+    stdioCfg.id = QStringLiteral("srv-stdio");
+    stdioCfg.name = QStringLiteral("war3_autotest");
+    stdioCfg.transport = QStringLiteral("stdio");
+    stdioCfg.command = node;
+    stdioCfg.args = {stdioScriptPath};
+    stdioCfg.minimumPermission = QStringLiteral("full"); // 需要完全访问
+
+    ExternalMcpServerSettings httpCfg;
+    httpCfg.id = QStringLiteral("srv-http");
+    httpCfg.name = QStringLiteral("war3_docs");
+    httpCfg.transport = QStringLiteral("http");
+    httpCfg.url = QStringLiteral("http://127.0.0.1:%1/mcp").arg(httpMcpServer.serverPort());
+    httpCfg.minimumPermission = QStringLiteral("read"); // 只读即可使用
+
+    mcpSettings.externalMcpServers = {stdioCfg, httpCfg};
+    mcpManager.ApplySettings(mcpSettings);
+
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        const auto st = mcpManager.Statuses();
+        return st.size() == 2 && st[0].connected && st[1].connected;
+    }(), 10000);
+
+    // 只读档位下：只暴露 minimumPermission="read" 的 http 工具，拦截 "full" 的 stdio 工具
+    QCOMPARE(mcpManager.EnabledToolDefinitions().size(), qsizetype(1));
+    QVERIFY(mcpManager.InvokeTool(QStringLiteral("mcp__war3_autotest__ping_map"), {}).value(QStringLiteral("isError")).toBool());
+    QVERIFY(!mcpManager.InvokeTool(QStringLiteral("mcp__war3_docs__query_doc"), {}).value(QStringLiteral("isError")).toBool());
+
+    // 升至完全访问档位后：两台 MCP 服务器工具均正常暴露与调用
+    mcpSettings.allowEdits = true;
+    mcpSettings.allowSave = true;
+    mcpSettings.allowCommands = true;
+    mcpManager.ApplySettings(mcpSettings);
+    QCOMPARE(mcpManager.EnabledToolDefinitions().size(), qsizetype(2));
+    QVERIFY(mcpManager.CombinedServerInstructions().contains(QStringLiteral("ping_map")));
+    const auto callOut = mcpManager.InvokeTool(QStringLiteral("mcp__war3_autotest__ping_map"),
+        {{QStringLiteral("tag"), QStringLiteral("hello-forge")}});
+    QVERIFY(!callOut.value(QStringLiteral("isError")).toBool());
+    QVERIFY(QJsonDocument(callOut).toJson().contains("hello-forge"));
+
+    // 一键重连验证
+    mcpManager.Reconnect(QStringLiteral("srv-stdio"));
+    QTRY_VERIFY_WITH_TIMEOUT(mcpManager.Statuses().front().connected, 10000);
+    mcpManager.StopAll();
 }
 
 int main(int argc, char* argv[]) {

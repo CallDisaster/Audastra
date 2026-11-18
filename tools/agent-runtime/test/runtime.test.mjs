@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-const { runHarness, compactHistory, redact, providerToolNames, inlineSchemaRefs } = await import(process.env.FORGE_RUNTIME_TEST_ENTRY || '../worker.mjs');
+const { runHarness, runManualCompaction, compactHistory, redact, providerToolNames, inlineSchemaRefs } = await import(process.env.FORGE_RUNTIME_TEST_ENTRY || '../worker.mjs');
+const { pruneLargeToolResults, compactWithWarmCache, estimateTextTokens } = await import('../compaction.mjs');
 
 function chunk(response, choices, usage) {
   response.write(`data: ${JSON.stringify({ id: 'forge-fixture', object: 'chat.completion.chunk',
@@ -258,5 +259,141 @@ test('发给 Gemini 的工具声明不含 $ref 与 $defs', async () => {
   } finally {
     server.closeAllConnections();
     server.close();
+  }
+});
+
+
+test('DeepSeek 缓存命中、未缓存输入与思考链流式输出及截断续跑', async () => {
+  const bodies = [];
+  const server = createServer(async (request, response) => {
+    let source = '';
+    for await (const part of request) source += part;
+    const body = JSON.parse(source);
+    bodies.push(body);
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (bodies.length === 1) {
+      // 第一轮：在思考链中触碰 length 上限，尚未发出工具调用（复现“规划完触发器直接结束”场景）。
+      chunk(response, [{ index: 0, delta: { role: 'assistant', reasoning_content: '正在规划触发器事件与动作结构…' }, finish_reason: null }]);
+      chunk(response, [{ index: 0, delta: {}, finish_reason: 'length' }],
+        { prompt_tokens: 1200, prompt_tokens_details: { cached_tokens: 900 }, completion_tokens: 300, total_tokens: 1500 });
+    } else if (bodies.length === 2) {
+      // 自动续跑第二轮：发出工具调用。同时核验上一轮无文本消息 content 已归一化为 "" 而非 null。
+      assert(body.messages.filter(m => m.role === 'assistant').every(m => m.content !== null));
+      chunk(response, [{ index: 0, delta: { role: 'assistant', reasoning_content: '分批创建触发器', tool_calls: [{
+        index: 0, id: 'trig-call-1', type: 'function',
+        function: { name: 'editor_edit_trigger_graph', arguments: '{"op":"create"}' } }] }, finish_reason: null }]);
+      chunk(response, [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        { prompt_tokens: 1550, prompt_tokens_details: { cached_tokens: 1200 }, completion_tokens: 80, total_tokens: 1630 });
+    } else {
+      // 第三轮：核验带 tool_calls 的历史消息回传了 reasoning_content 且 content 不为 null。
+      const priorToolAssistant = body.messages.find(m => m.role === 'assistant' && Array.isArray(m.tool_calls));
+      assert(priorToolAssistant);
+      assert.equal(priorToolAssistant.reasoning_content, '分批创建触发器');
+      assert.equal(priorToolAssistant.content, '');
+      chunk(response, [{ index: 0, delta: { role: 'assistant', content: '触发器已分批创建完成。' }, finish_reason: null }]);
+      chunk(response, [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        { prompt_tokens: 1700, prompt_tokens_details: { cached_tokens: 1500 }, completion_tokens: 25, total_tokens: 1725 });
+    }
+    response.end('data: [DONE]\n\n');
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const events = [];
+  let editCalls = 0;
+  try {
+    await runHarness({
+      sessionId: 'session-deepseek-cache-test',
+      provider: { id: 'deepseek', name: 'DeepSeek', protocol: 'openai-chat',
+        baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey: 'ds-key-test' },
+      model: { id: 'deepseek-reasoner', contextWindow: 128000 },
+      prompt: '查询习惯后创建装备合成触发器。',
+      systemPrompt: '默认使用自然语言触发器 T。',
+      tools: [{ name: 'editor_edit_trigger_graph', description: '编辑触发器', inputSchema: { type: 'object', properties: { op: { type: 'string' } } } }],
+    }, event => events.push(event), async call => {
+      assert.equal(call.name, 'editor_edit_trigger_graph');
+      ++editCalls;
+      return { ok: true, triggerId: 'trg-equip-1' };
+    });
+    assert.equal(editCalls, 1);
+    assert.equal(bodies.length, 3);
+    assert(events.some(e => e.type === 'thinking_delta' && e.text.includes('正在规划触发器')));
+    assert(events.some(e => e.type === 'turn_checkpoint' && Array.isArray(e.messages)));
+    const usages = events.filter(e => e.type === 'usage' && e.available);
+    assert.equal(usages.length, 3);
+    // 最后一轮：总输入 1700 = 缓存命中 1500 + 未缓存 200；输出 25；总上下文 1725。
+    const lastUsage = usages[usages.length - 1];
+    assert.equal(lastUsage.cache_read_tokens, 1500);
+    assert.equal(lastUsage.uncached_input_tokens, 200);
+    assert.equal(lastUsage.input_tokens, 1700);
+    assert.equal(lastUsage.output_tokens, 25);
+    assert.equal(lastUsage.context_tokens, 1725);
+    assert(events.some(e => e.type === 'run_end' && e.success));
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('DSH 三级压缩：第1级修剪超大工具结果，第2级热前缀摘要完整保留用户长串要求并还原工具名', async () => {
+  assert(estimateTextTokens('这是一段中文触发器需求描述') > 5);
+  const bigToolMessages = [
+    { role: 'user', content: [{ type: 'text', text: '长串原始需求：所有英雄升级增加全属性5点，击杀精英掉落玄铁。' }], timestamp: 1 },
+    { role: 'assistant', stopReason: 'toolUse', timestamp: 2,
+      content: [{ type: 'toolCall', id: 'tc-1', name: 'code_check', arguments: {} }] },
+    { role: 'toolResult', toolCallId: 'tc-1', toolName: 'code_check', timestamp: 3,
+      content: [{ type: 'text', text: 'A'.repeat(14000) }] },
+    { role: 'user', content: [{ type: 'text', text: '继续执行下一步' }], timestamp: 4 },
+  ];
+  // 第 1 级：修剪超大工具返回后若低于阈值，无需发起摘要请求。
+  let llmCalled = 0;
+  const tier1 = await compactWithWarmCache({
+    messages: bigToolMessages,
+    contextWindow: 4500,
+    thresholdRatio: 0.80,
+    summarizeFn: async () => { ++llmCalled; return '<compacted-summary>不应调用</compacted-summary>'; },
+  });
+  assert.equal(tier1.pruned, true);
+  assert.equal(tier1.compacted, false);
+  assert.equal(llmCalled, 0);
+  assert.equal(bigToolMessages[2].content[0].text.length, 14000);
+
+  // 第 2 级 + 手动压缩：调用热前缀摘要并保留原始需求，且工具名还原为含点号原名。
+  const summaryServer = createServer(async (_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    chunk(res, [{ index: 0, delta: { role: 'assistant',
+      content: '<compacted-summary>\n## 原始需求与核心约束\n- 所有英雄升级增加全属性5点，击杀精英掉落玄铁。\n## 待办清单与下一步行动\n- 创建升级与掉落触发器。\n</compacted-summary>' }, finish_reason: null }]);
+    chunk(res, [{ index: 0, delta: {}, finish_reason: 'stop' }]);
+    res.end('data: [DONE]\n\n');
+  });
+  summaryServer.listen(0, '127.0.0.1');
+  await once(summaryServer, 'listening');
+  const compactEvents = [];
+  try {
+    const compactedMessages = await runManualCompaction({
+      provider: { id: 'fixture', name: '测试', protocol: 'openai-chat',
+        baseUrl: `http://127.0.0.1:${summaryServer.address().port}/v1`, apiKey: 'secret-xyz' },
+      model: { id: 'fixture', contextWindow: 8192 },
+      systemPrompt: '系统提示',
+      tools: [{ name: 'code.check', description: '检查', inputSchema: { type: 'object', properties: {} } }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: '长串原始需求：所有英雄升级增加全属性5点，击杀精英掉落玄铁。' }], timestamp: 1 },
+        { role: 'assistant', stopReason: 'toolUse', timestamp: 2,
+          content: [{ type: 'toolCall', id: 'tc-1', name: 'code.check', arguments: {} }] },
+        { role: 'toolResult', toolCallId: 'tc-1', toolName: 'code.check', timestamp: 3,
+          content: [{ type: 'text', text: '{"ok":true}' }] },
+        { role: 'user', content: [{ type: 'text', text: '整理会话后继续做完' }], timestamp: 4 },
+        { role: 'assistant', stopReason: 'toolUse', timestamp: 5,
+          content: [{ type: 'toolCall', id: 'tc-2', name: 'code.check', arguments: {} }] },
+        { role: 'toolResult', toolCallId: 'tc-2', toolName: 'code.check', timestamp: 6,
+          content: [{ type: 'text', text: '{"ok":true}' }] },
+      ],
+    }, ev => compactEvents.push(ev));
+    assert(compactEvents.some(e => e.type === 'context_compacted' && e.summary.includes('全属性5点')));
+    assert(compactEvents.some(e => e.type === 'compact_end' && e.success && e.compacted));
+    // 保留尾部中的工具名已还原为原编辑器名 code.check（而非合规替换名 code_check）。
+    assert(compactedMessages.some(m => m.role === 'toolResult' && m.toolName === 'code.check'));
+  } finally {
+    summaryServer.closeAllConnections();
+    summaryServer.close();
   }
 });

@@ -72,13 +72,37 @@ bool CompleteSystemMessage(const QJsonObject& message) {
     return true;
 }
 
-QJsonObject Json(const AgentSession& session) {
-    return {{QStringLiteral("version"), 2}, {QStringLiteral("runtime"), QStringLiteral("pi")},
+// 当会话因历史工具返回过大接近 8 MiB 预算时，仅压缩 transcript_log 中超大工具结果详情，绝不删减用户原始提问与助手正文。
+QJsonArray CompactTranscriptLogForBudget(const QJsonArray& log, int maxToolDetailChars) {
+    QJsonArray out;
+    for (const auto& entry : log) {
+        auto obj = entry.toObject();
+        const QString type = obj.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("tool_end") || type == QStringLiteral("tool_start")) {
+            auto details = obj.value(QStringLiteral("details")).toObject();
+            const QByteArray encoded = QJsonDocument(details).toJson(QJsonDocument::Compact);
+            if (encoded.size() > maxToolDetailChars) {
+                obj.insert(QStringLiteral("details"), QJsonObject{
+                    {QStringLiteral("truncated_for_storage"), true},
+                    {QStringLiteral("preview"), QString::fromUtf8(encoded.left(maxToolDetailChars))},
+                });
+            }
+        }
+        out.append(obj);
+    }
+    return out;
+}
+
+QJsonObject Json(const AgentSession& session, const QJsonArray& logOverride) {
+    QJsonObject obj{{QStringLiteral("version"), 2}, {QStringLiteral("runtime"), QStringLiteral("pi")},
         {QStringLiteral("session_id"), session.id}, {QStringLiteral("map_identity"), session.mapIdentity},
         {QStringLiteral("title"), session.title}, {QStringLiteral("created_at"), session.createdAt},
         {QStringLiteral("captured_at"), session.updatedAt}, {QStringLiteral("provider_id"), session.providerId},
         {QStringLiteral("model_id"), session.modelId}, {QStringLiteral("complete"), true},
         {QStringLiteral("messages"), session.messages}, {QStringLiteral("migrated_from"), session.migratedFrom}};
+    if (!logOverride.isEmpty()) obj.insert(QStringLiteral("transcript_log"), logOverride);
+    if (!session.lastUsage.isEmpty()) obj.insert(QStringLiteral("last_usage"), session.lastUsage);
+    return obj;
 }
 
 std::optional<QJsonObject> ReadJson(const QString& path, QString* error) {
@@ -119,11 +143,17 @@ QString AgentMessageText(const QJsonObject& message) {
 
 bool IsHiddenAgentMessage(const QJsonObject& message) {
     if (message.value(QStringLiteral("forge_hidden")).toBool()) return true;
+    const auto injection = message.value(QStringLiteral("forge_injection")).toString();
+    if (!injection.isEmpty()) return true;
     const auto role = message.value(QStringLiteral("role")).toString();
     if (role != QStringLiteral("user") && role != QStringLiteral("assistant") && role != QStringLiteral("toolResult")) return true;
-    // 唯一旧版兼容文本指纹：宿主实际生成的压缩摘要前缀。真实对话不按一般关键词猜测。
-    return role == QStringLiteral("user") && AgentMessageText(message).startsWith(QStringLiteral(
-        "较早完整回合已从模型上下文压缩；完整记录仍由宿主保存。下列只是历史工具结果摘要，身份可能已过期，继续编辑前重新查询当前地图。\n"));
+    if (role == QStringLiteral("user")) {
+        const QString text = AgentMessageText(message);
+        if (text.startsWith(QStringLiteral("<compacted-summary>"))) return true;
+        if (text.startsWith(QStringLiteral("较早完整回合已从模型上下文压缩；完整记录仍由宿主保存。下列只是历史工具结果摘要，身份可能已过期，继续编辑前重新查询当前地图。\n")))
+            return true;
+    }
+    return false;
 }
 
 bool IsCompleteAgentTranscript(const QJsonArray& messages) {
@@ -181,25 +211,52 @@ std::optional<AgentSession> AgentSessionStore::Read(const QString& mapIdentity, 
         || !IsCompleteAgentTranscript(object.value(QStringLiteral("messages")).toArray())) {
         Error(error, QStringLiteral("AI 会话身份或工具配对无效；不会恢复不完整上下文，原文件保留。")); return std::nullopt;
     }
+    if (object.contains(QStringLiteral("transcript_log")) && !object.value(QStringLiteral("transcript_log")).isArray()) {
+        Error(error, QStringLiteral("AI 会话历史日志格式无效；原文件保留。")); return std::nullopt;
+    }
     AgentSession session{id, mapIdentity, object.value(QStringLiteral("title")).toString(),
         object.value(QStringLiteral("created_at")).toString(), object.value(QStringLiteral("captured_at")).toString(),
         object.value(QStringLiteral("provider_id")).toString(), object.value(QStringLiteral("model_id")).toString(),
-        object.value(QStringLiteral("messages")).toArray(), object.value(QStringLiteral("migrated_from")).toString()};
+        object.value(QStringLiteral("messages")).toArray(), object.value(QStringLiteral("migrated_from")).toString(),
+        object.value(QStringLiteral("transcript_log")).toArray(),
+        object.value(QStringLiteral("last_usage")).toObject()};
     return session;
 }
 
-QList<AgentSession> AgentSessionStore::List(const QString& mapIdentity, QString* error) const {
+QList<AgentSession> AgentSessionStore::List(const QString& mapIdentity, QString* error, QString* warning) const {
+    if (error != nullptr) error->clear();
+    if (warning != nullptr) warning->clear();
     QList<AgentSession> result;
     const QDir directory(QDir(directory_).filePath(QStringLiteral("sessions/") + MapHash(mapIdentity)));
     const auto files = directory.entryInfoList({QStringLiteral("*.json")}, QDir::Files | QDir::NoSymLinks, QDir::Name);
     if (files.size() > kSessionCountBudget) { Error(error, QStringLiteral("本地图会话超过 4096 个，请先归档后再恢复。")); return {}; }
     qint64 totalBytes = 0;
+    QString firstItemError;
+    int skippedInvalid = 0;
     for (const auto& file : files) {
+        if (file.size() > kSessionBudget) {
+            ++skippedInvalid;
+            if (firstItemError.isEmpty()) firstItemError = QStringLiteral("无法读取完整 AI 会话，或文件超过 8 MiB；原文件保留。");
+            continue;
+        }
         if (file.size() > kListBudget - totalBytes) { Error(error, QStringLiteral("会话列表超过 64 MiB 读取预算，请先归档较早会话。")); return {}; }
         totalBytes += file.size();
-        auto session = Read(mapIdentity, file.completeBaseName(), error);
-        if (!session) return {};
+        QString itemError;
+        auto session = Read(mapIdentity, file.completeBaseName(), &itemError);
+        if (!session) {
+            ++skippedInvalid;
+            if (firstItemError.isEmpty()) firstItemError = itemError;
+            continue;
+        }
         result.append(std::move(*session));
+    }
+    // 单个会话文件超限或损坏时不连坐清空同地图其他正常会话；若全部文件均损坏则报告原错误拒绝覆盖。
+    if (result.isEmpty() && skippedInvalid > 0) {
+        Error(error, firstItemError);
+        return {};
+    }
+    if (skippedInvalid > 0 && warning != nullptr) {
+        *warning = QStringLiteral("已跳过 %1 个损坏或超限的会话文件（原文件已保留）。").arg(skippedInvalid);
     }
     std::sort(result.begin(), result.end(), [](const AgentSession& left, const AgentSession& right) {
         return left.updatedAt == right.updatedAt ? left.id < right.id : left.updatedAt > right.updatedAt;
@@ -222,7 +279,16 @@ bool AgentSessionStore::Save(const AgentSession& session, QString* error) const 
     if (path.isEmpty() || session.title.size() > 256 || !IsCompleteAgentTranscript(session.messages)) {
         Error(error, QStringLiteral("会话身份、标题或工具配对无效，未写入。")); return false;
     }
-    const auto bytes = QJsonDocument(Json(session)).toJson(QJsonDocument::Compact);
+    QJsonArray logToSave = session.transcriptLog;
+    QByteArray bytes = QJsonDocument(Json(session, logToSave)).toJson(QJsonDocument::Compact);
+    if (bytes.size() > kSessionBudget && !logToSave.isEmpty()) {
+        logToSave = CompactTranscriptLogForBudget(logToSave, 2048);
+        bytes = QJsonDocument(Json(session, logToSave)).toJson(QJsonDocument::Compact);
+    }
+    if (bytes.size() > kSessionBudget && !logToSave.isEmpty()) {
+        logToSave = CompactTranscriptLogForBudget(logToSave, 256);
+        bytes = QJsonDocument(Json(session, logToSave)).toJson(QJsonDocument::Compact);
+    }
     if (bytes.size() > kSessionBudget || !QDir().mkpath(QFileInfo(path).absolutePath())) {
         Error(error, QStringLiteral("会话超过 8 MiB 或目录不可写，原历史保留。")); return false;
     }
@@ -286,7 +352,7 @@ bool AgentSessionStore::MigrateLegacy(const QString& mapIdentity, QString* error
         if (!archived.isEmpty()) continue;
         AgentSession session{id, mapIdentity, Title(object.value(QStringLiteral("messages")).toArray()),
             object.value(QStringLiteral("captured_at")).toString(Now()), object.value(QStringLiteral("captured_at")).toString(Now()),
-            provider, model, {}, file.fileName()};
+            provider, model, {}, file.fileName(), {}, {}};
         for (const auto& value : object.value(QStringLiteral("messages")).toArray()) {
             auto message = value.toObject();
             message.insert(QStringLiteral("forge_provider_id"), provider);

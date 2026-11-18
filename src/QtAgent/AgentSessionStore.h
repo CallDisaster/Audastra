@@ -9,7 +9,7 @@
 
 namespace War3Map::Agent {
 
-// 会话身份只绑定地图；每条消息各自记录模型，切换模型不另开上下文。
+// 会话身份只绑定地图；messages 为发给模型的平衡表层，transcriptLog 为只增不减的完整用户/工具/压缩历史。
 struct AgentSession {
     QString id;
     QString mapIdentity;
@@ -20,6 +20,8 @@ struct AgentSession {
     QString modelId;
     QJsonArray messages;
     QString migratedFrom;
+    QJsonArray transcriptLog;
+    QJsonObject lastUsage;
 };
 
 [[nodiscard]] bool IsCompleteAgentTranscript(const QJsonArray& messages);
@@ -33,7 +35,8 @@ public:
     [[nodiscard]] static QString MapHash(const QString& mapIdentity);
     [[nodiscard]] static QString LegacyBinding(const QString& map, const QString& provider, const QString& model);
     [[nodiscard]] QString SessionPath(const QString& mapIdentity, const QString& id) const;
-    [[nodiscard]] QList<AgentSession> List(const QString& mapIdentity, QString* error = nullptr) const;
+    [[nodiscard]] QList<AgentSession> List(const QString& mapIdentity, QString* error = nullptr,
+        QString* warning = nullptr) const;
     [[nodiscard]] std::optional<AgentSession> Read(const QString& mapIdentity, const QString& id,
         QString* error = nullptr) const;
     [[nodiscard]] std::optional<AgentSession> Create(const QString& mapIdentity, QString* error = nullptr) const;

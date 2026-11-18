@@ -134,6 +134,7 @@ private slots:
     void usageWithoutBreakdownIsNotAttributedToInput();
     void stoppedAndUnresolvedToolsAreNotCountedAsSuccess();
     void sharedThemeAndLabelsWithoutHintText();
+    void claudeCodeContextBreakdownCacheHitRateAndExternalMcpUi();
 };
 
 void AgentWindowTests::initTestCase() {
@@ -1559,6 +1560,117 @@ void AgentWindowTests::sharedThemeAndLabelsWithoutHintText() {
     QCOMPARE(revision->text(), QStringLiteral("—"));
     window.SetActiveMap(QStringLiteral("测试地图.w3x"), QStringLiteral("D:/maps/测试地图.w3x|7"));
     QCOMPARE(revision->text(), QStringLiteral("D:/maps/测试地图.w3x|7"));
+}
+
+void AgentWindowTests::claudeCodeContextBreakdownCacheHitRateAndExternalMcpUi() {
+    AgentWindow window;
+    auto settings = TestSettings();
+    settings.providers[0].models[0].contextOverride = 500000;
+    window.SetSettings(settings);
+    window.resize(1360, 860);
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+    QSignalSpy compactSpy(&window, &AgentWindow::CompactRequested);
+    QSignalSpy memorySpy(&window, &AgentWindow::EditMemoryRequested);
+    QSignalSpy reconnectSpy(&window, &AgentWindow::ExternalMcpReconnectRequested);
+
+    // 1. Claude Code 风格窗口构成快照 + 缓存命中率展示
+    window.AppendEvent({
+        {QStringLiteral("type"), QStringLiteral("context_composition")},
+        {QStringLiteral("messages_tokens"), 280000},
+        {QStringLiteral("editor_tools_tokens"), 26000},
+        {QStringLiteral("mcp_tools_tokens"), 14000},
+        {QStringLiteral("system_prompt_tokens"), 11000},
+        {QStringLiteral("skills_tokens"), 6000},
+        {QStringLiteral("mcp_instructions_tokens"), 2000},
+        {QStringLiteral("memory_files_tokens"), 1000},
+        {QStringLiteral("autocompact_threshold_ratio"), 0.80},
+        {QStringLiteral("mcp_tool_items"), QJsonArray{
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("mcp__war3_autotest__run_case")},
+                {QStringLiteral("detail"), QStringLiteral("运行进图用例")}, {QStringLiteral("tokens"), 450}},
+        }},
+        {QStringLiteral("memory_items"), QJsonArray{
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("测试地图.memory.md")},
+                {QStringLiteral("detail"), QStringLiteral("测试路径")}, {QStringLiteral("tokens"), 1000}},
+        }},
+    });
+    window.AppendEvent({
+        {QStringLiteral("type"), QStringLiteral("usage")},
+        {QStringLiteral("available"), true},
+        {QStringLiteral("input_tokens"), 340000},
+        {QStringLiteral("cache_read_tokens"), 255000},
+        {QStringLiteral("cache_write_tokens"), 15000},
+        {QStringLiteral("output_tokens"), 10000},
+        {QStringLiteral("context_tokens"), 350000},
+    });
+
+    QCOMPARE(window.findChildren<QFrame*>(QStringLiteral("agentContextSwatch")).size(), 4);
+    QCOMPARE(window.findChildren<QFrame*>(QStringLiteral("agentContextPartSwatch")).size(), 9);
+    auto* hitLabel = window.findChild<QLabel*>(QStringLiteral("agentCacheHitRateLabel"));
+    QVERIFY(hitLabel && hitLabel->isVisible());
+    QVERIFY(hitLabel->text().contains(QStringLiteral("75%")));
+
+    auto* remainLabel = window.findChild<QLabel*>(QStringLiteral("agentAutocompactRemaining"));
+    QVERIFY(remainLabel);
+    QCOMPARE(remainLabel->text(), QStringLiteral("距自动压缩还剩 50K"));
+
+    auto* compactBtn = window.findChild<QPushButton*>(QStringLiteral("agentCompactSessionBtn"));
+    QVERIFY(compactBtn && compactBtn->isEnabled());
+    compactBtn->click();
+    QCOMPARE(compactSpy.size(), qsizetype(1));
+
+    auto* editMemBtn = window.findChild<QPushButton*>(QStringLiteral("agentEditMemoryBtn"));
+    QVERIFY(editMemBtn);
+    editMemBtn->click();
+    QCOMPARE(memorySpy.size(), qsizetype(1));
+
+    // 2. 外部 MCP 连接器状态圆点与一键重连
+    AgentConnectorStatus status;
+    status.registeredTools = 20;
+    status.mcpListening = true;
+    status.mcpEndpoint = QStringLiteral("http://127.0.0.1:8767/mcp");
+    ExternalMcpRuntimeStatus ext1;
+    ext1.id = QStringLiteral("srv-autotest");
+    ext1.name = QStringLiteral("War3 autotest");
+    ext1.transport = QStringLiteral("stdio");
+    ext1.enabled = true;
+    ext1.connected = false;
+    ext1.error = QStringLiteral("进程退出");
+    status.externalServers = {ext1};
+    window.SetConnectorStatus(status);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+    QCOMPARE(window.findChildren<QLabel*>(QStringLiteral("agentConnectorDot")).size(), 2);
+    QCOMPARE(window.findChildren<QLabel*>(QStringLiteral("agentExternalMcpDot")).size(), 1);
+    auto* reconnBtn = window.findChild<QPushButton*>(QStringLiteral("agentExternalMcpReconnectBtn"));
+    QVERIFY(reconnBtn);
+    reconnBtn->click();
+    QCOMPARE(reconnectSpy.size(), qsizetype(1));
+    QCOMPARE(reconnectSpy.front().front().toString(), QStringLiteral("srv-autotest"));
+
+    // 3. 思考过程折叠行、压缩检查点横幅与“加载更早记录”展开
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("thinking_delta")}, {QStringLiteral("text"), QStringLiteral("先核对触发器修订号")}});
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("context_compacted")},
+        {QStringLiteral("removed_messages"), 8}, {QStringLiteral("saved_tokens"), 16000},
+        {QStringLiteral("summary"), QStringLiteral("## 原始需求与核心约束\n- 保留全部装备合成规则")}});
+    auto* conv = window.findChild<AgentConversationView*>(QStringLiteral("agentConversation"));
+    QVERIFY(conv);
+    QVERIFY(conv->toPlainText().contains(QStringLiteral("思考过程")));
+    QVERIFY(conv->toPlainText().contains(QStringLiteral("上下文已压缩")));
+    QVERIFY(conv->toPlainText().contains(QStringLiteral("保留全部装备合成规则")));
+
+    QJsonArray many;
+    for (int i = 0; i < 25; ++i) {
+        many.append(QJsonObject{{QStringLiteral("role"), i % 2 == 0 ? QStringLiteral("user") : QStringLiteral("assistant")},
+            {QStringLiteral("content"), QStringLiteral("历史条目 %1").arg(i)}});
+    }
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("history_restored")}, {QStringLiteral("messages"), many}});
+    QVERIFY(!conv->toPlainText().contains(QStringLiteral("历史条目 0")));
+    auto* notice = window.findChild<QLabel*>(QStringLiteral("agentHistoryNotice"));
+    QVERIFY(notice && notice->text().contains(QStringLiteral("load-older")));
+    QMetaObject::invokeMethod(notice, "linkActivated", Q_ARG(QString, QStringLiteral("load-older")));
+    QVERIFY(conv->toPlainText().contains(QStringLiteral("历史条目 0")));
 }
 
 QTEST_MAIN(AgentWindowTests)

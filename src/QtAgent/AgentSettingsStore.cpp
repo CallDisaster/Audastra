@@ -62,6 +62,11 @@ bool ContainsSecretField(const QJsonObject& object) {
     return false;
 }
 
+bool IsValidPermissionTier(const QString& tier) {
+    return tier == QStringLiteral("read") || tier == QStringLiteral("edit")
+        || tier == QStringLiteral("save") || tier == QStringLiteral("full");
+}
+
 QJsonObject EncodeModel(const ModelSettings& model) {
     return {{QStringLiteral("id"), model.id}, {QStringLiteral("name"), model.name},
         {QStringLiteral("enabled"), model.enabled}, {QStringLiteral("context_override"), model.contextOverride},
@@ -82,6 +87,57 @@ bool DecodeModel(const QJsonObject& object, ModelSettings& model) {
         && ReadTokens(object, QStringLiteral("max_output_tokens"), model.maxOutputTokens);
 }
 
+QJsonObject EncodeExternalMcp(const ExternalMcpServerSettings& server) {
+    QJsonArray args;
+    for (const auto& arg : server.args) args.append(arg);
+    QJsonObject env;
+    for (const auto& pair : server.env) env.insert(pair.first, pair.second);
+    return {{QStringLiteral("id"), server.id},
+        {QStringLiteral("name"), server.name},
+        {QStringLiteral("enabled"), server.enabled},
+        {QStringLiteral("transport"), server.transport},
+        {QStringLiteral("command"), server.command},
+        {QStringLiteral("args"), args},
+        {QStringLiteral("cwd"), server.cwd},
+        {QStringLiteral("env"), env},
+        {QStringLiteral("url"), server.url},
+        {QStringLiteral("credential_ref"), server.credentialRef},
+        {QStringLiteral("minimum_permission"), server.minimumPermission}};
+}
+
+bool DecodeExternalMcp(const QJsonObject& object, ExternalMcpServerSettings& server) {
+    if (ContainsSecretField(object)) return false;
+    if (!ReadText(object, QStringLiteral("id"), server.id)
+        || !ReadText(object, QStringLiteral("name"), server.name)
+        || !ReadBool(object, QStringLiteral("enabled"), true, server.enabled)
+        || !ReadText(object, QStringLiteral("command"), server.command)
+        || !ReadText(object, QStringLiteral("cwd"), server.cwd)
+        || !ReadText(object, QStringLiteral("url"), server.url)
+        || !ReadText(object, QStringLiteral("credential_ref"), server.credentialRef)) return false;
+    if (object.contains(QStringLiteral("transport")) && !ReadText(object, QStringLiteral("transport"), server.transport)) return false;
+    if (object.contains(QStringLiteral("minimum_permission"))
+        && !ReadText(object, QStringLiteral("minimum_permission"), server.minimumPermission)) return false;
+    const auto argsValue = object.value(QStringLiteral("args"));
+    if (!argsValue.isUndefined()) {
+        if (!argsValue.isArray()) return false;
+        for (const auto& item : argsValue.toArray()) {
+            if (!item.isString() || item.toString().size() > 4096) return false;
+            server.args.push_back(item.toString());
+        }
+    }
+    const auto envValue = object.value(QStringLiteral("env"));
+    if (!envValue.isUndefined()) {
+        if (!envValue.isObject()) return false;
+        const auto envObj = envValue.toObject();
+        if (ContainsSecretField(envObj)) return false;
+        for (auto it = envObj.constBegin(); it != envObj.constEnd(); ++it) {
+            if (it.key().isEmpty() || it.key().size() > 256 || !it.value().isString() || it.value().toString().size() > 4096) return false;
+            server.env.push_back({it.key(), it.value().toString()});
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 AgentSettingsStore::AgentSettingsStore(QString filePath)
@@ -94,6 +150,8 @@ QString AgentSettingsStore::FilePath() const { return filePath_; }
 bool AgentSettingsStore::Validate(const AgentSettings& settings, QString* error) {
     if (error != nullptr) error->clear();
     if (settings.mcpPort == 0) return Fail(error, QStringLiteral("MCP 端口必须在 1–65535 之间。"));
+    if (settings.maxAutoSteps < 8 || settings.maxAutoSteps > 512)
+        return Fail(error, QStringLiteral("单次自动运行步数上限须在 8–512 之间。"));
     if (settings.providers.size() > 128) return Fail(error, QStringLiteral("提供商设置数量超过读取预算。"));
     QSet<QString> providerIds;
     for (const auto& provider : settings.providers) {
@@ -129,6 +187,40 @@ bool AgentSettingsStore::Validate(const AgentSettings& settings, QString* error)
                 if (count < 0 || count > kMaximumTokens)
                     return Fail(error, QStringLiteral("模型 token 数须为非负整数，不能超过 15 位。"));
             }
+        }
+    }
+    if (settings.externalMcpServers.size() > 64)
+        return Fail(error, QStringLiteral("外部 MCP 服务器数量超过 64 个预算。"));
+    QSet<QString> mcpIds;
+    for (const auto& server : settings.externalMcpServers) {
+        if (server.id.isEmpty() || server.id.size() > 256 || mcpIds.contains(server.id))
+            return Fail(error, QStringLiteral("外部 MCP 服务器 ID 为空、重复或过长。"));
+        mcpIds.insert(server.id);
+        if (server.name.trimmed().isEmpty() || server.name.size() > 256)
+            return Fail(error, QStringLiteral("外部 MCP 服务器名称应为 1–256 个字符。"));
+        if (!IsValidPermissionTier(server.minimumPermission))
+            return Fail(error, QStringLiteral("外部 MCP 最低权限档位无效。"));
+        if (server.args.size() > 128 || server.env.size() > 64 || server.credentialRef.size() > 16384)
+            return Fail(error, QStringLiteral("外部 MCP 参数或环境变量数量超出限制。"));
+        for (const auto& pair : server.env) {
+            const auto lower = pair.first.toLower();
+            if (pair.first.isEmpty() || lower == QStringLiteral("api_key") || lower == QStringLiteral("apikey")
+                || lower == QStringLiteral("secret") || lower == QStringLiteral("password")
+                || lower == QStringLiteral("authorization") || lower == QStringLiteral("token"))
+                return Fail(error, QStringLiteral("外部 MCP 环境变量不能直接存放明文密钥字段，请使用凭据栏保存。"));
+        }
+        if (server.transport == QStringLiteral("stdio")) {
+            if (server.command.trimmed().isEmpty() || server.command.size() > 4096 || server.cwd.size() > 4096)
+                return Fail(error, QStringLiteral("stdio MCP 服务器必须填写启动命令。"));
+        } else if (server.transport == QStringLiteral("http")) {
+            const QUrl url(server.url);
+            if (server.url.isEmpty() || server.url.size() > 4096 || !url.isValid() || url.host().isEmpty()
+                || !url.userInfo().isEmpty() || url.hasFragment()
+                || (url.scheme() != QStringLiteral("https") && (url.scheme() != QStringLiteral("http")
+                    || (url.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) != 0 && !QHostAddress(url.host()).isLoopback()))))
+                return Fail(error, QStringLiteral("HTTP MCP 地址须为 HTTPS 或本机回环 HTTP，且不含用户名或片段。"));
+        } else {
+            return Fail(error, QStringLiteral("外部 MCP 传输方式仅支持 stdio 或 http。"));
         }
     }
     QSet<QString> tools;
@@ -177,6 +269,14 @@ AgentSettings AgentSettingsStore::Load(QString* error) const {
         }
         settings.mcpPort = static_cast<quint16>(port);
     }
+    const auto stepsValue = object.value(QStringLiteral("max_auto_steps"));
+    if (!stepsValue.isUndefined()) {
+        const double steps = stepsValue.toDouble(-1);
+        if (!stepsValue.isDouble() || steps < 8 || steps > 512 || std::floor(steps) != steps) {
+            Fail(error, QStringLiteral("自动步数上限必须为 8–512 的整数。")); return {};
+        }
+        settings.maxAutoSteps = static_cast<int>(steps);
+    }
     const auto providersValue = object.value(QStringLiteral("providers"));
     if (!providersValue.isUndefined() && !providersValue.isArray()) {
         Fail(error, QStringLiteral("提供商设置必须为列表。")); return {};
@@ -209,6 +309,17 @@ AgentSettings AgentSettingsStore::Load(QString* error) const {
         }
         settings.providers.push_back(std::move(provider));
     }
+    const auto externalMcpValue = object.value(QStringLiteral("external_mcp_servers"));
+    if (!externalMcpValue.isUndefined() && !externalMcpValue.isArray()) {
+        Fail(error, QStringLiteral("外部 MCP 服务器设置必须为列表。")); return {};
+    }
+    for (const auto& serverValue : externalMcpValue.toArray()) {
+        ExternalMcpServerSettings server;
+        if (!serverValue.isObject() || !DecodeExternalMcp(serverValue.toObject(), server)) {
+            Fail(error, QStringLiteral("外部 MCP 服务器字段无效，或包含明文密钥字段。")); return {};
+        }
+        settings.externalMcpServers.push_back(std::move(server));
+    }
     const auto disabled = object.value(QStringLiteral("disabled_tools"));
     if (!disabled.isUndefined() && !disabled.isArray()) {
         Fail(error, QStringLiteral("工具开关必须为列表。")); return {};
@@ -232,15 +343,20 @@ bool AgentSettingsStore::Save(const AgentSettings& settings, QString* error) con
             {QStringLiteral("protocol"), provider.protocol}, {QStringLiteral("credential_ref"), provider.credentialRef},
             {QStringLiteral("enabled"), provider.enabled}, {QStringLiteral("models"), models}});
     }
+    QJsonArray externalServers;
+    for (const auto& server : settings.externalMcpServers) externalServers.append(EncodeExternalMcp(server));
     QJsonArray disabled;
     for (const auto& tool : settings.disabledTools) disabled.append(tool);
-    const auto bytes = QJsonDocument(QJsonObject{{QStringLiteral("version"), 1},
+    QJsonObject root{{QStringLiteral("version"), 1},
         {QStringLiteral("ai_enabled"), settings.aiEnabled}, {QStringLiteral("reduced_motion"), settings.reducedMotion},
         {QStringLiteral("follow_changes"), settings.followChanges},
         {QStringLiteral("providers"), providers}, {QStringLiteral("allow_edits"), settings.allowEdits},
         {QStringLiteral("allow_save"), settings.allowSave}, {QStringLiteral("allow_commands"), settings.allowCommands},
         {QStringLiteral("mcp_enabled"), settings.mcpEnabled}, {QStringLiteral("mcp_port"), settings.mcpPort},
-        {QStringLiteral("disabled_tools"), disabled}}).toJson(QJsonDocument::Indented);
+        {QStringLiteral("max_auto_steps"), settings.maxAutoSteps},
+        {QStringLiteral("external_mcp_servers"), externalServers},
+        {QStringLiteral("disabled_tools"), disabled}};
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
     if (bytes.size() > kMaximumSettingsBytes) return Fail(error, QStringLiteral("设置超过 2 MiB，未写入。"));
     if (!QDir().mkpath(QFileInfo(filePath_).absolutePath()))
         return Fail(error, QStringLiteral("无法创建 AI 设置目录。"));
