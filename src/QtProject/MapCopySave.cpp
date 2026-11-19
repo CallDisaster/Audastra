@@ -551,6 +551,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         if (IsManagedMember(CanonicalMember(to))) {
             return fail(tr("ASSET_MANAGED_MEMBER"), tr("资源不能覆盖编辑器当前管理的数据：%1").arg(edit.to));
         }
+        // 改名目标又被替换成新文件：旧字节不再写出，由下面的待导入内容占用该路径。
+        if (pendingTargets.contains(CanonicalMember(to))) continue;
         replaceMember(to, *bytes.value);
         const auto registered = importTable.Upsert(to, memberExists);
         AddDiagnostics(registered.diagnostics);

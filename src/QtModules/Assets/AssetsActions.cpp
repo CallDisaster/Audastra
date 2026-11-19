@@ -11,11 +11,13 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QScrollArea>
 #include <QSet>
@@ -109,6 +111,28 @@ QString AssetsModule::DeleteAssets(const QStringList& paths) {
     return result;
 }
 
+QString AssetsModule::ReplaceAssetFile(const QString& path, const QString& diskPath) {
+    const QString result = Record(tr("替换文件"), [&](QtProject::AssetState& state) {
+        return project_.ReplaceAssetFile(state, path, diskPath);
+    });
+    if (result.isEmpty()) Status(tr("已用 %1 替换 %2（路径不变），保存地图时写入。").arg(QFileInfo(diskPath).fileName(), path));
+    return result;
+}
+
+void AssetsModule::ChooseReplacementFile(const QString& path) {
+    const QString suffix = QFileInfo(path).suffix();
+    const QString filter = suffix.isEmpty() ? tr("所有文件 (*.*)") : tr("同类型文件 (*.%1);;所有文件 (*.*)").arg(suffix);
+    const QString chosen = QFileDialog::getOpenFileName(page_, tr("替换 %1").arg(FileName(path)), QString{}, filter);
+    if (chosen.isEmpty()) return;
+    const QString chosenSuffix = QFileInfo(chosen).suffix();
+    if (chosenSuffix.compare(suffix, Qt::CaseInsensitive) != 0
+        && QMessageBox::question(page_, tr("替换文件"), tr("所选文件类型（.%1）与原资源（.%2）不同，仍按原路径和名字替换？")
+            .arg(chosenSuffix, suffix), QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) != QMessageBox::Yes) {
+        return;
+    }
+    (void)ReplaceAssetFile(path, chosen);
+}
+
 QString AssetsModule::DeleteSelection() {
     QStringList paths = SelectedPaths();
     QStringList folders;
@@ -198,6 +222,7 @@ void AssetsModule::ShowContextMenu(const QPoint& pos) {
     if (!onTree && index.isValid() && !onFolder) {
         const QString path = index.siblingAtColumn(0).data(kPathRole).toString();
         menu.addAction(tr("属性…"), this, [this, path]() { EditProperties(path); })->setShortcut(QKeySequence(Qt::Key_F2));
+        menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/refresh-cw")), tr("替换文件…"), this, [this, path]() { ChooseReplacementFile(path); });
         menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("复制完整路径"), this, [this, view, path]() {
             // 右键的是多选中的一行时复制全部选中行的路径，每行一个，按列表顺序。
             QModelIndexList rows = view->selectionModel()->selectedRows(0);

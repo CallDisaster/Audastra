@@ -57,6 +57,8 @@ public:
     QString RenameAsset(const QString& path, const QString& newPath);
     QString RenameFolder(const QString& folder, const QString& newName);
     QString DeleteAssets(const QStringList& paths);
+    // 用磁盘文件替换资源内容，归档路径与名字不变（可撤销）。
+    QString ReplaceAssetFile(const QString& path, const QString& diskPath);
     // 删除列表中选中的全部行：文件，以及选中文件夹里的全部资源（一条撤销）；选中的空文件夹从视图移除。
     QString DeleteSelection();
     void NewFolder(const QString& name);
@@ -82,6 +84,8 @@ private:
     void QueueResponsiveLayout();
     void UpdateResponsiveLayout();
     void ShowContextMenu(const QPoint& pos);
+    // 右键“替换文件…”：选磁盘文件（默认同类型），类型不同时先确认。
+    void ChooseReplacementFile(const QString& path);
     // 执行一次资源编辑并登记撤销；失败时恢复原状态并提示。
     QString Record(const QString& text, const std::function<QString(QtProject::AssetState&)>& edit);
     [[nodiscard]] QStringList SelectedPaths() const;

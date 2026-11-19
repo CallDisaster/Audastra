@@ -2,6 +2,7 @@
 #include "EditorProject.h"
 #include "MapSaveJob.h"
 #include "Fonts/FontLoader.h"
+#include "Icons/SvgIcons.h"
 #include "Theme/ThemeManager.h"
 #include "Modules/ModuleRegistry.h"
 #include "Shell/ShellWindow.h"
@@ -128,6 +129,8 @@ private slots:
     void SharedStackRejectsPartialAndStaleAssetEdits();
     void DuplicatePendingSourcesStayAmbiguous();
     void MovedSourceThenReimportedOriginalPathPreservesBothLayers();
+    void ReplaceFileKeepsPathAndNameWithUndo();
+    void ReplaceRenamedAssetWritesNewContentOnce();
     void NavigationRestoresExactPathAndFilterWithoutEditing();
     void NavigationRefusesMissingPathAndFolderWithoutFallback();
 };
@@ -306,6 +309,82 @@ void AssetsModuleTests::MovedSourceThenReimportedOriginalPathPreservesBothLayers
     QFile pending(newFile); QVERIFY(pending.open(QIODevice::ReadOnly)); QCOMPARE(pending.readAll(), QByteArray("replacement-model"));
 }
 
+
+void AssetsModuleTests::ReplaceFileKeepsPathAndNameWithUndo() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    QtProject::EditorProject project; QVERIFY(OpenSyntheticMap(dir, project));
+    project.sourceArchivePath_ = project.archiveSession_->SourcePath(); project.projectRoot_ = dir.path().toStdWString(); project.ResetEditTracking();
+    const auto sourceSha = Sha256File(project.sourceArchivePath_); QVERIFY(sourceSha.Succeeded());
+    QVERIFY(!UiKit::SvgIcon(QStringLiteral("lucide/refresh-cw")).isNull());
+    // 新文件的名字与原资源不同：替换后归档路径与名字都保持原样。
+    const auto newFile = WriteFile(dir, "Foo_v2.mdx", "replacement-model"); QVERIFY(!newFile.isEmpty());
+    Modules::AssetsModule module(project); module.Widget();
+    const auto before = project.CaptureAssets();
+    QVERIFY(module.ReplaceAssetFile("units/foo.mdx", newFile).isEmpty());
+    const auto entries = project.AssetEntries(); QCOMPARE(entries.size(), std::size_t{4});
+    const auto replaced = std::find_if(entries.begin(), entries.end(), [](const auto& entry) { return entry.path == "Units\\Foo.mdx"; });
+    QVERIFY(replaced != entries.end()); QVERIFY(replaced->Replacement());
+    QCOMPARE(replaced->originalPath, QStringLiteral("Units\\Foo.mdx")); QCOMPARE(replaced->size, qint64{17});
+    QCOMPARE(project.pendingImports_.size(), std::size_t{1});
+    QCOMPARE(project.pendingImports_.front().archivePath, QStringLiteral("Units\\Foo.mdx"));
+    QVERIFY(project.assetEdits_.empty());
+    module.OpenFolder("Units"); QCOMPARE(module.ListedRows().size(), 1);
+    QVERIFY(module.ListedRows().front().contains(QStringLiteral("待替换")));
+    // 缺少磁盘文件或资源时不改任何状态。
+    const auto replacedState = project.CaptureAssets(); const auto index = module.UndoStack()->index();
+    QVERIFY(!module.ReplaceAssetFile("Units\\Foo.mdx", dir.filePath("missing.mdx")).isEmpty());
+    QVERIFY(!module.ReplaceAssetFile("Units\\Missing.mdx", newFile).isEmpty());
+    QVERIFY(project.CaptureAssets() == replacedState); QCOMPARE(module.UndoStack()->index(), index);
+    const auto output = std::filesystem::path(dir.filePath("replaced-in-place.w3x").toStdWString());
+    auto job = project.PrepareMapSave(output, false); QVERIFY(job);
+    QVERIFY(job->archive->PreflightSave(job->replacements, job->removals, output).Succeeded());
+    QVERIFY(job->archive->SaveCandidate(output, job->replacements, job->removals).Succeeded());
+    const auto reopened = MapArchiveSession::Open(output); QVERIFY(reopened.Succeeded());
+    QCOMPARE(MemberBytes(*reopened.value, "Units\\Foo.mdx"), Bytes("replacement-model"));
+    QVERIFY(!reopened.value->HasMember("Units\\Foo_v2.mdx"));
+    QVERIFY(!reopened.value->HasMember("Foo_v2.mdx"));
+    module.UndoStack()->undo(); QVERIFY(project.CaptureAssets() == before);
+    module.UndoStack()->redo(); QVERIFY(project.CaptureAssets() == replacedState);
+    QCOMPARE(Sha256File(project.sourceArchivePath_).value.value_or(""), *sourceSha.value);
+}
+
+void AssetsModuleTests::ReplaceRenamedAssetWritesNewContentOnce() {
+    QTemporaryDir dir; QVERIFY(dir.isValid());
+    QtProject::EditorProject project; QVERIFY(OpenSyntheticMap(dir, project));
+    project.sourceArchivePath_ = project.archiveSession_->SourcePath(); project.projectRoot_ = dir.path().toStdWString(); project.ResetEditTracking();
+    const auto newFile = WriteFile(dir, "Other.mdx", "replacement-model"); QVERIFY(!newFile.isEmpty());
+    Modules::AssetsModule module(project); module.Widget();
+    QVERIFY(module.RenameAsset("Units\\Foo.mdx", "Models\\Foo.mdx").isEmpty());
+    const auto renamed = project.CaptureAssets();
+    // 改名后的资源再替换：旧内容不再写到新路径，原路径删除，保存不会重复提供同一成员。
+    QVERIFY(module.ReplaceAssetFile("Models\\Foo.mdx", newFile).isEmpty());
+    QCOMPARE(project.pendingImports_.size(), std::size_t{1});
+    QCOMPARE(project.pendingImports_.front().archivePath, QStringLiteral("Models\\Foo.mdx"));
+    QCOMPARE(project.assetEdits_.size(), std::size_t{1}); QVERIFY(project.assetEdits_.front().to.isEmpty());
+    QCOMPARE(project.AssetEntries().size(), std::size_t{4});
+    const auto output = std::filesystem::path(dir.filePath("renamed-then-replaced.w3x").toStdWString());
+    auto job = project.PrepareMapSave(output, false); QVERIFY(job);
+    QVERIFY(job->archive->PreflightSave(job->replacements, job->removals, output).Succeeded());
+    QVERIFY(job->archive->SaveCandidate(output, job->replacements, job->removals).Succeeded());
+    const auto reopened = MapArchiveSession::Open(output); QVERIFY(reopened.Succeeded());
+    QVERIFY(!reopened.value->HasMember("Units\\Foo.mdx"));
+    QCOMPARE(MemberBytes(*reopened.value, "Models\\Foo.mdx"), Bytes("replacement-model"));
+    const auto imp = Resources::ImportTable::Parse(MemberBytes(*reopened.value, "war3map.imp")); QVERIFY(imp.Succeeded());
+    QVERIFY(std::any_of(imp.value->Entries().begin(), imp.value->Entries().end(), [](const auto& entry) { return entry.path == "Models\\Foo.mdx"; }));
+    QVERIFY(std::none_of(imp.value->Entries().begin(), imp.value->Entries().end(), [](const auto& entry) { return entry.path == "Units\\Foo.mdx"; }));
+    module.UndoStack()->undo(); QVERIFY(project.CaptureAssets() == renamed);
+    // 同名文件直接导入到改名目标同样按替换处理（此前保存会因重复成员失败）。
+    const auto sameName = WriteFile(dir, "Foo.mdx", "dropped-model"); QVERIFY(!sameName.isEmpty());
+    module.AddFiles({sameName}, "Models");
+    QCOMPARE(project.assetEdits_.size(), std::size_t{1}); QVERIFY(project.assetEdits_.front().to.isEmpty());
+    const auto droppedOutput = std::filesystem::path(dir.filePath("renamed-then-imported.w3x").toStdWString());
+    auto dropped = project.PrepareMapSave(droppedOutput, false); QVERIFY(dropped);
+    QVERIFY(dropped->archive->PreflightSave(dropped->replacements, dropped->removals, droppedOutput).Succeeded());
+    QVERIFY(dropped->archive->SaveCandidate(droppedOutput, dropped->replacements, dropped->removals).Succeeded());
+    const auto second = MapArchiveSession::Open(droppedOutput); QVERIFY(second.Succeeded());
+    QCOMPARE(MemberBytes(*second.value, "Models\\Foo.mdx"), Bytes("dropped-model"));
+    QVERIFY(!second.value->HasMember("Units\\Foo.mdx"));
+}
 
 void AssetsModuleTests::ExternalResourceDropUsesCopyQueueAndJointUndo() {
     QTemporaryDir dir; QVERIFY(dir.isValid());

@@ -17,6 +17,21 @@ QString CanonicalArchivePath(QString path) {
     return path.replace('\\', '/');
 }
 
+// 待导入内容与路径编辑的约定（与 MoveAsset 移动“待替换”条目一致）：
+// 1. 待导入内容占用了某个改名目标时，原成员的旧字节不能再写到那里（保存会重复提供同一成员）：改名改记为删除原成员；
+// 2. 原成员位置又有待导入内容时直接覆盖，不同时提交同路径的删除与写入。
+void ReconcileEditsWithImports(AssetState& state) {
+    const auto pendingAt = [&state](const QString& path) {
+        const auto key = EditorProject::AssetKey(path);
+        return std::any_of(state.imports.begin(), state.imports.end(),
+            [&](const PendingImport& pending) { return EditorProject::AssetKey(pending.archivePath) == key; });
+    };
+    for (auto& edit : state.edits) {
+        if (!edit.to.isEmpty() && pendingAt(edit.to)) edit.to.clear();
+    }
+    std::erase_if(state.edits, [&](const AssetEdit& edit) { return edit.to.isEmpty() && pendingAt(edit.from); });
+}
+
 } // namespace
 
 QString EditorProject::SuggestImportPath(const QString& diskPath) {
@@ -80,11 +95,31 @@ int EditorProject::AddImportFiles(AssetState& state, const QStringList& diskPath
         }
         ++added;
     }
-    std::erase_if(state.edits, [&](const AssetEdit& edit) {
-        return edit.to.isEmpty() && std::any_of(state.imports.begin(), state.imports.end(),
-            [&](const PendingImport& pending) { return AssetKey(pending.archivePath) == AssetKey(edit.from); });
-    });
+    ReconcileEditsWithImports(state);
     return added;
+}
+
+QString EditorProject::ReplaceAssetFile(AssetState& state, const QString& path, const QString& diskPath) const {
+    const QFileInfo info(diskPath);
+    if (!info.exists() || !info.isFile()) return tr("找不到文件：%1").arg(QDir::toNativeSeparators(diskPath));
+    const auto key = AssetKey(path);
+    const auto entries = AssetEntries(state);
+    const auto source = std::find_if(entries.begin(), entries.end(), [&](const AssetEntry& entry) { return AssetKey(entry.path) == key; });
+    if (source == entries.end()) return tr("找不到资源：%1").arg(path);
+    if (source->ambiguous) return tr("资源路径具有多份来源，不能选择其中一份替换：%1").arg(path);
+    PendingImport entry;
+    entry.archivePath = source->path;
+    entry.diskPath = QDir::toNativeSeparators(info.absoluteFilePath());
+    entry.size = info.size();
+    const auto previous = std::find_if(state.imports.begin(), state.imports.end(),
+        [&](const PendingImport& value) { return AssetKey(value.archivePath) == key; });
+    if (previous == state.imports.end()) state.imports.push_back(std::move(entry));
+    else {
+        entry.runtimeLuaDraft = previous->runtimeLuaDraft;
+        *previous = std::move(entry);
+    }
+    ReconcileEditsWithImports(state);
+    return {};
 }
 
 QString EditorProject::AddImportPayloads(std::vector<ImportPayload>& payloads, bool replaceExisting,
@@ -141,6 +176,7 @@ QString EditorProject::PrepareImportPayloads(AssetState& state, std::vector<Impo
         else { entry.runtimeLuaDraft = previous->runtimeLuaDraft; *previous = std::move(entry); }
         std::erase_if(candidate.edits, [&](const AssetEdit& edit) { return edit.to.isEmpty() && AssetKey(edit.from) == key; });
     }
+    ReconcileEditsWithImports(candidate);
     state = std::move(candidate);
     return {};
 }

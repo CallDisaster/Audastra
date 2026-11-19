@@ -365,6 +365,8 @@ public:
     // folder 非空时放进该文件夹，否则按文件类型建议路径。
     int AddImportFiles(const QStringList& diskPaths, const QString& folder = {});
     int AddImportFiles(AssetState& state, const QStringList& diskPaths, const QString& folder = {}) const;
+    // 用磁盘文件替换已有资源的内容：归档路径（文件夹与名字）保持不变，只换来源，保存时写入。返回空字符串表示成功。
+    [[nodiscard]] QString ReplaceAssetFile(AssetState& state, const QString& path, const QString& diskPath) const;
     void RemoveImports(std::vector<int> rows);
     void ClearImports();
     // 按明确归档路径加入已读入内存的文件，整批一次进入资源撤销栈。路径须通过 CheckAssetPath；
