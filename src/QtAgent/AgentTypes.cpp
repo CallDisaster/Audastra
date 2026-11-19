@@ -2,6 +2,9 @@
 
 #include <QCoreApplication>
 #include <QRegularExpression>
+#include <QSet>
+#include <QUrl>
+#include <QUrlQuery>
 
 namespace War3Map::Agent {
 namespace {
@@ -301,6 +304,126 @@ bool ExternalMcpPermissionSatisfied(const QString& minimumPermission, const Agen
     if (minimumPermission == QStringLiteral("edit")) return settings.allowEdits;
     if (minimumPermission == QStringLiteral("save")) return settings.allowEdits && settings.allowSave;
     return settings.allowEdits && settings.allowSave && settings.allowCommands;
+}
+
+bool ExternalMcpConnectionAllowed(const ExternalMcpServerSettings& server, const AgentSettings& settings) {
+    return settings.aiEnabled && server.enabled && ExternalMcpPermissionSatisfied(server.minimumPermission, settings);
+}
+
+namespace {
+
+// 按非字母数字字符与驼峰边界拆词并转小写：GITHUB_TOKEN → github/token，apiKey → api/key，APIKey → apikey。
+QStringList SecretNameWords(const QString& name) {
+    QStringList words;
+    QString current;
+    for (const QChar ch : name) {
+        if (!ch.isLetterOrNumber()) {
+            if (!current.isEmpty()) { words.push_back(current.toLower()); current.clear(); }
+            continue;
+        }
+        if (ch.isUpper() && !current.isEmpty() && current.back().isLower()) {
+            words.push_back(current.toLower());
+            current.clear();
+        }
+        current.append(ch);
+    }
+    if (!current.isEmpty()) words.push_back(current.toLower());
+    return words;
+}
+
+// ${VAR}、$VAR、%VAR%、<占位> 只是占位符，不是明文密钥。
+bool IsPlaceholderValue(const QString& value) {
+    return value.startsWith(QLatin1Char('$')) || value.contains(QStringLiteral("${"))
+        || (value.size() > 2 && value.startsWith(QLatin1Char('%')) && value.endsWith(QLatin1Char('%')))
+        || (value.size() > 2 && value.startsWith(QLatin1Char('<')) && value.endsWith(QLatin1Char('>')));
+}
+
+// 文件路径形式的取值（证书、密钥文件路径）不按明文密钥处理。
+bool IsPathLikeValue(const QString& value) {
+    static const QRegularExpression kDrivePath(QStringLiteral("^[A-Za-z]:[\\\\/]"));
+    return value.contains(QLatin1Char('\\')) || value.startsWith(QStringLiteral("./"))
+        || value.startsWith(QStringLiteral("../")) || value.startsWith(QStringLiteral("~/"))
+        || value.startsWith(QLatin1Char('/')) || kDrivePath.match(value).hasMatch();
+}
+
+bool SecretOptionValue(const QString& value) {
+    const QString trimmed = value.trimmed();
+    return !trimmed.isEmpty() && !IsPlaceholderValue(trimmed) && !IsPathLikeValue(trimmed);
+}
+
+bool UrlCarriesSecret(const QString& text) {
+    const QUrl url(text);
+    if (!url.isValid()) return false;
+    if (!url.password().isEmpty()) return true;
+    const QUrlQuery query(url);
+    for (const auto& item : query.queryItems(QUrl::FullyDecoded)) {
+        if (ExternalMcpSecretName(item.first) && SecretOptionValue(item.second)) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+bool ExternalMcpSecretName(const QString& name) {
+    static const QSet<QString> kLastWords{
+        QStringLiteral("password"), QStringLiteral("passwd"), QStringLiteral("passphrase"),
+        QStringLiteral("secret"), QStringLiteral("secrets"), QStringLiteral("token"), QStringLiteral("tokens"),
+        QStringLiteral("key"), QStringLiteral("apikey"), QStringLiteral("pat"),
+        QStringLiteral("credential"), QStringLiteral("credentials"), QStringLiteral("auth"),
+        QStringLiteral("authorization"), QStringLiteral("cookie")};
+    const QStringList words = SecretNameWords(name);
+    if (words.isEmpty()) return false;
+    if (kLastWords.contains(words.back())) return true;
+    // 无分隔的复合名（ACCESSTOKEN、DBPASSWORD）按长关键词后缀匹配；短词 key/pat/auth 只按整词，避免 MONKEY、COMPAT 误判。
+    const QString lower = words.back();
+    for (const auto* suffix : {"password", "passwd", "passphrase", "secret", "token", "apikey", "credential", "credentials"}) {
+        if (lower.endsWith(QLatin1String(suffix))) return true;
+    }
+    return false;
+}
+
+bool ExternalMcpValueLooksSecret(const QString& value) {
+    static const QRegularExpression kTokenFormats(QStringLiteral(
+        "^(?:sk-[A-Za-z0-9_-]{16,}"
+        "|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"
+        "|github_pat_[A-Za-z0-9_]{20,}"
+        "|glpat-[A-Za-z0-9_-]{16,}"
+        "|xox[abprs]-[A-Za-z0-9-]{10,}"
+        "|(?:AKIA|ASIA)[A-Z0-9]{16}"
+        "|AIza[0-9A-Za-z_-]{30,}"
+        "|hf_[A-Za-z0-9]{20,}"
+        "|npm_[A-Za-z0-9]{20,}"
+        "|(?i:bearer|basic)\\s+\\S{8,})$"));
+    const QString trimmed = value.trimmed();
+    return !IsPlaceholderValue(trimmed) && kTokenFormats.match(trimmed).hasMatch();
+}
+
+bool ExternalMcpArgsCarrySecret(const QStringList& args) {
+    for (qsizetype index = 0; index < args.size(); ++index) {
+        const QString arg = args.at(index).trimmed();
+        if (arg.isEmpty()) continue;
+        if (ExternalMcpValueLooksSecret(arg)) return true;
+        // mcp-remote 等桥接常见写法：--header "Authorization: Bearer xxx"。
+        static const QRegularExpression kAuthorizationHeader(QStringLiteral("authorization\\s*[:=]\\s*(.*)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (const auto match = kAuthorizationHeader.match(arg); match.hasMatch() && SecretOptionValue(match.captured(1))) return true;
+        if (arg.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) || arg.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+            if (UrlCarriesSecret(arg)) return true;
+            continue;
+        }
+        if (!arg.startsWith(QLatin1Char('-'))) continue;
+        QString body = arg;
+        while (body.startsWith(QLatin1Char('-'))) body.remove(0, 1);
+        const qsizetype equals = body.indexOf(QLatin1Char('='));
+        if (!ExternalMcpSecretName(equals >= 0 ? body.left(equals) : body)) continue;
+        if (equals >= 0) {
+            if (SecretOptionValue(body.mid(equals + 1))) return true;
+        } else if (index + 1 < args.size()) {
+            const QString next = args.at(index + 1).trimmed();
+            if (!next.startsWith(QLatin1Char('-')) && SecretOptionValue(next)) return true;
+        }
+    }
+    return false;
 }
 
 } // namespace War3Map::Agent

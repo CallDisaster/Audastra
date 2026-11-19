@@ -53,9 +53,15 @@ struct ExternalMcpServerSettings {
     QString cwd;
     QList<QPair<QString, QString>> env; // 非敏感运行环境变量
     QString url;                        // HTTP / Streamable HTTP 地址
-    QString credentialRef;              // 存于 CredentialStore 的 Bearer 密钥引用
+    QString credentialRef;              // 存于 CredentialStore 的密钥引用
+    // stdio：密钥注入的环境变量名（保留导入时的原名，如 GITHUB_TOKEN）；为空时使用 MCP_AUTH_TOKEN。
+    QString credentialEnv;
+    // http：true 时密钥是完整 Authorization 值（如 "Basic xxx"）原样发送；false 时按 Bearer 令牌发送。
+    bool authorizationRaw = false;
     QString minimumPermission = QStringLiteral("full"); // "read" | "edit" | "save" | "full"
 };
+
+inline constexpr char kDefaultExternalMcpCredentialEnv[] = "MCP_AUTH_TOKEN";
 
 struct AgentSettings {
     bool aiEnabled = false;
@@ -83,6 +89,8 @@ struct ContextNamedItem {
     QString name;
     QString detail;
     qint64 tokens = 0;
+    QString scope;            // 记忆条目：project / global；其他条目为空
+    bool unconfirmed = false; // 记忆条目：作者未确认，未注入提示词
 };
 
 // 对齐 Claude Code / DSH TokenMeter 的上下文窗口真实构成快照。
@@ -132,5 +140,13 @@ struct ExternalMcpRuntimeStatus {
 [[nodiscard]] QString EffectiveThinkingLevel(
     const ModelSettings& model, const QString& protocol = {}, const QString& baseUrl = {});
 [[nodiscard]] bool ExternalMcpPermissionSatisfied(const QString& minimumPermission, const AgentSettings& settings);
+// 外部 MCP 只有在内置 AI 开启、该服务器启用且当前权限满足其最低档位时才允许启动进程或建立连接。
+[[nodiscard]] bool ExternalMcpConnectionAllowed(const ExternalMcpServerSettings& server, const AgentSettings& settings);
+// 名称（环境变量、参数、请求头、查询键）是否像密钥：末词为 password/secret/token/key/pat/credential/auth 等，大小写不敏感。
+[[nodiscard]] bool ExternalMcpSecretName(const QString& name);
+// 取值是否具有常见令牌格式（sk-、ghp_、github_pat_、AKIA…、Bearer/Basic 头值等）。
+[[nodiscard]] bool ExternalMcpValueLooksSecret(const QString& value);
+// 启动参数是否疑似携带明文密钥：--token=…、--api-key 值、Authorization: …、URL 查询或用户信息中的密钥、常见令牌格式。
+[[nodiscard]] bool ExternalMcpArgsCarrySecret(const QStringList& args);
 
 } // namespace War3Map::Agent

@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QProcess>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTcpServer>
@@ -120,6 +121,9 @@ private slots:
     void portableProvidersKeepOnlyMatchingLocalCredentials();
     void dialogImportStagesUntilHostCommitAndPreservesSecrets();
     void externalMcpSettingsAndJsonImportIsolateSecrets();
+    void externalMcpImportKeepsSecretNamesAndRefusesUnsafeEntries();
+    void externalMcpValidationRejectsPlaintextAndLoadSkipsUnsafeEntries();
+    void externalMcpArgsSurviveUnrelatedDialogEdits();
 };
 
 void AgentSettingsTests::settingsRoundtripAndCredentialIsolation() {
@@ -677,6 +681,181 @@ void AgentSettingsTests::externalMcpSettingsAndJsonImportIsolateSecrets() {
     QCOMPARE(reloaded.providers.front().models[0].selectedThinkingLevel, QStringLiteral("xhigh"));
     QCOMPARE(reloaded.providers.front().models[1].providerThinkingLevels,
         (QStringList{QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")}));
+}
+
+void AgentSettingsTests::externalMcpImportKeepsSecretNamesAndRefusesUnsafeEntries() {
+    const QString json = QStringLiteral(R"({
+        "mcpServers": {
+            "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "fixture-github-pat-value"}},
+            "database": {"command": "node", "args": ["db.mjs"],
+                "env": {"DB_HOST": "localhost", "DB_PASSWORD": "fixture-db-password"}},
+            "two-secrets": {"command": "node",
+                "env": {"AWS_SECRET_ACCESS_KEY": "fixture-aws-secret", "AWS_SESSION_TOKEN": "fixture-aws-session"}},
+            "arg-inline": {"command": "node", "args": ["server.js", "--token=fixture-inline-token"]},
+            "arg-split": {"command": "node", "args": ["server.js", "--api-key", "fixture-split-key"]},
+            "url-query": {"url": "https://mcp.example.invalid/mcp?api_key=fixture-query-key"},
+            "custom-header": {"url": "https://mcp.example.invalid/mcp", "headers": {"X-API-Key": "fixture-header-key"}},
+            "basic-auth": {"url": "https://mcp.example.invalid/mcp", "headers": {"Authorization": "Basic Zml4dHVyZTpiYXNpYw=="}},
+            "bearer-auth": {"url": "https://mcp.example.invalid/mcp", "headers": {"Authorization": "Bearer fixture-bearer-token"}}
+        }
+    })");
+    QHash<QString, QString> secrets;
+    QString error;
+    const auto parsed = ExternalMcpManager::ParseMcpServersJson(json, &secrets, &error);
+    QCOMPARE(parsed.size(), qsizetype(4));
+    // 无法安全转换的条目逐个拒绝并说明原因，错误文本不回显密钥值。
+    for (const auto* refused : {"two-secrets", "arg-inline", "arg-split", "url-query", "custom-header"})
+        QVERIFY2(error.contains(QLatin1String(refused)), qPrintable(error));
+    for (const auto* value : {"fixture-aws-secret", "fixture-aws-session", "fixture-inline-token", "fixture-split-key",
+             "fixture-query-key", "fixture-header-key"})
+        QVERIFY2(!error.contains(QLatin1String(value)), qPrintable(error));
+
+    QHash<QString, ExternalMcpServerSettings> byName;
+    for (const auto& server : parsed) {
+        QVERIFY(!server.enabled); // 导入后默认停用
+        byName.insert(server.name, server);
+    }
+    // 密钥环境变量保留原名，值转入凭据；非密钥变量照常保留。
+    const auto github = byName.value(QStringLiteral("github"));
+    QCOMPARE(github.credentialEnv, QStringLiteral("GITHUB_PERSONAL_ACCESS_TOKEN"));
+    QVERIFY(github.env.isEmpty());
+    QCOMPARE(secrets.value(github.id), QStringLiteral("fixture-github-pat-value"));
+    const auto database = byName.value(QStringLiteral("database"));
+    QCOMPARE(database.credentialEnv, QStringLiteral("DB_PASSWORD"));
+    QVERIFY(database.env == (QList<QPair<QString, QString>>{{QStringLiteral("DB_HOST"), QStringLiteral("localhost")}}));
+    QCOMPARE(secrets.value(database.id), QStringLiteral("fixture-db-password"));
+    // 非 Bearer 的 Authorization 保留完整值原样发送；Bearer 只存令牌。
+    const auto basic = byName.value(QStringLiteral("basic-auth"));
+    QVERIFY(basic.authorizationRaw);
+    QCOMPARE(secrets.value(basic.id), QStringLiteral("Basic Zml4dHVyZTpiYXNpYw=="));
+    const auto bearer = byName.value(QStringLiteral("bearer-auth"));
+    QVERIFY(!bearer.authorizationRaw);
+    QCOMPARE(secrets.value(bearer.id), QStringLiteral("fixture-bearer-token"));
+
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    AgentSettingsStore store(directory.filePath(QStringLiteral("mcp-import.json")));
+    AgentSettings settings = Configured();
+    settings.externalMcpServers = parsed;
+    for (auto& server : settings.externalMcpServers) server.credentialRef = QStringLiteral("forge/external-mcp/") + server.id;
+    QVERIFY2(store.Save(settings, &error), qPrintable(error));
+    const QByteArray raw = Read(store.FilePath());
+    for (const auto* value : {"fixture-github-pat-value", "fixture-db-password", "Zml4dHVyZTpiYXNpYw==", "fixture-bearer-token"})
+        QVERIFY(!raw.contains(value));
+    QString warning;
+    const auto loaded = store.Load(&error, &warning);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY2(warning.isEmpty(), qPrintable(warning));
+    QCOMPARE(loaded.externalMcpServers.size(), qsizetype(4));
+    for (const auto& server : loaded.externalMcpServers) {
+        const auto original = byName.value(server.name);
+        QCOMPARE(server.credentialEnv, original.credentialEnv);
+        QCOMPARE(server.authorizationRaw, original.authorizationRaw);
+        QVERIFY(!server.enabled);
+    }
+}
+
+void AgentSettingsTests::externalMcpValidationRejectsPlaintextAndLoadSkipsUnsafeEntries() {
+    ExternalMcpServerSettings base;
+    base.id = QStringLiteral("fixture-mcp");
+    base.name = QStringLiteral("原创测试 MCP");
+    base.transport = QStringLiteral("stdio");
+    base.command = QStringLiteral("node");
+    base.args = {QStringLiteral("server.mjs")};
+    AgentSettings settings = Configured();
+    settings.externalMcpServers = {base};
+    QString error;
+    QVERIFY2(AgentSettingsStore::Validate(settings, &error), qPrintable(error));
+    const auto rejected = [&settings](const std::function<void(ExternalMcpServerSettings&)>& mutate) {
+        auto candidate = settings;
+        mutate(candidate.externalMcpServers.front());
+        QString message;
+        return !AgentSettingsStore::Validate(candidate, &message) && !message.isEmpty();
+    };
+    using Server = ExternalMcpServerSettings;
+    // 地址规则与提供商地址一致：不能带查询参数或用户信息。
+    QVERIFY(rejected([](Server& s) { s.transport = QStringLiteral("http"); s.url = QStringLiteral("https://mcp.example.invalid/mcp?api_key=fixture"); }));
+    QVERIFY(rejected([](Server& s) { s.transport = QStringLiteral("http"); s.url = QStringLiteral("https://user:pw@mcp.example.invalid/mcp"); }));
+    // 参数与环境变量中的明文密钥。
+    QVERIFY(rejected([](Server& s) { s.args.push_back(QStringLiteral("--password=fixture-pass")); }));
+    QVERIFY(rejected([](Server& s) { s.args.append(QStringList{QStringLiteral("--token"), QStringLiteral("fixture-token")}); }));
+    QVERIFY(rejected([](Server& s) { s.args.push_back(QStringLiteral("Authorization: Bearer fixture-token-value")); }));
+    QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("DB_PASSWORD"), QStringLiteral("fixture")}); }));
+    QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("GITHUB_PAT"), QStringLiteral("fixture")}); }));
+    QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("OPTIONS"), QStringLiteral("sk-synthetic-fixture-value-0000")}); }));
+    // 与读取时相同的单值长度限制。
+    QVERIFY(rejected([](Server& s) { s.args.push_back(QString(4097, QLatin1Char('a'))); }));
+    QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("MODE"), QString(4097, QLatin1Char('a'))}); }));
+    QVERIFY(rejected([](Server& s) { s.credentialEnv = QStringLiteral("1BAD"); }));
+    QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("MY_SLOT"), QStringLiteral("x")}); s.credentialEnv = QStringLiteral("MY_SLOT"); }));
+    // 文件路径、占位符与普通变量不是明文密钥。
+    auto allowed = settings;
+    allowed.externalMcpServers.front().args += QStringList{QStringLiteral("--key-file"), QStringLiteral("C:/certs/client.key"),
+        QStringLiteral("--token"), QStringLiteral("${MCP_TOKEN}")};
+    allowed.externalMcpServers.front().env.push_back({QStringLiteral("MODE"), QStringLiteral("ci")});
+    allowed.externalMcpServers.front().credentialEnv = QStringLiteral("GITHUB_TOKEN");
+    QVERIFY2(AgentSettingsStore::Validate(allowed, &error), qPrintable(error));
+
+    // 超长参数在保存时即被拒绝，不会写出一份下次读取失败的设置文件。
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    AgentSettingsStore store(directory.filePath(QStringLiteral("agent.json")));
+    QVERIFY2(store.Save(settings, &error), qPrintable(error));
+    const QByteArray previous = Read(store.FilePath());
+    auto tooLong = settings;
+    tooLong.externalMcpServers.front().args.push_back(QString(4097, QLatin1Char('a')));
+    QVERIFY(!store.Save(tooLong, &error));
+    QCOMPARE(Read(store.FilePath()), previous);
+
+    // 早期写入的不安全条目：逐条跳过并给出警告，其余设置照常读取，警告不回显明文。
+    QJsonObject root = QJsonDocument::fromJson(previous).object();
+    QJsonArray servers = root.value(QStringLiteral("external_mcp_servers")).toArray();
+    QJsonObject unsafe = servers.first().toObject();
+    unsafe.insert(QStringLiteral("id"), QStringLiteral("fixture-unsafe"));
+    unsafe.insert(QStringLiteral("name"), QStringLiteral("早期条目"));
+    unsafe.insert(QStringLiteral("env"), QJsonObject{{QStringLiteral("DB_PASSWORD"), QStringLiteral("fixture-plaintext")}});
+    servers.append(unsafe);
+    root.insert(QStringLiteral("external_mcp_servers"), servers);
+    QVERIFY(Write(store.FilePath(), QJsonDocument(root).toJson()));
+    QString warning;
+    const auto tolerant = store.Load(&error, &warning);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(warning.contains(QStringLiteral("早期条目")));
+    QVERIFY(!warning.contains(QStringLiteral("fixture-plaintext")));
+    QCOMPARE(tolerant.externalMcpServers.size(), qsizetype(1));
+    QCOMPARE(tolerant.externalMcpServers.front().id, base.id);
+    QCOMPARE(tolerant.providers.size(), qsizetype(1));
+    QVERIFY(tolerant.aiEnabled);
+}
+
+void AgentSettingsTests::externalMcpArgsSurviveUnrelatedDialogEdits() {
+    auto initial = Configured();
+    ExternalMcpServerSettings server;
+    server.id = QStringLiteral("fixture-args");
+    server.name = QStringLiteral("参数测试");
+    server.transport = QStringLiteral("stdio");
+    server.command = QStringLiteral("node");
+    server.args = {QStringLiteral(R"({"a":1})"), QString{}, QStringLiteral("with space"),
+        QStringLiteral(R"(say "hi")"), QStringLiteral("plain")};
+    initial.externalMcpServers = {server};
+    AgentSettingsDialog dialog(initial);
+    auto* name = dialog.findChild<QLineEdit*>(QStringLiteral("agentExternalMcpName"));
+    auto* args = dialog.findChild<QLineEdit*>(QStringLiteral("agentExternalMcpArgs"));
+    QVERIFY(name != nullptr);
+    QVERIFY(args != nullptr);
+    // 改其他字段不重新解析参数：JSON 参数与空参数原样保留。
+    name->setText(QStringLiteral("参数测试改名"));
+    QCOMPARE(dialog.Settings().externalMcpServers.front().name, QStringLiteral("参数测试改名"));
+    QCOMPARE(dialog.Settings().externalMcpServers.front().args, server.args);
+    // 参数栏显示的文本再次解析后与原参数一致。
+    const QString shown = args->text();
+    args->clear();
+    args->setText(shown);
+    QCOMPARE(dialog.Settings().externalMcpServers.front().args, server.args);
+    // 引号规则与 QProcess::splitCommand 一致（splitCommand 不表示空参数）。
+    QStringList nonEmpty = server.args;
+    nonEmpty.removeAll(QString{});
+    QCOMPARE(QProcess::splitCommand(shown), nonEmpty);
+    dialog.reject();
 }
 
 QTEST_MAIN(AgentSettingsTests)

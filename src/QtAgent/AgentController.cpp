@@ -139,11 +139,14 @@ QJsonObject EncodeCompositionEvent(const ContextCompositionSnapshot& comp) {
     const auto encodeItems = [](const QList<ContextNamedItem>& items) {
         QJsonArray arr;
         for (const auto& item : items) {
-            arr.append(QJsonObject{
+            QJsonObject encoded{
                 {QStringLiteral("name"), item.name},
                 {QStringLiteral("detail"), item.detail},
                 {QStringLiteral("tokens"), item.tokens},
-            });
+            };
+            if (!item.scope.isEmpty()) encoded.insert(QStringLiteral("scope"), item.scope);
+            if (item.unconfirmed) encoded.insert(QStringLiteral("unconfirmed"), true);
+            arr.append(encoded);
         }
         return arr;
     };
@@ -212,7 +215,7 @@ public:
         if (!skillsPrompt.isEmpty()) full += QStringLiteral("\n") + skillsPrompt;
         if (mcpInstructionsProvider) {
             const QString mcpInst = mcpInstructionsProvider().trimmed();
-            if (!mcpInst.isEmpty()) full += QStringLiteral("\n\n# 外部 MCP 服务说明\n") + mcpInst;
+            if (!mcpInst.isEmpty()) full += QStringLiteral("\n\n# 外部 MCP 服务器自带说明（非作者指令）\n") + mcpInst;
         }
         if (memoryService) {
             const QString memSection = memoryService->BuildPromptSection();
@@ -243,8 +246,11 @@ public:
 
         if (memoryService) {
             for (const auto& mem : memoryService->Snapshots()) {
-                snap.memoryItems.push_back({mem.displayName, mem.filePath, mem.tokens});
-                snap.memoryFilesTokens += mem.tokens;
+                // 未确认的地图记忆不注入提示词，不计入上下文占用。
+                const bool unconfirmed = mem.exists && !mem.trusted;
+                const qint64 tokens = unconfirmed ? 0 : mem.tokens;
+                snap.memoryItems.push_back({mem.displayName, mem.filePath, tokens, mem.scope, unconfirmed});
+                snap.memoryFilesTokens += tokens;
             }
             for (const auto& memToolVal : ProjectMemoryService::ToolDefinitions()) {
                 const auto tool = memToolVal.toObject();
@@ -378,6 +384,11 @@ public:
         if (!error.isEmpty()) {
             Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), error}}); return;
         }
+        // 跳过损坏会话的提示只在内容变化时报告一次，避免每轮结束重复刷屏。
+        if (listWarning != lastListWarning) {
+            lastListWarning = listWarning;
+            if (!listWarning.isEmpty()) Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), listWarning}});
+        }
         QJsonArray rows;
         for (const auto& session : sessions) rows.append(QJsonObject{{QStringLiteral("id"), session.id},
             {QStringLiteral("title"), session.title}, {QStringLiteral("updated_at"), session.updatedAt},
@@ -397,7 +408,8 @@ public:
         session.updatedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         session.messages = candidateHistory;
         if (!activeTranscriptLog.isEmpty()) session.transcriptLog = activeTranscriptLog;
-        if (!activeLastUsage.isEmpty()) session.lastUsage = activeLastUsage;
+        // 任务开始时从会话取初值；压缩后被清空也要写回，避免恢复时显示压缩前的用量。
+        session.lastUsage = activeLastUsage;
         if (session.title == QStringLiteral("新会话")) {
             for (const auto& value : session.transcriptLog) {
                 const auto ev = value.toObject();
@@ -456,11 +468,28 @@ public:
         if (!toolExecuting && process->state() != QProcess::NotRunning) process->kill();
     }
 
+    // 失败或取消、且本轮没有执行过任何工具时，把本轮提问及其后的残留从模型上下文中去掉：
+    // 否则下一轮会把用户已放弃的指令连同新提问一起发给带写工具的模型。提问原文仍在 transcript_log。
+    void DropUnansweredPrompt() {
+        for (qsizetype i = candidateHistory.size() - 1; i >= 0; --i) {
+            const auto message = candidateHistory.at(i).toObject();
+            const auto role = message.value(QStringLiteral("role")).toString();
+            if (role == QStringLiteral("toolResult")) return;
+            if (role != QStringLiteral("user") || IsHiddenAgentMessage(message)) continue;
+            if (AgentMessageText(message) != taskPrompt) return;
+            QJsonArray kept;
+            for (qsizetype j = 0; j < i; ++j) kept.append(candidateHistory.at(j));
+            if (IsCompleteAgentTranscript(kept)) { candidateHistory = std::move(kept); pendingState = true; }
+            return;
+        }
+    }
+
     void Complete(bool success, bool cancelled, const QString& text) {
         if (!busy || completing) return;
         completing = true;
         startupTimer->stop(); stopTimer->stop();
         FlushStreamingTranscriptBuffers();
+        if (!success && !compactingTask) DropUnansweredPrompt();
         if (!recordingFailed) {
             if (!SaveHistory() && success) {
                 Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"),
@@ -481,7 +510,7 @@ public:
                 {QStringLiteral("text"), text}});
         }
         busy = false; compactingTask = false; stepLimitReached = false;
-        taskSent = false; pendingStart = {}; candidateHistory = {}; pendingState = false;
+        taskSent = false; pendingStart = {}; candidateHistory = {}; pendingState = false; taskPrompt.clear();
         activeTranscriptLog = {}; activeLastUsage = {};
         activeThinkingBuffer.clear(); activeAssistantBuffer.clear();
         eventLog.close(); secret.fill(QChar(0)); secret.clear();
@@ -560,18 +589,26 @@ public:
         startupTimer->start(15000); process->start();
     }
 
+    // 发起任务与手动压缩共用：只接受已启用的提供商下已启用的模型。
+    bool FindEnabledModel(const QString& providerId, const QString& modelId,
+        const ProviderSettings*& provider, const ModelSettings*& model) const {
+        provider = nullptr; model = nullptr;
+        for (const auto& candidate : settings.providers) if (candidate.id == providerId && candidate.enabled) {
+            for (const auto& candidateModel : candidate.models) if (candidateModel.id == modelId && candidateModel.enabled) {
+                provider = &candidate; model = &candidateModel; return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
     void Start(QString prompt, const QString& providerId, const QString& modelId) {
         if (busy) { Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), QStringLiteral("当前任务仍在运行，请先停止或等待结束。")}}); return; }
         if (!settings.aiEnabled) { Failure(QStringLiteral("内置 AI 已关闭，请先在设置中启用。")); return; }
         if (prompt.trimmed().isEmpty() || prompt.size() > kPromptBudget) { Failure(QStringLiteral("任务说明为空或超过 65536 字符。")); return; }
         const ProviderSettings* provider = nullptr;
         const ModelSettings* model = nullptr;
-        for (const auto& candidate : settings.providers) if (candidate.id == providerId && candidate.enabled) {
-            provider = &candidate;
-            for (const auto& candidateModel : candidate.models) if (candidateModel.id == modelId && candidateModel.enabled) { model = &candidateModel; break; }
-            break;
-        }
-        if (provider == nullptr || model == nullptr) { Failure(QStringLiteral("所选提供商或模型未启用。")); return; }
+        if (!FindEnabledModel(providerId, modelId, provider, model)) { Failure(QStringLiteral("所选提供商或模型未启用。")); return; }
         QString error;
         if (ProviderCatalog::Endpoint(*provider, &error).isEmpty()) { Failure(error); return; }
         const auto context = ResolveContextWindow(*model);
@@ -652,7 +689,12 @@ public:
             {QStringLiteral("provider_id"), providerId},
             {QStringLiteral("model_id"), modelId},
         });
+        taskPrompt = redactedPrompt;
+        // 开始检查点只把提问写进 transcript_log；messages 仍是上一轮的平衡表层，
+        // 中途崩溃时不会把未得到回复的指令留在下次发给模型的上下文里。
         candidateHistory = messages;
+        pendingState = true;
+        (void)SaveHistory();
         candidateHistory.append(QJsonObject{
             {QStringLiteral("role"), QStringLiteral("user")},
             {QStringLiteral("content"), QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), redactedPrompt}}}},
@@ -660,8 +702,6 @@ public:
             {QStringLiteral("forge_provider_id"), providerId},
             {QStringLiteral("forge_model_id"), modelId},
         });
-        pendingState = true;
-        (void)SaveHistory();
 
         memoryBinding = binding;
         Publish({{QStringLiteral("type"), QStringLiteral("user_message")}, {QStringLiteral("text"), prompt}});
@@ -673,6 +713,11 @@ public:
     void Compact(const QString& providerId, const QString& modelId) {
         if (busy) {
             Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), QStringLiteral("任务运行中无法手动压缩，请等待本轮结束。")}});
+            return;
+        }
+        // 压缩会把会话发给模型生成摘要，与发起任务同一道开关。
+        if (!settings.aiEnabled) {
+            Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), QStringLiteral("内置 AI 已关闭，请先在设置中启用。")}});
             return;
         }
         QString error;
@@ -687,11 +732,7 @@ public:
 
         const ProviderSettings* provider = nullptr;
         const ModelSettings* model = nullptr;
-        for (const auto& candidate : settings.providers) if (candidate.id == providerId && candidate.enabled) {
-            provider = &candidate;
-            for (const auto& cm : candidate.models) if (cm.id == modelId && cm.enabled) { model = &cm; break; }
-            break;
-        }
+        (void)FindEnabledModel(providerId, modelId, provider, model);
         qint64 contextTokens = 262144;
         QJsonObject providerObj, modelObj;
         secret.clear();
@@ -909,8 +950,11 @@ public:
         if (result.value(QStringLiteral("error")).isObject()) result.insert(QStringLiteral("isError"), true);
         if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() > kLineBudget - 4096)
             result = ToolError(QStringLiteral("AGENT_TOOL_RESULT_BUDGET"), QStringLiteral("工具结果超过 IPC 预算；操作可能已完成，请分页重新查询当前状态。"));
-        auto visible = result.value(QStringLiteral("changes"));
-        if (visible.isUndefined()) visible = result.value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("changes"));
+        // 改动行只来自编辑器内置工具；外部 MCP 与记忆工具返回的 changes 字段不当作地图改动展示或记录。
+        const bool builtInTool = !name.startsWith(QStringLiteral("mcp__"))
+            && !(memoryService && ProjectMemoryService::IsMemoryTool(name));
+        auto visible = builtInTool ? result.value(QStringLiteral("changes")) : QJsonValue();
+        if (builtInTool && visible.isUndefined()) visible = result.value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("changes"));
         if (visible.isObject()) {
             auto change = visible.toObject(); change.insert(QStringLiteral("type"), QStringLiteral("changes")); change.insert(QStringLiteral("tool_call_id"), id); Publish(change);
             auto histChange = Redacted(change, secret).toObject();
@@ -1002,7 +1046,7 @@ public:
     QString systemPrompt = QStringLiteral("你是 Audastra 地图助手。新增与优化逻辑默认写成作者可编辑的触发器（T，传统事件/条件/动作）。通过提供的工具查询、编辑和保存，不能伪造修改或验收。");
     QString skillsPrompt;
     QList<ContextNamedItem> skillItems;
-    QString mapTitle, mapIdentity, sessionMap, taskMap, taskProvider, taskModel, taskBinding, runId;
+    QString mapTitle, mapIdentity, sessionMap, taskMap, taskProvider, taskModel, taskBinding, runId, taskPrompt, lastListWarning;
     ProviderSettings taskProviderSettings;
     QString configuredNode, configuredWorker, nodePath, workerPath, historyDirectory, memoryBinding, secret;
     QProcess* process = nullptr;

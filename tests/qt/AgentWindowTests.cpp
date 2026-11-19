@@ -137,6 +137,9 @@ private slots:
     void stoppedAndUnresolvedToolsAreNotCountedAsSuccess();
     void sharedThemeAndLabelsWithoutHintText();
     void claudeCodeContextBreakdownCacheHitRateAndExternalMcpUi();
+    void oversizedTranscriptLogIsTrimmedInsteadOfBlockingSave();
+    void effortCommandSurvivesSettingsReplacement();
+    void loadOlderHistoryIsInertWhileBusy();
 };
 
 void AgentWindowTests::initTestCase() {
@@ -1737,6 +1740,92 @@ void AgentWindowTests::claudeCodeContextBreakdownCacheHitRateAndExternalMcpUi() 
     QCOMPARE(thinkingSpy.size(), qsizetype(1));
     QCOMPARE(thinkingSpy.back().at(2).toString(), QStringLiteral("high"));
     QVERIFY(thinkingSpy.back().at(3).toBool());
+}
+
+void AgentWindowTests::oversizedTranscriptLogIsTrimmedInsteadOfBlockingSave() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    AgentSessionStore store(directory.path());
+    QString error;
+    auto session = store.Create(QStringLiteral("map-big"), &error);
+    QVERIFY2(session, qPrintable(error));
+    session->messages = QJsonArray{QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+        {QStringLiteral("content"), QStringLiteral("最新需求")}}};
+    // 约 12 MiB 的思考与正文：工具详情裁剪救不回来，必须整条移除较早条目。
+    const QString chunk(64 * 1024, QLatin1Char('x'));
+    for (int i = 0; i < 96; ++i) {
+        session->transcriptLog.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("thinking_block")},
+            {QStringLiteral("text"), chunk}, {QStringLiteral("historical"), true}});
+        session->transcriptLog.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("assistant_message")},
+            {QStringLiteral("text"), chunk}, {QStringLiteral("historical"), true}});
+    }
+    session->transcriptLog.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("user_message")},
+        {QStringLiteral("text"), QStringLiteral("最新需求")}, {QStringLiteral("historical"), true}});
+    QVERIFY2(store.Save(*session, &error), qPrintable(error));
+    const auto reloaded = store.Read(QStringLiteral("map-big"), session->id, &error);
+    QVERIFY2(reloaded, qPrintable(error));
+    QCOMPARE(reloaded->messages, session->messages);
+    const auto log = reloaded->transcriptLog;
+    QVERIFY(!log.isEmpty());
+    QCOMPARE(log.first().toObject().value(QStringLiteral("type")).toString(), QStringLiteral("transcript_trimmed"));
+    QVERIFY(log.first().toObject().value(QStringLiteral("removed")).toInteger() > 0);
+    QCOMPARE(log.last().toObject().value(QStringLiteral("text")).toString(), QStringLiteral("最新需求"));
+    for (const auto& value : log)
+        QVERIFY(value.toObject().value(QStringLiteral("type")).toString() != QStringLiteral("thinking_block"));
+
+    // 恢复时提示写明移除数量。
+    AgentWindow window;
+    window.SetSettings(TestSettings());
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("history_restored")},
+        {QStringLiteral("messages"), reloaded->messages}, {QStringLiteral("ui_events"), log}});
+    auto* notice = window.findChild<QLabel*>(QStringLiteral("agentHistoryNotice"));
+    QVERIFY(notice);
+    QVERIFY(notice->text().contains(QStringLiteral("超出本地存储上限已移除")));
+}
+
+void AgentWindowTests::effortCommandSurvivesSettingsReplacement() {
+    // 当前模型不在最后一个提供商下；信号处理里同步替换设置，命令不能继续读已释放的设置。
+    AgentSettings settings = TestSettings();
+    settings.providers.front().models.front().thinkingLevelsCustomized = true;
+    settings.providers.front().models.front().customThinkingLevels = {QStringLiteral("off"), QStringLiteral("high")};
+    ProviderSettings second;
+    second.id = QStringLiteral("second-provider");
+    second.name = QStringLiteral("第二提供商");
+    ModelSettings other;
+    other.id = QStringLiteral("second-model");
+    second.models = {other};
+    settings.providers.push_back(second);
+    AgentWindow window;
+    window.SetSettings(settings);
+    QSignalSpy spy(&window, &AgentWindow::ModelThinkingConfigChanged);
+    connect(&window, &AgentWindow::ModelThinkingConfigChanged, &window, [&window, settings] { window.SetSettings(settings); });
+    auto* prompt = window.findChild<QPlainTextEdit*>(QStringLiteral("agentPrompt"));
+    QVERIFY(prompt);
+    prompt->setPlainText(QStringLiteral("/effort high"));
+    QTest::keyClick(prompt, Qt::Key_Return);
+    QCOMPARE(spy.size(), qsizetype(1));
+    QCOMPARE(spy.front().at(2).toString(), QStringLiteral("high"));
+    QVERIFY(prompt->toPlainText().isEmpty());
+}
+
+void AgentWindowTests::loadOlderHistoryIsInertWhileBusy() {
+    AgentWindow window;
+    window.SetSettings(TestSettings());
+    QJsonArray events;
+    for (int i = 0; i < 60; ++i)
+        events.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("assistant_message")},
+            {QStringLiteral("text"), QStringLiteral("较早记录 %1").arg(i)}, {QStringLiteral("historical"), true}});
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("history_restored")}, {QStringLiteral("ui_events"), events}});
+    auto* notice = window.findChild<QLabel*>(QStringLiteral("agentHistoryNotice"));
+    auto* conversation = window.findChild<AgentConversationView*>(QStringLiteral("agentConversation"));
+    QVERIFY(notice && conversation);
+    QVERIFY(notice->text().contains(QStringLiteral("load-older")));
+    window.SetBusy(true);
+    QVERIFY(notice->isHidden());
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("assistant_delta")}, {QStringLiteral("text"), QStringLiteral("正在运行的回复")}});
+    QMetaObject::invokeMethod(notice, "linkActivated", Q_ARG(QString, QStringLiteral("load-older")));
+    QVERIFY(!conversation->toPlainText().contains(QStringLiteral("较早记录 0")));
+    window.SetBusy(false);
 }
 
 QTEST_MAIN(AgentWindowTests)

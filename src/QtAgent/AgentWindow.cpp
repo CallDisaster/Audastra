@@ -239,7 +239,9 @@ ContextCompositionSnapshot DecodeCompositionEvent(const QJsonObject& event) {
             const auto o = v.toObject();
             list.push_back({o.value(QStringLiteral("name")).toString(),
                 o.value(QStringLiteral("detail")).toString(),
-                Count(o.value(QStringLiteral("tokens")))});
+                Count(o.value(QStringLiteral("tokens"))),
+                o.value(QStringLiteral("scope")).toString(),
+                o.value(QStringLiteral("unconfirmed")).toBool()});
         }
         return list;
     };
@@ -1200,7 +1202,8 @@ void AgentWindow::Private::Build() {
     historyNotice->setContentsMargins(16, 6, 16, 6);
     historyNotice->hide();
     QObject::connect(historyNotice, &QLabel::linkActivated, q, [this](const QString& link) {
-        if (link == QStringLiteral("load-older") && !lastRestoredEvent.isEmpty()) {
+        // 运行中恢复快照会盖掉正在流式显示的内容，只在空闲时展开。
+        if (link == QStringLiteral("load-older") && !busy && !lastRestoredEvent.isEmpty()) {
             const QJsonObject savedEvent = lastRestoredEvent;
             const QJsonObject savedUsage = actualUsage;
             showAllRestoredHistory = true;
@@ -2038,7 +2041,7 @@ void AgentWindow::Private::UpdateContext() {
     if (hasUsage) tip.append(QStringLiteral("%1 / %2 tokens").arg(QLocale().toString(used), QLocale().toString(limit)));
     if (!details.isEmpty()) tip.append(contextBreakdown->text());
     if (!contextSource->text().isEmpty()) tip.append(contextSource->text());
-    tip.append(QStringLiteral("接近上限时会自动压缩较早的回合，完整记录保留在本地。"));
+    tip.append(QStringLiteral("接近上限时会自动压缩较早的回合。"));
     contextPopover->ContentWidget()->setToolTip(tip.join(QLatin1Char('\n')));
     contextPopover->ContentWidget()->adjustSize();
 
@@ -2059,7 +2062,7 @@ void AgentWindow::Private::UpdateContext() {
         inspectorContextTokens->setText(QStringLiteral("%1 / %2").arg(FormatTokens(used), FormatTokens(limit)));
     } else if (hasAnyEstimate) {
         const int estPct = std::clamp(qRound(static_cast<double>(effectiveUsed) / static_cast<double>(limit) * 100.0), 0, 100);
-        inspectorContextPercent->setText(QStringLiteral("已使用 %1%").arg(estPct));
+        inspectorContextPercent->setText(QStringLiteral("估算已使用 %1%").arg(estPct));
         inspectorContextTokens->setText(QStringLiteral("~%1 / %2").arg(FormatTokens(effectiveUsed), FormatTokens(limit)));
     } else {
         inspectorContextPercent->setText(QStringLiteral("暂无用量"));
@@ -2168,7 +2171,7 @@ void AgentWindow::Private::UpdateContext() {
                 for (const auto& item : projected.memoryItems) if (item.tokens > 0) ++existingCount;
                 inspectorMemoryCount->setText(QString::number(existingCount));
                 if (projected.memoryItems.isEmpty()) {
-                    auto* empty = new QLabel(QStringLiteral("尚未创建地图记忆（点击编辑可新建）"), inspectorMemoryBody);
+                    auto* empty = new QLabel(QStringLiteral("无地图记忆"), inspectorMemoryBody);
                     empty->setObjectName(QStringLiteral("agentInspectorMuted"));
                     inspectorMemoryLayout->addWidget(empty);
                 } else {
@@ -2181,13 +2184,14 @@ void AgentWindow::Private::UpdateContext() {
                         btn->setObjectName(QStringLiteral("agentInspectorLinkBtn"));
                         btn->setCursor(Qt::PointingHandCursor);
                         btn->setToolTip(item.detail.isEmpty() ? item.name : item.detail);
-                        const QString scope = item.name.contains(QStringLiteral("全局")) ? QStringLiteral("global") : QStringLiteral("project");
+                        const QString scope = item.scope.isEmpty() ? QStringLiteral("project") : item.scope;
                         QObject::connect(btn, &QPushButton::clicked, q, [this, scope] {
                             emit q->EditMemoryRequested(scope);
                         });
                         rl->addWidget(btn, 0, Qt::AlignLeft);
                         rl->addStretch();
-                        auto* tk = new QLabel(item.tokens > 0 ? FormatTokens(item.tokens) : QStringLiteral("未建档"), r);
+                        auto* tk = new QLabel(item.unconfirmed ? QStringLiteral("未确认")
+                            : item.tokens > 0 ? FormatTokens(item.tokens) : QStringLiteral("未建档"), r);
                         tk->setObjectName(QStringLiteral("agentInspectorMuted"));
                         tk->setFont(UiKit::MonoFont(11));
                         rl->addWidget(tk);
@@ -2645,6 +2649,11 @@ void AgentWindow::Private::OpenThinkingLevelsDialog(const QString& providerId, c
         break;
     }
     if (!foundProvider || !foundModel) return;
+    // 对话框是嵌套事件循环，期间 settings 可能被整体替换；只用副本，不保留指向 settings 的指针。
+    const ProviderSettings providerCopy = *foundProvider;
+    const ModelSettings modelCopy = *foundModel;
+    foundProvider = &providerCopy;
+    foundModel = &modelCopy;
 
     const auto currentCap = ResolveThinkingCapability(*foundModel, foundProvider->protocol, foundProvider->baseUrl);
     ModelSettings uncustomizedCopy = *foundModel;
@@ -2665,9 +2674,9 @@ void AgentWindow::Private::OpenThinkingLevelsDialog(const QString& providerId, c
     vbox->addWidget(titleLbl);
 
     auto* hintLbl = new QLabel(autoCap.discovered
-        ? QStringLiteral("自动识别来源：%1（%2）。你也可以在下方手动勾选覆盖支持的思考档位。")
+        ? QStringLiteral("识别来源：%1（%2）")
             .arg(autoCap.source, autoCap.levels.isEmpty() ? QStringLiteral("无思考") : autoCap.levels.join(QStringLiteral(", ")))
-        : QStringLiteral("未从接口或内置目录识别到该模型的思考档位，请勾选此模型实际支持的思考强度："), &dlg);
+        : QStringLiteral("识别来源：未识别"), &dlg);
     hintLbl->setWordWrap(true);
     vbox->addWidget(hintLbl);
 
@@ -2681,8 +2690,8 @@ void AgentWindow::Private::OpenThinkingLevelsDialog(const QString& providerId, c
     }
 
     auto* presetRow = new QHBoxLayout;
-    auto* dsPreset = new QPushButton(QStringLiteral("DeepSeek 预设"), &dlg);
-    auto* stdPreset = new QPushButton(QStringLiteral("通用四档"), &dlg);
+    auto* dsPreset = new QPushButton(QStringLiteral("关/低/高/最高"), &dlg);
+    auto* stdPreset = new QPushButton(QStringLiteral("关/低/中/高"), &dlg);
     auto* clearAllBtn = new QPushButton(QStringLiteral("无思考模型"), &dlg);
     auto* autoResetBtn = new QPushButton(QStringLiteral("恢复自动识别"), &dlg);
     autoResetBtn->setEnabled(foundModel->thinkingLevelsCustomized);
@@ -2768,7 +2777,7 @@ void AgentWindow::Private::RebuildThinkingMenu() {
             OpenThinkingLevelsDialog(providerId, modelId);
         });
         thinkingMenu->addSeparator();
-        auto* dsQuick = thinkingMenu->addAction(QStringLiteral("设为 DeepSeek 档位 (关/低/高/最高)"));
+        auto* dsQuick = thinkingMenu->addAction(QStringLiteral("设为四档推理档位 (关/低/高/最高)"));
         QObject::connect(dsQuick, &QAction::triggered, q, [this, providerId, modelId] {
             ApplyModelThinkingUpdate(providerId, modelId, QStringLiteral("high"), true,
                 {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")});
@@ -2870,7 +2879,7 @@ void AgentWindow::Private::UpdateAvailability() {
     QString reason;
     if (!settings.aiEnabled) reason = QStringLiteral("在设置中启用 AI 并添加模型后即可开始");
     else if (models->currentIndex() < 0) reason = QStringLiteral("在设置中添加提供商并启用模型后即可开始");
-    prompt->setPlaceholderText(reason.isEmpty() ? QStringLiteral("描述要完成的地图工作…（支持 /effort · /compact · /memory · /new · /mcp）") : reason);
+    prompt->setPlaceholderText(reason.isEmpty() ? QStringLiteral("描述要完成的地图工作…") : reason);
     if (!busy && !configured) SetStatus(reason);
     send->setToolTip(configured ? QStringLiteral("发送 · Enter；换行 · Shift+Enter；运行中排队 · Ctrl+Enter") : reason);
     UpdateSendIcons();
@@ -3100,29 +3109,34 @@ void AgentWindow::Private::Submit() {
                 if (arg.isEmpty()) {
                     OpenThinkingLevelsDialog(providerId, modelId);
                 } else {
+                    // 先在副本上算出结果再提交：提交会同步替换 settings，不能在遍历它时调用。
+                    bool found = false;
+                    QString level;
+                    bool cust = false;
+                    QStringList custLevels;
                     for (const auto& p : settings.providers) {
                         if (p.id != providerId) continue;
                         for (const auto& m : p.models) {
                             if (m.id != modelId) continue;
+                            cust = m.thinkingLevelsCustomized;
+                            custLevels = m.customThinkingLevels;
                             if (arg.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0 || arg == QStringLiteral("默认")) {
-                                ApplyModelThinkingUpdate(providerId, modelId, QString(), m.thinkingLevelsCustomized, m.customThinkingLevels);
-                            } else {
-                                const QString token = NormalizeThinkingLevelToken(arg);
-                                if (!token.isEmpty()) {
-                                    auto cap = ResolveThinkingCapability(m, p.protocol, p.baseUrl);
-                                    bool cust = m.thinkingLevelsCustomized;
-                                    QStringList custLevels = m.customThinkingLevels;
-                                    if (!cap.levels.contains(token)) {
-                                        cust = true;
-                                        custLevels = cap.levels;
-                                        custLevels.push_back(token);
-                                    }
-                                    ApplyModelThinkingUpdate(providerId, modelId, token, cust, custLevels);
+                                found = true;
+                            } else if (const QString token = NormalizeThinkingLevelToken(arg); !token.isEmpty()) {
+                                const auto cap = ResolveThinkingCapability(m, p.protocol, p.baseUrl);
+                                if (!cap.levels.contains(token)) {
+                                    cust = true;
+                                    custLevels = cap.levels;
+                                    custLevels.push_back(token);
                                 }
+                                level = token;
+                                found = true;
                             }
                             break;
                         }
+                        break;
                     }
+                    if (found) ApplyModelThinkingUpdate(providerId, modelId, level, cust, custLevels);
                 }
             }
             return;
@@ -3270,11 +3284,20 @@ void AgentWindow::Private::RestoreHistory(QJsonObject event) {
     const QJsonArray uiEvents = event.value(QStringLiteral("ui_events")).toArray();
     if (!uiEvents.isEmpty()) {
         constexpr qsizetype kInitialUiEventLimit = 40;
-        const qsizetype first = expandAll ? 0 : std::max<qsizetype>(0, uiEvents.size() - kInitialUiEventLimit);
-        historyNotice->setText(first > 0
-            ? QStringLiteral("已恢复本地会话 · 最近 %1 条，较早记录保留在本地　<a href=\"load-older\">加载全部 %2 条记录</a>")
-                .arg(uiEvents.size() - first).arg(uiEvents.size())
-            : QStringLiteral("已恢复本地会话 · 共 %1 条记录").arg(uiEvents.size()));
+        constexpr qsizetype kExpandedUiEventLimit = 1000;
+        const qsizetype first = std::max<qsizetype>(0, uiEvents.size() - (expandAll ? kExpandedUiEventLimit : kInitialUiEventLimit));
+        QString noticeText = first <= 0
+            ? QStringLiteral("已恢复本地会话 · 共 %1 条记录").arg(uiEvents.size())
+            : expandAll
+            ? QStringLiteral("已恢复本地会话 · 最近 %1 条（共 %2 条）").arg(uiEvents.size() - first).arg(uiEvents.size())
+            : QStringLiteral("已恢复本地会话 · 最近 %1 条　<a href=\"load-older\">加载更多（共 %2 条）</a>")
+                .arg(uiEvents.size() - first).arg(uiEvents.size());
+        // 本地存储超限时较早记录会被移除，存储层在开头留一条 transcript_trimmed 标记。
+        const QJsonObject head = uiEvents.first().toObject();
+        if (head.value(QStringLiteral("type")).toString() == QStringLiteral("transcript_trimmed"))
+            noticeText += QStringLiteral(" · 更早 %1 条记录因超出本地存储上限已移除")
+                .arg(head.value(QStringLiteral("removed")).toInteger());
+        historyNotice->setText(noticeText);
         historyNotice->show();
         qsizetype remaining = expandAll ? kMaximumHistoryCharacters * 4 : kMaximumHistoryCharacters;
         bool limited = false;
@@ -3455,6 +3478,8 @@ void AgentWindow::SetBusy(bool busy) {
     d_->stop->setEnabled(busy);
     if (busy) {
         d_->stopped = false;
+        // 恢复提示中的“加载更多”基于旧快照，运行开始后不再可用。
+        if (d_->historyNotice->text().contains(QStringLiteral("load-older"))) d_->historyNotice->hide();
         d_->runElapsed.restart();
         d_->elapsedTimer.start();
         d_->SetStatus(QStringLiteral("运行中"));
@@ -3520,7 +3545,7 @@ void AgentWindow::AppendEvent(const QJsonObject& event) {
         const QString delta = event.value(QStringLiteral("text")).toString();
         if (!delta.isEmpty()) {
             d_->conversation->AppendThinking(delta, false);
-            if (d_->busy) d_->SetStatus(QStringLiteral("思考中…"));
+            if (d_->busy && d_->status->text() != QStringLiteral("思考中…")) d_->SetStatus(QStringLiteral("思考中…"));
         }
         return;
     }

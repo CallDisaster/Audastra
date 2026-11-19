@@ -54,7 +54,7 @@ QStringList ExtractThinkingLevelsFromArray(const QJsonValue& value) {
     return NormalizeThinkingLevels(raw);
 }
 
-QStringList ExtractProviderThinkingLevels(const QJsonObject& entry, const QString& protocol, const QString& baseUrl, const QString& modelId) {
+QStringList ExtractProviderThinkingLevels(const QJsonObject& entry) {
     const auto caps = entry.value(QStringLiteral("capabilities")).toObject();
     const auto reasoningCap = caps.value(QStringLiteral("reasoning")).toObject();
     const auto thinkingCap = caps.value(QStringLiteral("thinking")).toObject();
@@ -71,34 +71,8 @@ QStringList ExtractProviderThinkingLevels(const QJsonObject& entry, const QStrin
         const auto parsed = ExtractThinkingLevelsFromArray(candidate);
         if (!parsed.isEmpty()) return parsed;
     }
-
-    bool supportsThinkingFlag = false;
-    if (entry.value(QStringLiteral("thinking")).isBool() && entry.value(QStringLiteral("thinking")).toBool()) {
-        supportsThinkingFlag = true;
-    }
-    if (reasoningCap.value(QStringLiteral("supported")).toBool() || thinkingCap.value(QStringLiteral("supported")).toBool()) {
-        supportsThinkingFlag = true;
-    }
-    if (entry.value(QStringLiteral("supported_parameters")).isArray()) {
-        for (const auto& p : entry.value(QStringLiteral("supported_parameters")).toArray()) {
-            const QString param = p.toString().toLower();
-            if (param == QStringLiteral("reasoning") || param == QStringLiteral("include_reasoning")
-                || param == QStringLiteral("reasoning_effort")) {
-                supportsThinkingFlag = true;
-                break;
-            }
-        }
-    }
-    if (!supportsThinkingFlag) return {};
-    const bool isDeepSeek = baseUrl.toLower().contains(QStringLiteral("deepseek"))
-        || modelId.toLower().contains(QStringLiteral("deepseek"));
-    if (isDeepSeek) {
-        return {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")};
-    }
-    if (protocol == QStringLiteral("gemini")) {
-        return {QStringLiteral("off"), QStringLiteral("minimal"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
-    }
-    return {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
+    // 接口只声明“支持思考”而没有给出档位时不编造档位：交给内置目录识别，未识别的由作者手动勾选。
+    return {};
 }
 
 } // namespace
@@ -285,7 +259,7 @@ void ProviderCatalog::FinishPage(QNetworkReply* reply) {
                 .value(QStringLiteral("image_input")).toObject().value(QStringLiteral("supported"));
             if (imageCapability.isBool()) model.imagesSupported = imageCapability.toBool();
         }
-        model.providerThinkingLevels = ExtractProviderThinkingLevels(entry, provider_.protocol, provider_.baseUrl, model.id);
+        model.providerThinkingLevels = ExtractProviderThinkingLevels(entry);
         model.enabled = false; // 读取到模型后由作者勾选；不自动启用整个站点。
         modelIds_.insert(model.id);
         models_.push_back(std::move(model));

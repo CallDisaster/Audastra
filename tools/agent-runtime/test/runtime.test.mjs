@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-const { runHarness, runManualCompaction, compactHistory, redact, providerToolNames, inlineSchemaRefs } = await import(process.env.FORGE_RUNTIME_TEST_ENTRY || '../worker.mjs');
-const { pruneLargeToolResults, compactWithWarmCache, estimateTextTokens } = await import('../compaction.mjs');
+const { runHarness, runManualCompaction, redact, providerToolNames, inlineSchemaRefs, anthropicThinkingProfile, parseMaxTokensRangeError }
+  = await import(process.env.FORGE_RUNTIME_TEST_ENTRY || '../worker.mjs');
+const { pruneLargeToolResults, compactWithWarmCache, estimateTextTokens, buildDeterministicSummaryBody, createCompactedSummaryMessage }
+  = await import('../compaction.mjs');
 
 function chunk(response, choices, usage) {
   response.write(`data: ${JSON.stringify({ id: 'forge-fixture', object: 'chat.completion.chunk',
@@ -123,18 +125,22 @@ test('含点号的编辑器工具名按站点规则改名，调用与事件仍�
   }
 });
 
-test('压缩只裁完整回合，保留最近工具请求及结果', () => {
+test('压缩只裁完整回合，保留最近工具请求及结果', async () => {
   const history = [{ role: 'user', content: '旧任务' },
     { role: 'assistant', content: 'x'.repeat(12000) },
     { role: 'user', content: '当前任务' },
     { role: 'assistant', content: [{ type: 'toolCall', id: 'call-current', name: 'editor_state', arguments: {} }] },
     { role: 'toolResult', toolCallId: 'call-current', toolName: 'editor_state', content: [{ type: 'text', text: 'current-id' }] }];
-  const compacted = compactHistory(history, 4096);
+  const compacted = await compactWithWarmCache({ messages: history, contextWindow: 4096 });
   assert(compacted.compacted);
   assert.equal(compacted.removedMessages, 2);
   assert(compacted.messages.some(message => message.role === 'toolResult' && message.toolCallId === 'call-current'));
   assert.equal(history[1].content.length, 12000);
-  assert.throws(() => compactHistory([{ role: 'user', content: 'x'.repeat(15000) }], 4096), /单个回合/);
+  // 单个超长回合无法在完整回合边界内缩小：如实报告未压缩，原消息不变。
+  const single = [{ role: 'user', content: 'x'.repeat(15000) }];
+  const unchanged = await compactWithWarmCache({ messages: single, contextWindow: 4096 });
+  assert.equal(unchanged.compacted, false);
+  assert.deepEqual(unchanged.messages, single);
 });
 
 test('站点没有usage时不把PI全零占位当实际用量', async () => {
@@ -466,4 +472,456 @@ test('思考强度对齐 DSH：DeepSeek off/max 线协议与自定义模型档�
     server.closeAllConnections();
     server.close();
   }
+});
+
+// ---- 复审修复回归：以下全部使用本机回环假站点，不访问网络 ----
+
+async function serveFixture(handler) {
+  const bodies = [];
+  const server = createServer(async (request, response) => {
+    let source = '';
+    for await (const part of request) source += part;
+    let body;
+    try { body = JSON.parse(source); } catch { body = source; }
+    bodies.push({ url: request.url, body });
+    await handler(request, response, body, bodies.length);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return {
+    bodies,
+    url: `http://127.0.0.1:${server.address().port}`,
+    close() { server.closeAllConnections(); server.close(); },
+  };
+}
+
+function sse(response, events, named) {
+  for (const event of events) {
+    if (named) response.write(`event: ${event.type}\n`);
+    response.write(`data: ${JSON.stringify(event)}\n\n`);
+  }
+}
+
+function chatText(response, text, reason = 'stop') {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  chunk(response, [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }]);
+  chunk(response, [{ index: 0, delta: {}, finish_reason: reason }]);
+  response.end('data: [DONE]\n\n');
+}
+
+function chatTool(response, id, name, args = '{}', reason = 'tool_calls') {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  chunk(response, [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id, type: 'function',
+    function: { name, arguments: args } }] }, finish_reason: null }]);
+  chunk(response, [{ index: 0, delta: {}, finish_reason: reason }]);
+  response.end('data: [DONE]\n\n');
+}
+
+function anthropicText(response) {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  sse(response, [
+    { type: 'message_start', message: { id: 'm1', type: 'message', role: 'assistant', model: 'm', content: [],
+      stop_reason: null, usage: { input_tokens: 10, output_tokens: 1 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 2 } },
+    { type: 'message_stop' }], true);
+  response.end();
+}
+
+function anthropicTool(response, id) {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  sse(response, [
+    { type: 'message_start', message: { id: 'm1', type: 'message', role: 'assistant', model: 'm', content: [],
+      stop_reason: null, usage: { input_tokens: 10, output_tokens: 1 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id, name: 'editor_state', input: {} } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 5 } },
+    { type: 'message_stop' }], true);
+  response.end();
+}
+
+function geminiText(response) {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  sse(response, [{ candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] }, finishReason: 'STOP', index: 0 }],
+    usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 } }]);
+  response.end();
+}
+
+function responsesText(response) {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  sse(response, [
+    { type: 'response.created', response: { id: 'r1', status: 'in_progress' } },
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'm1', role: 'assistant', content: [], status: 'in_progress' } },
+    { type: 'response.content_part.added', item_id: 'm1', output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } },
+    { type: 'response.output_text.delta', item_id: 'm1', output_index: 0, content_index: 0, delta: 'ok' },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'm1', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: 'ok', annotations: [] }] } },
+    { type: 'response.completed', response: { id: 'r1', status: 'completed', output: [],
+      usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } } }], true);
+  response.end();
+}
+
+function badRequest(response, message) {
+  response.writeHead(400, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message } }));
+}
+
+const fixtureUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const U = text => ({ role: 'user', content: [{ type: 'text', text }], timestamp: 1 });
+const A = text => ({ role: 'assistant', content: [{ type: 'text', text }], api: 'openai-completions', provider: 'p',
+  model: 'm', stopReason: 'stop', timestamp: 2, usage: fixtureUsage });
+const AT = (id, name = 'editor_state') => ({ role: 'assistant', content: [{ type: 'toolCall', id, name, arguments: {} }],
+  api: 'openai-completions', provider: 'p', model: 'm', stopReason: 'toolUse', timestamp: 2, usage: fixtureUsage });
+const T = (id, text, name = 'editor_state') => ({ role: 'toolResult', toolCallId: id, toolName: name,
+  content: [{ type: 'text', text }], isError: false, timestamp: 3 });
+const stateTool = { name: 'editor_state', description: '当前地图身份', inputSchema: { type: 'object', properties: {} } };
+const isSummaryRequest = body => JSON.stringify(body?.messages?.at(-1) ?? '').includes('compacted-summary');
+const maxOutputOf = body => body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens
+  ?? body.generationConfig?.maxOutputTokens;
+
+test('多回合会话：当前回合内长工具链也会被压缩，且不重复发无效摘要请求', async () => {
+  let summaries = 0;
+  const site = await serveFixture((_req, res, body, index) => {
+    if (isSummaryRequest(body)) {
+      ++summaries;
+      return chatText(res, '<compacted-summary>\n## 原始需求与核心约束\n- 当前长任务\n## 待办清单与下一步行动\n- 继续\n</compacted-summary>');
+    }
+    const round = index - summaries;
+    if (round <= 10) return chatTool(res, `call-${round}`, 'editor_state');
+    return chatText(res, '完成');
+  });
+  const events = [];
+  try {
+    const saved = await runHarness({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${site.url}/v1`, apiKey: 'k-multi' },
+      model: { id: 'fixture', contextWindow: 16000 }, prompt: '当前长任务', systemPrompt: 's', tools: [stateTool],
+      messages: [U('旧任务'), A('好')] },
+    event => events.push(event), async () => ({ d: 'x'.repeat(6000) }));
+    const sizes = site.bodies.map(entry => ({ summary: isSummaryRequest(entry.body), size: JSON.stringify(entry.body.messages).length }));
+    const summaryIndex = sizes.findIndex(entry => entry.summary);
+    assert(summaryIndex > 0, '应在当前回合内触发一次摘要');
+    assert.equal(summaries, 1);
+    const before = sizes[summaryIndex - 1].size;
+    const after = sizes[summaryIndex + 1].size;
+    assert(after < before / 2, `压缩后请求应明显变小：${before} -> ${after}`);
+    const mainSizes = sizes.filter(entry => !entry.summary).map(entry => entry.size);
+    assert(Math.max(...mainSizes) < 16000 * 4, '主请求不应无限增长');
+    assert(events.some(event => event.type === 'context_compacted' && event.removed_messages > 0));
+    // 当前提问作为真实用户消息原样保留，摘要紧随其后。
+    const promptIndex = saved.findIndex(m => m.role === 'user' && !m.forge_hidden && m.content?.[0]?.text === '当前长任务');
+    assert(promptIndex >= 0);
+    assert.equal(saved[promptIndex + 1].forge_injection, 'compaction_summary');
+    assert(events.some(event => event.type === 'run_end' && event.success));
+  } finally {
+    site.close();
+  }
+});
+
+test('手动压缩中途停止：不产出会话状态并报告已取消', async () => {
+  const aborter = new AbortController();
+  const site = await serveFixture((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    chunk(res, [{ index: 0, delta: { role: 'assistant', content: '<compacted-summary>\n## 原始需求与核心约束\n- 半截' }, finish_reason: null }]);
+    setTimeout(() => aborter.abort(), 30);
+  });
+  const history = [U('用户需求一：很重要的约束'), AT('c1'), T('c1', 'r'.repeat(6000)), U('用户需求二'), AT('c2'), T('c2', 'ok'), A('结束')];
+  const events = [];
+  try {
+    const returned = await runManualCompaction({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${site.url}/v1`, apiKey: 'k-abort' },
+      model: { id: 'fixture', contextWindow: 8192 }, systemPrompt: 's', tools: [stateTool], messages: history },
+    event => events.push(event), aborter.signal);
+    assert(!events.some(event => event.type === 'session_state'));
+    assert(!events.some(event => event.type === 'context_compacted'));
+    const end = events.find(event => event.type === 'compact_end');
+    assert.equal(end.success, false);
+    assert.equal(end.cancelled, true);
+    assert.equal(returned.length, history.length);
+    assert(!returned.some(m => m.forge_injection === 'compaction_summary'));
+  } finally {
+    site.close();
+  }
+});
+
+test('运行中压缩被停止：不采用半截摘要、不再发主请求，以已停止收口', async () => {
+  const aborter = new AbortController();
+  let mainAfterSummary = 0;
+  let sawSummary = false;
+  const site = await serveFixture((_req, res, body, index) => {
+    if (isSummaryRequest(body)) {
+      sawSummary = true;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      chunk(res, [{ index: 0, delta: { role: 'assistant', content: '<compacted-summary>半截摘要半截摘要半截摘要半截摘要' }, finish_reason: null }]);
+      setTimeout(() => aborter.abort(), 30);
+      return;
+    }
+    if (sawSummary) ++mainAfterSummary;
+    chatTool(res, `call-${index}`, 'editor_state');
+  });
+  const events = [];
+  try {
+    await runHarness({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${site.url}/v1`, apiKey: 'k-mid' },
+      model: { id: 'fixture', contextWindow: 8192 }, prompt: '任务', systemPrompt: 's', tools: [stateTool] },
+    event => events.push(event), async () => ({ d: 'x'.repeat(3000) }), aborter.signal);
+    assert(sawSummary);
+    assert.equal(mainAfterSummary, 0);
+    assert(!events.some(event => event.type === 'context_compacted' && event.removed_messages > 0));
+    const state = events.filter(event => event.type === 'session_state').at(-1);
+    assert(state && !state.partial);
+    assert(!state.messages.some(m => m.forge_injection === 'compaction_summary'));
+    const end = events.find(event => event.type === 'run_end');
+    assert.equal(end.success, false);
+    assert.match(end.text, /已停止/);
+  } finally {
+    site.close();
+  }
+});
+
+test('预压缩阶段停止：不发送主请求', async () => {
+  const aborter = new AbortController();
+  const site = await serveFixture((_req, res, body) => {
+    if (isSummaryRequest(body)) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      chunk(res, [{ index: 0, delta: { role: 'assistant', content: '<compacted-summary>半截' }, finish_reason: null }]);
+      setTimeout(() => aborter.abort(), 30);
+      return;
+    }
+    chatText(res, '主请求不应发出');
+  });
+  const history = [U('唯一任务'.repeat(20))];
+  for (let i = 0; i < 12; ++i) history.push(AT(`c${i}`), T(`c${i}`, 'x'.repeat(4000)));
+  const events = [];
+  try {
+    await runHarness({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${site.url}/v1`, apiKey: 'k-pre' },
+      model: { id: 'fixture', contextWindow: 8192 }, prompt: '继续', systemPrompt: 's', tools: [stateTool], messages: history },
+    event => events.push(event), async () => ({}), aborter.signal);
+    assert.equal(site.bodies.filter(entry => !isSummaryRequest(entry.body)).length, 0);
+    assert(!events.some(event => event.type === 'session_state'));
+    assert(events.some(event => event.type === 'run_end' && !event.success));
+  } finally {
+    site.close();
+  }
+});
+
+test('摘要被截断（length）不采用，回退摘要只有一层标签', async () => {
+  const site = await serveFixture((_req, res) => chatText(res, '<compacted-summary>\n## 原始需求与核心约束\n- 前半段', 'length'));
+  const history = [U('用户需求一：保留全部约束'), AT('c1'), T('c1', 'r'.repeat(6000)), U('用户需求二'), AT('c2'), T('c2', 'ok')];
+  const events = [];
+  try {
+    const saved = await runManualCompaction({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${site.url}/v1`, apiKey: 'k-len' },
+      model: { id: 'fixture', contextWindow: 8192 }, systemPrompt: 's', tools: [stateTool], messages: history },
+    event => events.push(event));
+    assert.equal(site.bodies.length, 1);
+    const compacted = events.find(event => event.type === 'context_compacted');
+    assert(compacted && !compacted.summary.includes('前半段'));
+    assert(compacted.summary.includes('用户需求一：保留全部约束'));
+    const summaryText = saved.find(m => m.forge_injection === 'compaction_summary').content[0].text;
+    assert.equal(summaryText.split('<compacted-summary>').length, 2);
+    assert.equal(summaryText.split('</compacted-summary>').length, 2);
+  } finally {
+    site.close();
+  }
+});
+
+test('Claude 思考参数：新型号发 adaptive + effort，旧型号发 budget_tokens，各档位不合并', async () => {
+  assert.equal(anthropicThinkingProfile('claude-opus-5-5').adaptive, true);
+  assert.equal(anthropicThinkingProfile('us.anthropic.claude-opus-4-7-v1:0').adaptive, true);
+  assert.equal(anthropicThinkingProfile('anthropic/claude-sonnet-4.6').adaptive, true);
+  assert.equal(anthropicThinkingProfile('claude-fable-5-2').adaptive, true);
+  assert.equal(anthropicThinkingProfile('claude-haiku-5-5').adaptive, true);
+  assert.equal(anthropicThinkingProfile('claude-opus-4-20250514').adaptive, false);
+  assert.equal(anthropicThinkingProfile('claude-sonnet-4-5-20250929').adaptive, false);
+  assert.equal(anthropicThinkingProfile('claude-3-7-sonnet-20250219').adaptive, false);
+  assert.equal(anthropicThinkingProfile('claude-haiku-4-5').adaptive, false);
+
+  const site = await serveFixture((_req, res) => anthropicText(res));
+  const run = async (id, effort) => {
+    await runHarness({ provider: { id: 'a', name: 'n', protocol: 'anthropic', baseUrl: site.url, apiKey: 'k-claude' },
+      model: { id, contextWindow: 200000, supportedThinkingLevels: ['low', 'medium', 'high', 'xhigh', 'max'], thinkingEffort: effort },
+      prompt: 'p', systemPrompt: 's', tools: [] }, () => {}, async () => ({}));
+    return site.bodies.at(-1).body;
+  };
+  try {
+    for (const [id, effort, expected] of [
+      ['claude-opus-5-5', 'xhigh', 'xhigh'], ['claude-opus-5-5', 'max', 'max'], ['claude-opus-5-5', 'minimal', 'low'],
+      ['claude-fable-5-2', 'high', 'high'], ['claude-sonnet-4-6', 'xhigh', 'high'], ['claude-sonnet-4-6', 'max', 'max']]) {
+      const body = await run(id, effort);
+      assert.equal(body.thinking?.type, 'adaptive', `${id}/${effort}`);
+      assert.equal(body.thinking.budget_tokens, undefined);
+      assert.equal(body.output_config?.effort, expected, `${id}/${effort}`);
+    }
+    const budgets = {};
+    for (const effort of ['high', 'xhigh', 'max']) {
+      const body = await run('claude-sonnet-4-5', effort);
+      assert.equal(body.thinking?.type, 'enabled');
+      assert.equal(body.output_config, undefined);
+      assert(body.thinking.budget_tokens < body.max_tokens);
+      budgets[effort] = body.thinking.budget_tokens;
+    }
+    assert.equal(budgets.high, 16384);
+    assert(budgets.xhigh > budgets.high && budgets.max > budgets.xhigh, JSON.stringify(budgets));
+  } finally {
+    site.close();
+  }
+  // 兼容网关拒绝思考参数时，本次运行改为不发送思考参数重试，而不是整次任务失败。
+  const gateway = await serveFixture((_req, res, body) => (body.output_config || body.thinking
+    ? badRequest(res, 'output_config: Extra inputs are not permitted')
+    : anthropicText(res)));
+  try {
+    const events = [];
+    await runHarness({ provider: { id: 'g', name: 'n', protocol: 'anthropic', baseUrl: gateway.url, apiKey: 'k-gw' },
+      model: { id: 'claude-opus-5-5', contextWindow: 200000, supportedThinkingLevels: ['low', 'high'], thinkingEffort: 'high' },
+      prompt: 'p', systemPrompt: 's', tools: [] }, event => events.push(event), async () => ({}));
+    assert.equal(gateway.bodies.length, 2);
+    assert.equal(gateway.bodies[1].body.thinking, undefined);
+    assert(events.some(event => event.type === 'run_end' && event.success));
+  } finally {
+    gateway.close();
+  }
+});
+
+test('未选择思考强度：Gemini、Responses、Anthropic 都不发送任何思考参数', async () => {
+  const cases = [
+    ['gemini', 'gemini-2.5-pro', geminiText, body => assert.equal(body.generationConfig?.thinkingConfig, undefined)],
+    ['gemini', 'gemini-3-flash-preview', geminiText, body => assert.equal(body.generationConfig?.thinkingConfig, undefined)],
+    ['openai-responses', 'o3', responsesText, body => { assert.equal(body.reasoning, undefined); assert.equal(body.include, undefined); }],
+    ['anthropic', 'claude-opus-5-5', anthropicText, body => { assert.equal(body.thinking, undefined); assert.equal(body.output_config, undefined); }],
+    ['anthropic', 'claude-sonnet-4-5', anthropicText, body => assert.equal(body.thinking, undefined)],
+  ];
+  for (const [protocol, id, respond, check] of cases) {
+    const site = await serveFixture((_req, res) => respond(res));
+    const events = [];
+    try {
+      await runHarness({ provider: { id: 'p', name: 'n', protocol, baseUrl: site.url, apiKey: 'k-default' },
+        model: { id, contextWindow: 200000, supportedThinkingLevels: ['low', 'medium', 'high'] },
+        prompt: 'p', systemPrompt: 's', tools: [] }, event => events.push(event), async () => ({}));
+      assert.equal(site.bodies.length, 1, `${protocol}/${id}`);
+      check(site.bodies[0].body);
+      assert(events.some(event => event.type === 'run_end' && event.success), `${protocol}/${id}`);
+    } finally {
+      site.close();
+    }
+  }
+});
+
+test('输出上限降级在整次运行内保持，思考预算始终低于 max_tokens', async () => {
+  assert.equal(parseMaxTokensRangeError('max_tokens: 32768 > 4096, which is the maximum allowed number of output tokens for claude-3-haiku-20240307'), 4096);
+  assert.equal(parseMaxTokensRangeError('Invalid max_tokens: valid range [1, 8000]'), 8000);
+  assert.equal(parseMaxTokensRangeError('unrelated error'), null);
+  const cases = [
+    ['openai-chat', 'gpt-x', {}, (res, i) => chatTool(res, `call-${i}`, 'editor_state'), res => chatText(res, 'ok')],
+    ['openai-responses', 'gpt-x', {}, null, responsesText],
+    ['anthropic', 'claude-sonnet-4-5', { supportedThinkingLevels: ['off', 'low', 'medium', 'high'], thinkingEffort: 'high' },
+      (res, i) => anthropicTool(res, `call-${i}`), anthropicText],
+  ];
+  for (const [protocol, id, extra, firstTurn, laterTurn] of cases) {
+    let good = 0;
+    const site = await serveFixture((_req, res, body) => {
+      const limit = maxOutputOf(body);
+      if (limit > 8000) return badRequest(res, 'Invalid max_tokens / max_output_tokens: valid range [1, 8000]');
+      if (body.thinking?.budget_tokens >= limit) return badRequest(res, 'thinking.budget_tokens must be less than max_tokens');
+      ++good;
+      if (good === 1 && firstTurn) return firstTurn(res, good);
+      return laterTurn(res);
+    });
+    const events = [];
+    try {
+      await runHarness({ provider: { id: 'p', name: 'n', protocol, baseUrl: protocol === 'openai-chat' ? `${site.url}/v1` : site.url, apiKey: 'k-cap' },
+        model: { id, contextWindow: 200000, ...extra }, prompt: 'p', systemPrompt: 's', tools: [stateTool] },
+      event => events.push(event), async () => ({ ok: true }));
+      const limits = site.bodies.map(entry => maxOutputOf(entry.body));
+      assert(limits[0] > 8000, `${protocol}: ${limits}`);
+      assert(limits.slice(1).every(limit => limit <= 8000), `${protocol}: ${limits}`);
+      assert.equal(site.bodies.length, firstTurn ? 3 : 2, `${protocol}: ${limits}`);
+      assert(events.some(event => event.type === 'run_end' && event.success), protocol);
+    } finally {
+      site.close();
+    }
+  }
+  // 旧 Claude 的 `max_tokens: N > 4096` 报错形式也能解析并降级成功。
+  const haiku = await serveFixture((_req, res, body) => (body.max_tokens > 4096
+    ? badRequest(res, `max_tokens: ${body.max_tokens} > 4096, which is the maximum allowed number of output tokens for claude-x`)
+    : anthropicText(res)));
+  try {
+    const events = [];
+    await runHarness({ provider: { id: 'p', name: 'n', protocol: 'anthropic', baseUrl: haiku.url, apiKey: 'k-h' },
+      model: { id: 'claude-custom-gateway', contextWindow: 200000 }, prompt: 'p', systemPrompt: 's', tools: [] },
+    event => events.push(event), async () => ({}));
+    assert.deepEqual(haiku.bodies.map(entry => entry.body.max_tokens).slice(-1), [4096]);
+    assert(events.some(event => event.type === 'run_end' && event.success));
+  } finally {
+    haiku.close();
+  }
+});
+
+test('输出截断续跑有共同上限：工具参数截断与正文截断都最多续跑 3 次', async () => {
+  const toolSite = await serveFixture((_req, res, _body, index) => chatTool(res, `call-${index}`, 'editor_state', '{"op":"del', 'length'));
+  const events = [];
+  let executed = 0;
+  try {
+    await assert.rejects(runHarness({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${toolSite.url}/v1`, apiKey: 'k-l1' },
+      model: { id: 'fixture', contextWindow: 64000 }, prompt: 'p', systemPrompt: 's', tools: [stateTool], maxSteps: 50 },
+    event => events.push(event), async () => { ++executed; return {}; }), /长度上限/);
+    assert.equal(toolSite.bodies.length, 4);
+    assert.equal(executed, 0);
+    assert(events.some(event => event.type === 'session_state' && event.partial));
+  } finally {
+    toolSite.close();
+  }
+  const textSite = await serveFixture((_req, res, _body, index) => chatText(res, `第${index}段`, 'length'));
+  try {
+    await assert.rejects(runHarness({ provider: { id: 'p', name: 'n', protocol: 'openai-chat', baseUrl: `${textSite.url}/v1`, apiKey: 'k-l2' },
+      model: { id: 'fixture', contextWindow: 64000 }, prompt: 'p', systemPrompt: 's', tools: [] },
+    () => {}, async () => ({})), /长度上限/);
+    assert.equal(textSite.bodies.length, 4);
+    const nudge = JSON.stringify(textSite.bodies[1].body.messages.at(-1));
+    assert(nudge.includes('从中断处'));
+    assert(!nudge.includes('工具调用'));
+  } finally {
+    textSite.close();
+  }
+});
+
+test('确定性兜底摘要不缩小时如实报告未压缩，同一区间不再重复请求；用户原文逐字保留', async () => {
+  const bigRequirement = `需求开头${'甲'.repeat(9000)}中段关键约束XYZ${'乙'.repeat(9000)}需求结尾`;
+  const history = [U(bigRequirement), A('好'), U('当前')];
+  for (let i = 0; i < 3; ++i) history.push(AT(`c${i}`), T(`c${i}`, 'ok'));
+  let calls = 0;
+  const memo = new Set();
+  const failing = async () => { ++calls; throw new Error('network'); };
+  const first = await compactWithWarmCache({ messages: history, contextWindow: 8192, summarizeFn: failing, attemptMemo: memo });
+  assert.equal(first.compacted, false);
+  assert.equal(first.savedTokens, 0);
+  assert.equal(first.messages[0].content[0].text, bigRequirement);
+  const second = await compactWithWarmCache({ messages: history, contextWindow: 8192, summarizeFn: failing, attemptMemo: memo });
+  assert.equal(second.compacted, false);
+  assert.equal(calls, 1);
+
+  // 区间里有可归纳的大工具结果时兜底摘要会缩小，用户长需求中段不会被截掉。
+  const withTools = [U(bigRequirement), AT('t1'), T('t1', 'z'.repeat(60000)), U('当前'), AT('t2'), T('t2', 'ok')];
+  const compacted = await compactWithWarmCache({ messages: withTools, contextWindow: 16000, force: true, summarizeFn: failing });
+  assert.equal(compacted.compacted, true);
+  assert(compacted.savedTokens > 0);
+  assert(compacted.summary.includes('中段关键约束XYZ'));
+  assert(!compacted.summary.includes('中间省略'));
+  // 既有检查点整段继承，不再截到 2500 字。
+  const longCheckpoint = `前${'丙'.repeat(5000)}后`;
+  const inherited = buildDeterministicSummaryBody([createCompactedSummaryMessage(longCheckpoint)]);
+  assert(inherited.includes(longCheckpoint));
+  assert(!inherited.includes('<compacted-summary>'));
+});
+
+test('手动压缩按历史工具名还原：已停用工具与同形历史名都保持原名', async () => {
+  const history = [U('一'), AT('c1', 'old.tool'), T('c1', 'r'.repeat(20000), 'old.tool'), U('二'),
+    AT('c2', 'a_b'), T('c2', 'r', 'a_b'), AT('c3', 'old.tool'), T('c3', 'r', 'old.tool'), A('完')];
+  const events = [];
+  const saved = await runManualCompaction({ provider: {}, model: { contextWindow: 8192 }, systemPrompt: 's',
+    tools: [{ name: 'a.b', description: 'd', inputSchema: { type: 'object', properties: {} } }], messages: history },
+  event => events.push(event));
+  assert(events.some(event => event.type === 'compact_end' && event.compacted));
+  const names = saved.flatMap(m => m.role === 'toolResult' ? [m.toolName]
+    : m.role === 'assistant' ? (m.content ?? []).filter(b => b.type === 'toolCall').map(b => b.name) : []);
+  assert.deepEqual(names, ['a_b', 'a_b', 'old.tool', 'old.tool']);
 });

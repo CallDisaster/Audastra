@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+#include <vector>
 
 namespace War3Map::Agent {
 namespace {
@@ -90,6 +91,43 @@ QJsonArray CompactTranscriptLogForBudget(const QJsonArray& log, int maxToolDetai
         }
         out.append(obj);
     }
+    return out;
+}
+
+// 裁剪工具详情后仍超预算时，按“思考 → 较早的非用户条目 → 较早的任意条目”的顺序整条移除，
+// 并在开头留一条 transcript_trimmed 标记写明移除数量。日志超限不能连累 messages 无法保存。
+QJsonArray TrimTranscriptLogToBudget(const QJsonArray& log, qint64 budget) {
+    qint64 removed = 0;
+    qsizetype begin = 0;
+    if (!log.isEmpty() && log.first().toObject().value(QStringLiteral("type")).toString() == QStringLiteral("transcript_trimmed")) {
+        removed = log.first().toObject().value(QStringLiteral("removed")).toInteger();
+        begin = 1;
+    }
+    std::vector<qint64> sizes;
+    std::vector<bool> keep;
+    qint64 total = 0;
+    for (qsizetype i = begin; i < log.size(); ++i) {
+        const qint64 size = QJsonDocument(log.at(i).toObject()).toJson(QJsonDocument::Compact).size() + 1;
+        sizes.push_back(size);
+        keep.push_back(true);
+        total += size;
+    }
+    const auto typeAt = [&](std::size_t i) {
+        return log.at(begin + static_cast<qsizetype>(i)).toObject().value(QStringLiteral("type")).toString();
+    };
+    const auto dropWhere = [&](const auto& predicate) {
+        for (std::size_t i = 0; i < sizes.size() && total > budget; ++i) {
+            if (!keep[i] || !predicate(i)) continue;
+            keep[i] = false; total -= sizes[i]; ++removed;
+        }
+    };
+    dropWhere([&](std::size_t i) { return typeAt(i) == QStringLiteral("thinking_block"); });
+    dropWhere([&](std::size_t i) { return typeAt(i) != QStringLiteral("user_message"); });
+    dropWhere([](std::size_t) { return true; });
+    QJsonArray out;
+    if (removed > 0) out.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("transcript_trimmed")},
+        {QStringLiteral("removed"), removed}, {QStringLiteral("historical"), true}});
+    for (std::size_t i = 0; i < sizes.size(); ++i) if (keep[i]) out.append(log.at(begin + static_cast<qsizetype>(i)));
     return out;
 }
 
@@ -287,6 +325,13 @@ bool AgentSessionStore::Save(const AgentSession& session, QString* error) const 
     }
     if (bytes.size() > kSessionBudget && !logToSave.isEmpty()) {
         logToSave = CompactTranscriptLogForBudget(logToSave, 256);
+        bytes = QJsonDocument(Json(session, logToSave)).toJson(QJsonDocument::Compact);
+    }
+    if (bytes.size() > kSessionBudget && !logToSave.isEmpty()) {
+        // 预留标记与数组分隔符的余量；messages 本身超限时仍按原规则拒绝写入。
+        const qint64 base = QJsonDocument(Json(session, {})).toJson(QJsonDocument::Compact).size();
+        const qint64 logBudget = kSessionBudget - base - 4096;
+        logToSave = logBudget > 0 ? TrimTranscriptLogToBudget(logToSave, logBudget) : QJsonArray{};
         bytes = QJsonDocument(Json(session, logToSave)).toJson(QJsonDocument::Compact);
     }
     if (bytes.size() > kSessionBudget || !QDir().mkpath(QFileInfo(path).absolutePath())) {

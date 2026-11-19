@@ -138,7 +138,19 @@ AgentSettings ApplicationSettingsTransfer::MergeProviders(const AgentSettings& l
         const auto matching = std::find_if(local.providers.begin(), local.providers.end(), [&](const auto& previous) {
             return previous.id == provider.id && previous.baseUrl == provider.baseUrl && previous.protocol == provider.protocol;
         });
-        if (matching != local.providers.end()) provider.credentialRef = matching->credentialRef;
+        if (matching == local.providers.end()) continue;
+        provider.credentialRef = matching->credentialRef;
+        // 迁移文件不携带思考档位配置；同一提供商下的同一模型保留本机已有的档位与选择。
+        for (auto& model : provider.models) {
+            for (const auto& previous : matching->models) {
+                if (previous.id != model.id) continue;
+                model.providerThinkingLevels = previous.providerThinkingLevels;
+                model.thinkingLevelsCustomized = previous.thinkingLevelsCustomized;
+                model.customThinkingLevels = previous.customThinkingLevels;
+                model.selectedThinkingLevel = previous.selectedThinkingLevel;
+                break;
+            }
+        }
     }
     return result;
 }

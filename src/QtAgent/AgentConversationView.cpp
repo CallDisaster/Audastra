@@ -654,17 +654,18 @@ public:
 
         QObject::connect(toggle_, &QToolButton::toggled, this, [this](bool open) {
             toggle_->setIcon(UiKit::SvgIcon(open ? QStringLiteral("lucide/chevron-down") : QStringLiteral("lucide/chevron-right")));
+            if (open && previewStale_) RenderPreview();
             preview_->setVisible(open);
             if (open && !reduced_) UiKit::FadeIn(preview_, 120, 0.6);
         });
     }
 
+    // 流式思考每个增量都会进来：折叠时只累积，展开时才重排预览，避免长推理逐字全量刷新。
     void AppendContent(const QString& delta) {
         content_ += delta;
-        if (content_.size() <= kDetailsLimit) preview_->setPlainText(content_);
-        else preview_->setPlainText(content_.left(kDetailsLimit) + QStringLiteral("\n… 已达预览上限"));
-        const int lines = std::clamp(static_cast<int>(content_.count(QLatin1Char('\n'))) + 1, 2, 12);
-        preview_->setFixedHeight(lines * preview_->fontMetrics().lineSpacing() + 2 * preview_->frameWidth() + 20);
+        newlines_ += delta.count(QLatin1Char('\n'));
+        previewStale_ = true;
+        if (toggle_->isChecked()) RenderPreview();
     }
 
     void SetHeader(const QString& title, const QString& badge) {
@@ -688,6 +689,14 @@ protected:
     }
 
 private:
+    void RenderPreview() {
+        previewStale_ = false;
+        if (content_.size() <= kDetailsLimit) preview_->setPlainText(content_);
+        else preview_->setPlainText(content_.left(kDetailsLimit) + QStringLiteral("\n… 已达预览上限"));
+        const int lines = static_cast<int>(std::clamp<qsizetype>(newlines_ + 1, 2, 12));
+        preview_->setFixedHeight(lines * preview_->fontMetrics().lineSpacing() + 2 * preview_->frameWidth() + 20);
+    }
+
     void UpdateIcon() {
         if (!icon_) return;
         const auto& c = UiKit::ThemeManager::ThemeForWidget(this).colors;
@@ -696,6 +705,8 @@ private:
 
     QString iconName_;
     QString content_;
+    qsizetype newlines_ = 0;
+    bool previewStale_ = false;
     QToolButton* toggle_ = nullptr;
     QLabel* icon_ = nullptr;
     UiKit::ElidedLabel* title_ = nullptr;
@@ -982,13 +993,13 @@ void AgentConversationView::AppendCompactionBanner(int removedMessages, qint64 s
     EndThinking();
     EndMessage();
     const QString title = removedMessages > 0
-        ? QStringLiteral("上下文已压缩 · 归纳早期 %1 条消息（原记录保留）").arg(removedMessages)
+        ? QStringLiteral("上下文已压缩 · 归纳早期 %1 条消息").arg(removedMessages)
         : QStringLiteral("上下文已修剪 · 精简 %1 条早期超大工具输出").arg(std::max(1, prunedResults));
     const QString badge = savedTokens > 0 ? QStringLiteral("释放 %1").arg(FormatTokens(savedTokens)) : QStringLiteral("已整理");
     auto* banner = new TextFoldRow(QStringLiteral("agentCompactionRow"), QStringLiteral("lucide/layers"), title, badge, d_->column);
     banner->SetReduced(d_->reduced);
     banner->AppendContent(summary.trimmed().isEmpty()
-        ? QStringLiteral("早期超大工具输出已在模型活动窗口内裁剪，完整原始输出仍保留在本地会话记录中。")
+        ? QStringLiteral("早期超大工具输出已在模型上下文中裁剪。")
         : summary.trimmed());
     d_->foldRows.append(banner);
     d_->Add(banner);

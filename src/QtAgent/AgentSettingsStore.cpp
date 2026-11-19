@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
@@ -136,12 +137,15 @@ bool DecodeModel(const QJsonObject& object, ModelSettings& model) {
     return true;
 }
 
+constexpr qsizetype kMaximumMcpValueChars = 4096;
+constexpr qsizetype kMaximumMcpEnvNameChars = 256;
+
 QJsonObject EncodeExternalMcp(const ExternalMcpServerSettings& server) {
     QJsonArray args;
     for (const auto& arg : server.args) args.append(arg);
     QJsonObject env;
     for (const auto& pair : server.env) env.insert(pair.first, pair.second);
-    return {{QStringLiteral("id"), server.id},
+    QJsonObject object{{QStringLiteral("id"), server.id},
         {QStringLiteral("name"), server.name},
         {QStringLiteral("enabled"), server.enabled},
         {QStringLiteral("transport"), server.transport},
@@ -152,8 +156,12 @@ QJsonObject EncodeExternalMcp(const ExternalMcpServerSettings& server) {
         {QStringLiteral("url"), server.url},
         {QStringLiteral("credential_ref"), server.credentialRef},
         {QStringLiteral("minimum_permission"), server.minimumPermission}};
+    if (!server.credentialEnv.isEmpty()) object.insert(QStringLiteral("credential_env"), server.credentialEnv);
+    if (server.authorizationRaw) object.insert(QStringLiteral("authorization_raw"), true);
+    return object;
 }
 
+// 结构解码；内容规则（长度、明文密钥、地址）由 ValidateExternalMcp 统一判断。
 bool DecodeExternalMcp(const QJsonObject& object, ExternalMcpServerSettings& server) {
     if (ContainsSecretField(object)) return false;
     if (!ReadText(object, QStringLiteral("id"), server.id)
@@ -162,27 +170,86 @@ bool DecodeExternalMcp(const QJsonObject& object, ExternalMcpServerSettings& ser
         || !ReadText(object, QStringLiteral("command"), server.command)
         || !ReadText(object, QStringLiteral("cwd"), server.cwd)
         || !ReadText(object, QStringLiteral("url"), server.url)
-        || !ReadText(object, QStringLiteral("credential_ref"), server.credentialRef)) return false;
+        || !ReadText(object, QStringLiteral("credential_ref"), server.credentialRef)
+        || !ReadText(object, QStringLiteral("credential_env"), server.credentialEnv)
+        || !ReadBool(object, QStringLiteral("authorization_raw"), false, server.authorizationRaw)) return false;
     if (object.contains(QStringLiteral("transport")) && !ReadText(object, QStringLiteral("transport"), server.transport)) return false;
     if (object.contains(QStringLiteral("minimum_permission"))
         && !ReadText(object, QStringLiteral("minimum_permission"), server.minimumPermission)) return false;
     const auto argsValue = object.value(QStringLiteral("args"));
     if (!argsValue.isUndefined()) {
-        if (!argsValue.isArray()) return false;
+        if (!argsValue.isArray() || argsValue.toArray().size() > 128) return false;
         for (const auto& item : argsValue.toArray()) {
-            if (!item.isString() || item.toString().size() > 4096) return false;
+            if (!item.isString()) return false;
             server.args.push_back(item.toString());
         }
     }
     const auto envValue = object.value(QStringLiteral("env"));
     if (!envValue.isUndefined()) {
-        if (!envValue.isObject()) return false;
+        if (!envValue.isObject() || envValue.toObject().size() > 64) return false;
         const auto envObj = envValue.toObject();
-        if (ContainsSecretField(envObj)) return false;
         for (auto it = envObj.constBegin(); it != envObj.constEnd(); ++it) {
-            if (it.key().isEmpty() || it.key().size() > 256 || !it.value().isString() || it.value().toString().size() > 4096) return false;
+            if (!it.value().isString()) return false;
             server.env.push_back({it.key(), it.value().toString()});
         }
+    }
+    return true;
+}
+
+bool IsLoopbackHost(const QString& host) {
+    return host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0 || QHostAddress(host).isLoopback();
+}
+
+bool IsEnvironmentName(const QString& name) {
+    static const QRegularExpression kName(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]{0,127}$"));
+    return kName.match(name).hasMatch();
+}
+
+// 单个外部 MCP 条目的全部内容规则；保存前校验与读取时的逐条校验共用，二者限制一致。
+bool ValidateExternalMcp(const ExternalMcpServerSettings& server, QString* error) {
+    if (server.id.isEmpty() || server.id.size() > 256)
+        return Fail(error, QStringLiteral("外部 MCP 服务器 ID 为空或过长。"));
+    if (server.name.trimmed().isEmpty() || server.name.size() > 256)
+        return Fail(error, QStringLiteral("外部 MCP 服务器名称应为 1–256 个字符。"));
+    if (!IsValidPermissionTier(server.minimumPermission))
+        return Fail(error, QStringLiteral("外部 MCP 最低权限档位无效。"));
+    if (server.args.size() > 128 || server.env.size() > 64 || server.credentialRef.size() > 16384)
+        return Fail(error, QStringLiteral("外部 MCP 参数或环境变量数量超出限制。"));
+    for (const auto& arg : server.args) {
+        if (arg.size() > kMaximumMcpValueChars)
+            return Fail(error, QStringLiteral("外部 MCP“%1”的单个启动参数超过 4096 个字符。").arg(server.name));
+    }
+    if (ExternalMcpArgsCarrySecret(server.args))
+        return Fail(error, QStringLiteral("外部 MCP“%1”的启动参数疑似包含明文密钥，请改为填入鉴权密钥并设置密钥变量名。").arg(server.name));
+    QSet<QString> envNames;
+    for (const auto& pair : server.env) {
+        if (pair.first.isEmpty() || pair.first.size() > kMaximumMcpEnvNameChars || pair.first.contains(QLatin1Char('='))
+            || pair.second.size() > kMaximumMcpValueChars)
+            return Fail(error, QStringLiteral("外部 MCP“%1”的环境变量名为空、过长，或取值超过 4096 个字符。").arg(server.name));
+        if (ExternalMcpSecretName(pair.first) || ExternalMcpValueLooksSecret(pair.second))
+            return Fail(error, QStringLiteral("外部 MCP 环境变量不能直接存放明文密钥，请使用鉴权密钥栏保存。"));
+        const QString folded = pair.first.toUpper();
+        if (envNames.contains(folded))
+            return Fail(error, QStringLiteral("外部 MCP“%1”的环境变量重复。").arg(server.name));
+        envNames.insert(folded);
+    }
+    if (!server.credentialEnv.isEmpty()) {
+        if (!IsEnvironmentName(server.credentialEnv))
+            return Fail(error, QStringLiteral("外部 MCP 密钥变量名只能包含字母、数字和下划线，且不以数字开头。"));
+        if (envNames.contains(server.credentialEnv.toUpper()))
+            return Fail(error, QStringLiteral("外部 MCP 密钥变量名与普通环境变量重名。"));
+    }
+    if (server.transport == QStringLiteral("stdio")) {
+        if (server.command.trimmed().isEmpty() || server.command.size() > kMaximumMcpValueChars || server.cwd.size() > kMaximumMcpValueChars)
+            return Fail(error, QStringLiteral("stdio MCP 服务器必须填写启动命令，命令与工作目录不超过 4096 个字符。"));
+    } else if (server.transport == QStringLiteral("http")) {
+        const QUrl url(server.url);
+        if (server.url.isEmpty() || server.url.size() > kMaximumMcpValueChars || !url.isValid() || url.host().isEmpty()
+            || !url.userInfo().isEmpty() || url.hasQuery() || url.hasFragment()
+            || (url.scheme() != QStringLiteral("https") && (url.scheme() != QStringLiteral("http") || !IsLoopbackHost(url.host()))))
+            return Fail(error, QStringLiteral("HTTP MCP 地址须为 HTTPS 或本机回环 HTTP，且不能包含用户名、查询参数或片段。"));
+    } else {
+        return Fail(error, QStringLiteral("外部 MCP 传输方式仅支持 stdio 或 http。"));
     }
     return true;
 }
@@ -254,35 +321,9 @@ bool AgentSettingsStore::Validate(const AgentSettings& settings, QString* error)
         return Fail(error, QStringLiteral("外部 MCP 服务器数量超过 64 个预算。"));
     QSet<QString> mcpIds;
     for (const auto& server : settings.externalMcpServers) {
-        if (server.id.isEmpty() || server.id.size() > 256 || mcpIds.contains(server.id))
-            return Fail(error, QStringLiteral("外部 MCP 服务器 ID 为空、重复或过长。"));
+        if (mcpIds.contains(server.id)) return Fail(error, QStringLiteral("外部 MCP 服务器 ID 重复。"));
         mcpIds.insert(server.id);
-        if (server.name.trimmed().isEmpty() || server.name.size() > 256)
-            return Fail(error, QStringLiteral("外部 MCP 服务器名称应为 1–256 个字符。"));
-        if (!IsValidPermissionTier(server.minimumPermission))
-            return Fail(error, QStringLiteral("外部 MCP 最低权限档位无效。"));
-        if (server.args.size() > 128 || server.env.size() > 64 || server.credentialRef.size() > 16384)
-            return Fail(error, QStringLiteral("外部 MCP 参数或环境变量数量超出限制。"));
-        for (const auto& pair : server.env) {
-            const auto lower = pair.first.toLower();
-            if (pair.first.isEmpty() || lower == QStringLiteral("api_key") || lower == QStringLiteral("apikey")
-                || lower == QStringLiteral("secret") || lower == QStringLiteral("password")
-                || lower == QStringLiteral("authorization") || lower == QStringLiteral("token"))
-                return Fail(error, QStringLiteral("外部 MCP 环境变量不能直接存放明文密钥字段，请使用凭据栏保存。"));
-        }
-        if (server.transport == QStringLiteral("stdio")) {
-            if (server.command.trimmed().isEmpty() || server.command.size() > 4096 || server.cwd.size() > 4096)
-                return Fail(error, QStringLiteral("stdio MCP 服务器必须填写启动命令。"));
-        } else if (server.transport == QStringLiteral("http")) {
-            const QUrl url(server.url);
-            if (server.url.isEmpty() || server.url.size() > 4096 || !url.isValid() || url.host().isEmpty()
-                || !url.userInfo().isEmpty() || url.hasFragment()
-                || (url.scheme() != QStringLiteral("https") && (url.scheme() != QStringLiteral("http")
-                    || (url.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) != 0 && !QHostAddress(url.host()).isLoopback()))))
-                return Fail(error, QStringLiteral("HTTP MCP 地址须为 HTTPS 或本机回环 HTTP，且不含用户名或片段。"));
-        } else {
-            return Fail(error, QStringLiteral("外部 MCP 传输方式仅支持 stdio 或 http。"));
-        }
+        if (!ValidateExternalMcp(server, error)) return false;
     }
     QSet<QString> tools;
     for (const auto& tool : settings.disabledTools) {
@@ -293,8 +334,9 @@ bool AgentSettingsStore::Validate(const AgentSettings& settings, QString* error)
     return true;
 }
 
-AgentSettings AgentSettingsStore::Load(QString* error) const {
+AgentSettings AgentSettingsStore::Load(QString* error, QString* warning) const {
     if (error != nullptr) error->clear();
+    if (warning != nullptr) warning->clear();
     AgentSettings settings;
     if (!QFileInfo::exists(filePath_)) return settings;
     QFile file(filePath_);
@@ -374,12 +416,31 @@ AgentSettings AgentSettingsStore::Load(QString* error) const {
     if (!externalMcpValue.isUndefined() && !externalMcpValue.isArray()) {
         Fail(error, QStringLiteral("外部 MCP 服务器设置必须为列表。")); return {};
     }
+    // 外部 MCP 列表逐条校验：不符合规则（字段无效、明文密钥、地址带查询等）的条目跳过并给出警告，
+    // 不让单个条目使整份 AI 设置读取失败；下次保存时这些条目（及其中的明文）从文件中移除。
+    QStringList skippedMcp;
+    QSet<QString> loadedMcpIds;
+    if (externalMcpValue.toArray().size() > 64) {
+        Fail(error, QStringLiteral("外部 MCP 服务器数量超过 64 个预算。")); return {};
+    }
     for (const auto& serverValue : externalMcpValue.toArray()) {
         ExternalMcpServerSettings server;
+        QString serverError;
         if (!serverValue.isObject() || !DecodeExternalMcp(serverValue.toObject(), server)) {
-            Fail(error, QStringLiteral("外部 MCP 服务器字段无效，或包含明文密钥字段。")); return {};
+            serverError = QStringLiteral("字段无效或包含明文密钥字段");
+        } else if (loadedMcpIds.contains(server.id)) {
+            serverError = QStringLiteral("ID 重复");
+        } else if (ValidateExternalMcp(server, &serverError)) {
+            loadedMcpIds.insert(server.id);
+            settings.externalMcpServers.push_back(std::move(server));
+            continue;
         }
-        settings.externalMcpServers.push_back(std::move(server));
+        const QString label = server.name.trimmed().isEmpty() ? QStringLiteral("未命名") : server.name.trimmed().left(64);
+        skippedMcp.push_back(QStringLiteral("%1：%2").arg(label, serverError));
+    }
+    if (!skippedMcp.isEmpty() && warning != nullptr) {
+        *warning = QStringLiteral("已忽略 %1 个不符合规则的外部 MCP 服务器（%2）；保存设置后将从文件中移除。")
+            .arg(QString::number(skippedMcp.size()), skippedMcp.join(QStringLiteral("；")));
     }
     const auto disabled = object.value(QStringLiteral("disabled_tools"));
     if (!disabled.isUndefined() && !disabled.isArray()) {

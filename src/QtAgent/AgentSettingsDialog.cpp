@@ -26,7 +26,6 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
-#include <QProcess>
 #include <QPushButton>
 #include <QRegularExpressionValidator>
 #include <QScrollArea>
@@ -592,7 +591,7 @@ public:
 
     void BuildMcp() {
         QVBoxLayout* layout = nullptr;
-        auto* page = Page(QStringLiteral("MCP 连接"), QStringLiteral("既可开启本机 HTTP MCP 供外部 Agent 接入，也可添加自定义外部 MCP 服务器扩展内置助手工具。"), layout);
+        auto* page = Page(QStringLiteral("MCP 连接"), QString{}, layout);
         mcpEnabled = new QCheckBox(QStringLiteral("启用本机 HTTP MCP（供外部客户端连入编辑器）"));
         mcpEnabled->setObjectName(QStringLiteral("agentMcpEnabled"));
         mcpEnabled->setChecked(settings.mcpEnabled);
@@ -620,7 +619,7 @@ public:
         extDivider->setFixedHeight(1);
         layout->addWidget(extDivider);
 
-        layout->addWidget(Text(QStringLiteral("外部自定义 MCP 服务器（供内置 AI 助手调用）")));
+        layout->addWidget(Text(QStringLiteral("外部 MCP 服务器")));
         auto* extToolbar = new QHBoxLayout;
         auto* addExtBtn = Button(QStringLiteral("添加服务器"), QStringLiteral("agentAddExternalMcp"));
         auto* importExtJsonBtn = Button(QStringLiteral("粘贴导入 JSON…"), QStringLiteral("agentImportExternalMcpJson"));
@@ -644,7 +643,7 @@ public:
         extForm->setVerticalSpacing(6);
         extMcpEnabled = new QCheckBox(QStringLiteral("启用此 MCP 服务器"));
         extMcpEnabled->setObjectName(QStringLiteral("agentExternalMcpEnabled"));
-        extMcpName = Edit(QStringLiteral("agentExternalMcpName"), QStringLiteral("例如 War3 autotest / IDA Pro MCP"));
+        extMcpName = Edit(QStringLiteral("agentExternalMcpName"));
         extMcpTransport = new QComboBox;
         extMcpTransport->setObjectName(QStringLiteral("agentExternalMcpTransport"));
         extMcpTransport->addItem(QStringLiteral("本地进程 (stdio)"), QStringLiteral("stdio"));
@@ -656,15 +655,21 @@ public:
         extMcpPerm->addItem(QStringLiteral("需可编辑"), QStringLiteral("edit"));
         extMcpPerm->addItem(QStringLiteral("只读可用"), QStringLiteral("read"));
         extMcpCommand = Edit(QStringLiteral("agentExternalMcpCommand"), QStringLiteral("npx / uvx / node / 可执行文件路径"));
-        extMcpArgs = Edit(QStringLiteral("agentExternalMcpArgs"), QStringLiteral("启动参数（空格分隔，含空格参数可用双引号包裹）"));
+        extMcpArgs = Edit(QStringLiteral("agentExternalMcpArgs"), QStringLiteral("参数"));
         extMcpCwd = Edit(QStringLiteral("agentExternalMcpCwd"), QStringLiteral("工作目录（可选）"));
-        extMcpUrl = Edit(QStringLiteral("agentExternalMcpUrl"), QStringLiteral("http://127.0.0.1:8080/mcp 或 https://..."));
+        extMcpUrl = Edit(QStringLiteral("agentExternalMcpUrl"), QStringLiteral("https://…/mcp"));
         auto* extSecretRow = new QHBoxLayout;
-        extMcpSecret = Edit(QStringLiteral("agentExternalMcpSecret"), QStringLiteral("可选 Bearer Token / 环境变量密钥（加密存储）"));
+        extMcpSecret = Edit(QStringLiteral("agentExternalMcpSecret"), QStringLiteral("未设置"));
         extMcpSecret->setEchoMode(QLineEdit::Password);
         auto* clearExtSecret = Button(QStringLiteral("清除"), QStringLiteral("agentClearExternalMcpSecret"));
         extSecretRow->addWidget(extMcpSecret, 1);
         extSecretRow->addWidget(clearExtSecret);
+        extMcpSecretEnv = Edit(QStringLiteral("agentExternalMcpSecretEnv"), QString::fromLatin1(kDefaultExternalMcpCredentialEnv));
+        extMcpSecretEnv->setMaxLength(128);
+        extMcpAuthMode = new QComboBox;
+        extMcpAuthMode->setObjectName(QStringLiteral("agentExternalMcpAuthMode"));
+        extMcpAuthMode->addItem(QStringLiteral("Bearer 令牌"), false);
+        extMcpAuthMode->addItem(QStringLiteral("完整 Authorization 值"), true);
 
         extForm->addRow(QStringLiteral("状态"), extMcpEnabled);
         extForm->addRow(QStringLiteral("名称"), extMcpName);
@@ -675,6 +680,8 @@ public:
         extForm->addRow(QStringLiteral("工作目录"), extMcpCwd);
         extForm->addRow(QStringLiteral("HTTP 地址"), extMcpUrl);
         extForm->addRow(QStringLiteral("鉴权密钥"), extSecretRow);
+        extForm->addRow(QStringLiteral("密钥变量名"), extMcpSecretEnv);
+        extForm->addRow(QStringLiteral("鉴权方式"), extMcpAuthMode);
         extSplit->addWidget(extMcpEditor);
         extSplit->setSizes({180, 480});
         layout->addWidget(extSplit);
@@ -735,20 +742,28 @@ public:
             cur->transport = extMcpTransport->currentData().toString();
             cur->minimumPermission = extMcpPerm->currentData().toString();
             cur->command = extMcpCommand->text().trimmed();
-            cur->args = QProcess::splitCommand(extMcpArgs->text());
             cur->cwd = extMcpCwd->text().trimmed();
             cur->url = extMcpUrl->text().trimmed();
+            cur->credentialEnv = extMcpSecretEnv->text().trimmed();
+            cur->authorizationRaw = extMcpAuthMode->currentData().toBool();
             UpdateExternalMcpTransportVisibility();
             if (auto* item = extMcpList->item(externalMcpIndex)) {
                 item->setText(cur->name.isEmpty() ? QStringLiteral("未命名 MCP") : cur->name);
             }
         };
         QObject::connect(extMcpEnabled, &QCheckBox::toggled, dialog, extEdited);
-        for (auto* e : {extMcpName, extMcpCommand, extMcpArgs, extMcpCwd, extMcpUrl}) {
+        for (auto* e : {extMcpName, extMcpCommand, extMcpCwd, extMcpUrl, extMcpSecretEnv}) {
             QObject::connect(e, &QLineEdit::textChanged, dialog, extEdited);
         }
+        // 参数只在参数栏本身被编辑时重新解析，改其他字段不会把已保存的参数重新拆分。
+        QObject::connect(extMcpArgs, &QLineEdit::textChanged, dialog, [this](const QString& text) {
+            auto* cur = CurrentExternalMcp();
+            if (loading || cur == nullptr) return;
+            cur->args = SplitCommandArgs(text);
+        });
         QObject::connect(extMcpTransport, &QComboBox::currentIndexChanged, dialog, extEdited);
         QObject::connect(extMcpPerm, &QComboBox::currentIndexChanged, dialog, extEdited);
+        QObject::connect(extMcpAuthMode, &QComboBox::currentIndexChanged, dialog, extEdited);
         QObject::connect(extMcpSecret, &QLineEdit::textChanged, dialog, [this] {
             if (loading || CurrentExternalMcp() == nullptr) return;
             if (extMcpSecret->text().isEmpty()) pendingMcpSecrets.remove(CurrentExternalMcp()->id);
@@ -773,18 +788,52 @@ public:
         RefreshExternalMcps(settings.externalMcpServers.isEmpty() ? -1 : 0);
     }
 
+    // 参数栏的引号规则与 QProcess::splitCommand 一致：空白分隔，双引号包裹含空白的参数，
+    // 引号内连续三个双引号表示一个字面双引号；另外保留 "" 表示的空参数，保证与 JoinCommandArgs 往返无损。
     static QString JoinCommandArgs(const QStringList& args) {
         QStringList formatted;
         for (const QString& arg : args) {
-            if (arg.contains(QLatin1Char(' ')) || arg.contains(QLatin1Char('"'))) {
-                QString escaped = arg;
-                escaped.replace(QLatin1Char('"'), QStringLiteral("\\\""));
-                formatted.push_back(QLatin1Char('"') + escaped + QLatin1Char('"'));
-            } else {
+            bool needsQuotes = arg.isEmpty() || arg.contains(QLatin1Char('"'));
+            for (const QChar ch : arg) needsQuotes = needsQuotes || ch.isSpace();
+            if (!needsQuotes) {
                 formatted.push_back(arg);
+                continue;
             }
+            QString escaped = arg;
+            escaped.replace(QLatin1Char('"'), QStringLiteral("\"\"\""));
+            formatted.push_back(QLatin1Char('"') + escaped + QLatin1Char('"'));
         }
         return formatted.join(QLatin1Char(' '));
+    }
+
+    static QStringList SplitCommandArgs(const QString& text) {
+        QStringList args;
+        QString token;
+        bool tokenStarted = false;
+        bool inQuote = false;
+        int quoteCount = 0;
+        for (const QChar ch : text) {
+            if (ch == QLatin1Char('"')) {
+                tokenStarted = true;
+                if (++quoteCount == 3) {
+                    quoteCount = 0;
+                    token.append(ch);
+                }
+                continue;
+            }
+            if (quoteCount == 1) inQuote = !inQuote;
+            quoteCount = 0;
+            if (!inQuote && ch.isSpace()) {
+                if (tokenStarted) args.push_back(token);
+                token.clear();
+                tokenStarted = false;
+            } else {
+                token.append(ch);
+                tokenStarted = true;
+            }
+        }
+        if (tokenStarted) args.push_back(token);
+        return args;
     }
 
     void UpdateExternalMcpTransportVisibility() {
@@ -792,7 +841,9 @@ public:
         if (extMcpCommand) extMcpCommand->setEnabled(!isHttp);
         if (extMcpArgs) extMcpArgs->setEnabled(!isHttp);
         if (extMcpCwd) extMcpCwd->setEnabled(!isHttp);
+        if (extMcpSecretEnv) extMcpSecretEnv->setEnabled(!isHttp);
         if (extMcpUrl) extMcpUrl->setEnabled(isHttp);
+        if (extMcpAuthMode) extMcpAuthMode->setEnabled(isHttp);
     }
 
     void RefreshExternalMcps(int selected) {
@@ -822,8 +873,10 @@ public:
         extMcpUrl->setText(cur != nullptr ? cur->url : QString{});
         extMcpSecret->setText(cur != nullptr ? pendingMcpSecrets.value(cur->id) : QString{});
         extMcpSecret->setPlaceholderText(cur != nullptr && !cur->credentialRef.isEmpty()
-            ? QStringLiteral("已保存密钥，留空保持不变")
-            : QStringLiteral("可选 Bearer Token / 环境变量密钥（加密存储）"));
+            ? QStringLiteral("已保存，留空保持不变")
+            : QStringLiteral("未设置"));
+        extMcpSecretEnv->setText(cur != nullptr ? cur->credentialEnv : QString{});
+        extMcpAuthMode->setCurrentIndex(cur != nullptr && cur->authorizationRaw ? 1 : 0);
         UpdateExternalMcpTransportVisibility();
         loading = false;
     }
@@ -833,8 +886,9 @@ public:
         importDlg.setWindowTitle(QStringLiteral("粘贴导入 MCP 配置 (mcpServers JSON)"));
         importDlg.resize(540, 360);
         auto* v = new QVBoxLayout(&importDlg);
-        v->addWidget(Text(QStringLiteral("支持粘贴 Claude Desktop / Claude Code / Cursor 标准 mcpServers JSON 配置；其中的密钥将自动转入本机加密凭据库："), &importDlg, true));
+        v->addWidget(Text(QStringLiteral("粘贴 mcpServers JSON"), &importDlg, true));
         auto* editor = new QPlainTextEdit(&importDlg);
+        editor->setObjectName(QStringLiteral("agentImportExternalMcpJsonText"));
         editor->setPlaceholderText(QStringLiteral("{\n  \"mcpServers\": {\n    \"war3-autotest\": {\n      \"command\": \"node\",\n      \"args\": [\"server.js\"]\n    }\n  }\n}"));
         v->addWidget(editor, 1);
         auto* errLabel = Text(QString(), &importDlg, true);
@@ -857,7 +911,8 @@ public:
                 pendingMcpSecrets.insert(it.key(), it.value());
             }
             RefreshExternalMcps(static_cast<int>(settings.externalMcpServers.size()) - 1);
-            Message(QStringLiteral("已解析添加 %1 个外部 MCP 服务器，点击“保存设置”后生效。").arg(parsed.size()));
+            const QString added = QStringLiteral("已添加 %1 个外部 MCP 服务器（停用）。").arg(parsed.size());
+            Message(err.isEmpty() ? added : added + err);
             importDlg.accept();
         });
         importDlg.exec();
@@ -944,7 +999,7 @@ public:
         }
         if (thinkingSourceStatus) {
             if (!cap.discovered) {
-                thinkingSourceStatus->setText(QStringLiteral("未自动识别（可手动勾选该模型支持的思考档位）"));
+                thinkingSourceStatus->setText(QStringLiteral("未识别"));
             } else if (cap.levels.isEmpty()) {
                 thinkingSourceStatus->setText(QStringLiteral("%1 · 无思考档位").arg(cap.source));
             } else {
@@ -1024,8 +1079,8 @@ public:
     QLineEdit *providerName = nullptr, *website = nullptr, *baseUrl = nullptr, *secret = nullptr,
         *modelId = nullptr, *modelName = nullptr, *context = nullptr, *output = nullptr,
         *extMcpName = nullptr, *extMcpCommand = nullptr, *extMcpArgs = nullptr, *extMcpCwd = nullptr,
-        *extMcpUrl = nullptr, *extMcpSecret = nullptr;
-    QComboBox *protocol = nullptr, *extMcpTransport = nullptr, *extMcpPerm = nullptr;
+        *extMcpUrl = nullptr, *extMcpSecret = nullptr, *extMcpSecretEnv = nullptr;
+    QComboBox *protocol = nullptr, *extMcpTransport = nullptr, *extMcpPerm = nullptr, *extMcpAuthMode = nullptr;
     QComboBox* uiFont = nullptr;
     QLabel* fontPreview = nullptr;
     QString uiFontFamily;

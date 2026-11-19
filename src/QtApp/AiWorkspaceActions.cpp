@@ -249,18 +249,22 @@ void OpenProjectMemoryEditor(QWidget* parent, War3Map::Agent::ProjectMemoryServi
     };
     const auto loadCurrentScope = [&] {
         const QString scope = scopeCombo->currentData().toString();
+        auto* save = buttons->button(QDialogButtonBox::Save);
         if (scope == QStringLiteral("none")) {
             editor->setEnabled(false);
-            buttons->button(QDialogButtonBox::Save)->setEnabled(false);
-            pathLabel->setText(QStringLiteral("提示：地图记忆默认保存在地图同级目录 <地图名>.memory.md，随地图文件夹一起迁移。"));
+            save->setEnabled(false);
+            pathLabel->clear();
             return;
         }
         const auto snap = memory.ReadScope(scope);
         pathLabel->setText(QStringLiteral("文件路径：%1%2").arg(snap.filePath, snap.exists ? QString{} : QStringLiteral("（保存后创建）")));
         editor->setEnabled(true);
-        buttons->button(QDialogButtonBox::Save)->setEnabled(true);
+        save->setEnabled(true);
         editor->setPlainText(snap.content);
-        statusLabel->setText(snap.error);
+        // 未确认的地图记忆（如随地图附带）不提供给助手；作者在此保存即视为确认。
+        save->setText(snap.trusted ? QStringLiteral("保存记忆") : QStringLiteral("确认并保存"));
+        statusLabel->setText(!snap.error.isEmpty() ? snap.error
+            : snap.trusted ? QString{} : QStringLiteral("未确认"));
         updateTokenCount();
     };
     QObject::connect(scopeCombo, &QComboBox::currentIndexChanged, &dlg, loadCurrentScope);
@@ -377,8 +381,9 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     auto* state = new War3Map::QtApp::AiWorkspace(this);
     aiWorkspace_ = state;
     QString loadError;
+    QString loadWarning;
     // 离屏宿主测试显式用空配置；不接触作者设置、凭据、端口或站点。
-    if (readUserConfiguration) state->settings = state->store.Load(&loadError);
+    if (readUserConfiguration) state->settings = state->store.Load(&loadError, &loadWarning);
     state->tools = std::make_unique<War3Map::QtApp::LiveEditorTools>(*project_);
     state->tools->Server().SetCampaign(campaignModule_->Session());
     state->tools->Server().SetCampaignBackupOptionsProvider([] {
@@ -506,6 +511,7 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     contextTimer->start();
     ApplySettings(*state);
     if (!loadError.isEmpty()) AddDiagnostic(tr("错误"), tr("助手"), QStringLiteral("AGENT_SETTINGS_LOAD_FAILED"), loadError);
+    if (!loadWarning.isEmpty()) AddDiagnostic(tr("警告"), tr("助手"), QStringLiteral("AGENT_EXTERNAL_MCP_SKIPPED"), loadWarning);
     if (!state->serviceError.isEmpty()) AddDiagnostic(tr("错误"), tr("MCP"), QStringLiteral("MCP_LISTEN_FAILED"), state->serviceError);
     RefreshAgentMapContext();
 }
