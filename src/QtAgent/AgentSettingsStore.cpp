@@ -67,24 +67,73 @@ bool IsValidPermissionTier(const QString& tier) {
         || tier == QStringLiteral("save") || tier == QStringLiteral("full");
 }
 
+bool ReadThinkingList(const QJsonObject& object, const QString& name, QStringList& result) {
+    result.clear();
+    const auto value = object.value(name);
+    if (value.isUndefined()) return true;
+    if (!value.isArray()) return false;
+    QStringList raw;
+    for (const auto& item : value.toArray()) {
+        if (!item.isString() || item.toString().size() > 64) return false;
+        const QString normalized = NormalizeThinkingLevelToken(item.toString());
+        if (normalized.isEmpty()) return false;
+        raw.push_back(normalized);
+    }
+    result = NormalizeThinkingLevels(raw);
+    return true;
+}
+
+QJsonArray ToJsonArray(const QStringList& list) {
+    QJsonArray out;
+    for (const auto& item : list) out.append(item);
+    return out;
+}
+
 QJsonObject EncodeModel(const ModelSettings& model) {
-    return {{QStringLiteral("id"), model.id}, {QStringLiteral("name"), model.name},
+    QJsonObject obj{{QStringLiteral("id"), model.id}, {QStringLiteral("name"), model.name},
         {QStringLiteral("enabled"), model.enabled}, {QStringLiteral("context_override"), model.contextOverride},
         {QStringLiteral("provider_context"), model.providerContext}, {QStringLiteral("catalog_context"), model.catalogContext},
         {QStringLiteral("max_output_tokens"), model.maxOutputTokens}, {QStringLiteral("tools_supported"), model.toolsSupported},
         {QStringLiteral("images_supported"), model.imagesSupported}};
+    if (!model.providerThinkingLevels.isEmpty()) {
+        obj.insert(QStringLiteral("provider_thinking_levels"), ToJsonArray(NormalizeThinkingLevels(model.providerThinkingLevels)));
+    }
+    if (model.thinkingLevelsCustomized) {
+        obj.insert(QStringLiteral("thinking_levels_customized"), true);
+        obj.insert(QStringLiteral("custom_thinking_levels"), ToJsonArray(NormalizeThinkingLevels(model.customThinkingLevels)));
+    }
+    const QString selected = NormalizeThinkingLevelToken(model.selectedThinkingLevel);
+    if (!selected.isEmpty()) {
+        obj.insert(QStringLiteral("selected_thinking_level"), selected);
+    }
+    return obj;
 }
 
 bool DecodeModel(const QJsonObject& object, ModelSettings& model) {
-    return !ContainsSecretField(object) && ReadText(object, QStringLiteral("id"), model.id)
-        && ReadText(object, QStringLiteral("name"), model.name)
-        && ReadBool(object, QStringLiteral("enabled"), true, model.enabled)
-        && ReadBool(object, QStringLiteral("tools_supported"), true, model.toolsSupported)
-        && ReadBool(object, QStringLiteral("images_supported"), false, model.imagesSupported)
-        && ReadTokens(object, QStringLiteral("context_override"), model.contextOverride)
-        && ReadTokens(object, QStringLiteral("provider_context"), model.providerContext)
-        && ReadTokens(object, QStringLiteral("catalog_context"), model.catalogContext)
-        && ReadTokens(object, QStringLiteral("max_output_tokens"), model.maxOutputTokens);
+    if (ContainsSecretField(object)
+        || !ReadText(object, QStringLiteral("id"), model.id)
+        || !ReadText(object, QStringLiteral("name"), model.name)
+        || !ReadBool(object, QStringLiteral("enabled"), true, model.enabled)
+        || !ReadBool(object, QStringLiteral("tools_supported"), true, model.toolsSupported)
+        || !ReadBool(object, QStringLiteral("images_supported"), false, model.imagesSupported)
+        || !ReadTokens(object, QStringLiteral("context_override"), model.contextOverride)
+        || !ReadTokens(object, QStringLiteral("provider_context"), model.providerContext)
+        || !ReadTokens(object, QStringLiteral("catalog_context"), model.catalogContext)
+        || !ReadTokens(object, QStringLiteral("max_output_tokens"), model.maxOutputTokens)
+        || !ReadThinkingList(object, QStringLiteral("provider_thinking_levels"), model.providerThinkingLevels)
+        || !ReadThinkingList(object, QStringLiteral("custom_thinking_levels"), model.customThinkingLevels)
+        || !ReadBool(object, QStringLiteral("thinking_levels_customized"), false, model.thinkingLevelsCustomized)) {
+        return false;
+    }
+    QString rawSelected;
+    if (!ReadText(object, QStringLiteral("selected_thinking_level"), rawSelected)) return false;
+    if (!rawSelected.trimmed().isEmpty()) {
+        model.selectedThinkingLevel = NormalizeThinkingLevelToken(rawSelected);
+        if (model.selectedThinkingLevel.isEmpty() && rawSelected.trimmed().compare(QStringLiteral("default"), Qt::CaseInsensitive) != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 QJsonObject EncodeExternalMcp(const ExternalMcpServerSettings& server) {
@@ -186,6 +235,18 @@ bool AgentSettingsStore::Validate(const AgentSettings& settings, QString* error)
             for (const qint64 count : {model.contextOverride, model.providerContext, model.catalogContext, model.maxOutputTokens}) {
                 if (count < 0 || count > kMaximumTokens)
                     return Fail(error, QStringLiteral("模型 token 数须为非负整数，不能超过 15 位。"));
+            }
+            for (const auto* list : {&model.providerThinkingLevels, &model.customThinkingLevels}) {
+                if (list->size() > 16) return Fail(error, QStringLiteral("思考强度档位数量超出范围。"));
+                for (const auto& lv : *list) {
+                    if (!IsValidThinkingLevel(NormalizeThinkingLevelToken(lv)))
+                        return Fail(error, QStringLiteral("模型思考强度包含无效档位。"));
+                }
+            }
+            if (!model.selectedThinkingLevel.trimmed().isEmpty()
+                && model.selectedThinkingLevel.trimmed().compare(QStringLiteral("default"), Qt::CaseInsensitive) != 0
+                && !IsValidThinkingLevel(NormalizeThinkingLevelToken(model.selectedThinkingLevel))) {
+                return Fail(error, QStringLiteral("所选模型思考强度档位无效。"));
             }
         }
     }

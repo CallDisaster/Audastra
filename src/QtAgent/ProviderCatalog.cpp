@@ -39,6 +39,68 @@ bool IsLocal(const QUrl& url) {
         || QHostAddress(url.host()).isLoopback();
 }
 
+QStringList ExtractThinkingLevelsFromArray(const QJsonValue& value) {
+    if (!value.isArray()) return {};
+    QStringList raw;
+    for (const auto& item : value.toArray()) {
+        if (item.isString()) {
+            raw.push_back(item.toString());
+        } else if (item.isObject()) {
+            const auto obj = item.toObject();
+            const QString id = obj.value(QStringLiteral("id")).toString(obj.value(QStringLiteral("level")).toString());
+            if (!id.isEmpty()) raw.push_back(id);
+        }
+    }
+    return NormalizeThinkingLevels(raw);
+}
+
+QStringList ExtractProviderThinkingLevels(const QJsonObject& entry, const QString& protocol, const QString& baseUrl, const QString& modelId) {
+    const auto caps = entry.value(QStringLiteral("capabilities")).toObject();
+    const auto reasoningCap = caps.value(QStringLiteral("reasoning")).toObject();
+    const auto thinkingCap = caps.value(QStringLiteral("thinking")).toObject();
+    for (const auto& candidate : {
+        entry.value(QStringLiteral("reasoning_efforts")),
+        entry.value(QStringLiteral("thinking_efforts")),
+        entry.value(QStringLiteral("supported_reasoning_efforts")),
+        entry.value(QStringLiteral("thinking_levels")),
+        reasoningCap.value(QStringLiteral("efforts")),
+        reasoningCap.value(QStringLiteral("supported_efforts")),
+        thinkingCap.value(QStringLiteral("efforts")),
+        thinkingCap.value(QStringLiteral("levels")),
+    }) {
+        const auto parsed = ExtractThinkingLevelsFromArray(candidate);
+        if (!parsed.isEmpty()) return parsed;
+    }
+
+    bool supportsThinkingFlag = false;
+    if (entry.value(QStringLiteral("thinking")).isBool() && entry.value(QStringLiteral("thinking")).toBool()) {
+        supportsThinkingFlag = true;
+    }
+    if (reasoningCap.value(QStringLiteral("supported")).toBool() || thinkingCap.value(QStringLiteral("supported")).toBool()) {
+        supportsThinkingFlag = true;
+    }
+    if (entry.value(QStringLiteral("supported_parameters")).isArray()) {
+        for (const auto& p : entry.value(QStringLiteral("supported_parameters")).toArray()) {
+            const QString param = p.toString().toLower();
+            if (param == QStringLiteral("reasoning") || param == QStringLiteral("include_reasoning")
+                || param == QStringLiteral("reasoning_effort")) {
+                supportsThinkingFlag = true;
+                break;
+            }
+        }
+    }
+    if (!supportsThinkingFlag) return {};
+    const bool isDeepSeek = baseUrl.toLower().contains(QStringLiteral("deepseek"))
+        || modelId.toLower().contains(QStringLiteral("deepseek"));
+    if (isDeepSeek) {
+        return {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")};
+    }
+    if (protocol == QStringLiteral("gemini")) {
+        return {QStringLiteral("off"), QStringLiteral("minimal"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
+    }
+    return {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
+}
+
 } // namespace
 
 ProviderCatalog::ProviderCatalog(QObject* parent) : QObject(parent) {
@@ -161,13 +223,26 @@ void ProviderCatalog::FinishPage(QNetworkReply* reply) {
     }
     const auto object = document.object();
     const bool gemini = provider_.protocol == QStringLiteral("gemini");
+    QList<QPair<QString, QJsonObject>> rawEntries;
     const auto arrayValue = object.value(gemini ? QStringLiteral("models") : QStringLiteral("data"));
-    if (!arrayValue.isArray()) { Fail(tr("模型目录缺少协议要求的列表字段。")); return; }
-    for (const auto& value : arrayValue.toArray()) {
-        if (!value.isObject()) { Fail(tr("模型目录包含无效条目。")); return; }
-        const auto entry = value.toObject();
+    if (arrayValue.isArray()) {
+        for (const auto& value : arrayValue.toArray()) {
+            if (!value.isObject()) { Fail(tr("模型目录包含无效条目。")); return; }
+            rawEntries.push_back({QString{}, value.toObject()});
+        }
+    } else if (!gemini && object.value(QStringLiteral("models")).isObject()) {
+        // 对齐 DSH discovery.ts：兼容部分网关返回的 { "models": { "<id>": { ... } } } 字典格式
+        const auto mapObj = object.value(QStringLiteral("models")).toObject();
+        for (auto it = mapObj.constBegin(); it != mapObj.constEnd(); ++it) {
+            if (it.value().isObject()) rawEntries.push_back({it.key(), it.value().toObject()});
+        }
+    } else {
+        Fail(tr("模型目录缺少协议要求的列表字段。"));
+        return;
+    }
+    for (const auto& [mapKey, entry] : rawEntries) {
         ModelSettings model;
-        model.id = entry.value(gemini ? QStringLiteral("name") : QStringLiteral("id")).toString();
+        model.id = !mapKey.isEmpty() ? mapKey : entry.value(gemini ? QStringLiteral("name") : QStringLiteral("id")).toString();
         if (gemini && model.id.startsWith(QStringLiteral("models/"))) model.id.remove(0, 7);
         if (model.id.isEmpty() || model.id.size() > 16384) { Fail(tr("模型目录包含空 ID 或过长 ID。")); return; }
         if (modelIds_.contains(model.id)) continue;
@@ -180,15 +255,37 @@ void ProviderCatalog::FinishPage(QNetworkReply* reply) {
             model.providerContext = PositiveTokens(entry.value(QStringLiteral("inputTokenLimit")));
             model.maxOutputTokens = PositiveTokens(entry.value(QStringLiteral("outputTokenLimit")));
         } else {
-            model.name = entry.value(QStringLiteral("display_name")).toString(entry.value(QStringLiteral("name")).toString(model.id));
-            model.providerContext = PositiveTokens(entry.value(QStringLiteral("context_window")));
-            if (model.providerContext == 0) model.providerContext = PositiveTokens(entry.value(QStringLiteral("context_length")));
-            if (model.providerContext == 0) model.providerContext = PositiveTokens(entry.value(QStringLiteral("max_input_tokens")));
-            model.maxOutputTokens = PositiveTokens(entry.value(QStringLiteral("max_tokens")));
+            model.name = entry.value(QStringLiteral("display_name")).toString(
+                entry.value(QStringLiteral("displayName")).toString(
+                    entry.value(QStringLiteral("name")).toString(model.id)));
+            const auto limitObj = entry.value(QStringLiteral("limit")).toObject();
+            const auto topProviderObj = entry.value(QStringLiteral("top_provider")).toObject();
+            for (const auto& candidate : {
+                entry.value(QStringLiteral("contextWindow")),
+                entry.value(QStringLiteral("context_window")),
+                entry.value(QStringLiteral("context_length")),
+                entry.value(QStringLiteral("max_input_tokens")),
+                limitObj.value(QStringLiteral("context")),
+            }) {
+                model.providerContext = PositiveTokens(candidate);
+                if (model.providerContext > 0) break;
+            }
+            for (const auto& candidate : {
+                entry.value(QStringLiteral("maxOutputTokens")),
+                entry.value(QStringLiteral("max_output_tokens")),
+                entry.value(QStringLiteral("maxTokens")),
+                entry.value(QStringLiteral("max_tokens")),
+                limitObj.value(QStringLiteral("output")),
+                topProviderObj.value(QStringLiteral("max_completion_tokens")),
+            }) {
+                model.maxOutputTokens = PositiveTokens(candidate);
+                if (model.maxOutputTokens > 0) break;
+            }
             const auto imageCapability = entry.value(QStringLiteral("capabilities")).toObject()
                 .value(QStringLiteral("image_input")).toObject().value(QStringLiteral("supported"));
             if (imageCapability.isBool()) model.imagesSupported = imageCapability.toBool();
         }
+        model.providerThinkingLevels = ExtractProviderThinkingLevels(entry, provider_.protocol, provider_.baseUrl, model.id);
         model.enabled = false; // 读取到模型后由作者勾选；不自动启用整个站点。
         modelIds_.insert(model.id);
         models_.push_back(std::move(model));

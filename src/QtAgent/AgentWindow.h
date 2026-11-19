@@ -46,6 +46,9 @@ signals:
     void CompactRequested(QString providerId, QString modelId);
     void EditMemoryRequested(QString scope);
     void ExternalMcpReconnectRequested(QString serverId);
+    void ModelThinkingConfigChanged(
+        QString providerId, QString modelId,
+        QString selectedLevel, bool levelsCustomized, QStringList customLevels);
     void StopRequested();
     void SettingsRequested();
     void NewConversationRequested();

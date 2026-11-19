@@ -607,6 +607,11 @@ public:
         eventLog.setFileName(QDir(logDirectory).filePath(runId + QStringLiteral(".jsonl")));
         if (!eventLog.open(QIODevice::WriteOnly | QIODevice::NewOnly)) { Failure(QStringLiteral("无法创建本地 AI 任务记录，未启动模型请求。")); return; }
 
+        const auto thinkingCap = ResolveThinkingCapability(*model, provider->protocol, provider->baseUrl);
+        QJsonArray supportedThinkingJson;
+        for (const auto& lv : thinkingCap.levels) supportedThinkingJson.append(lv);
+        const QString effectiveEffort = EffectiveThinkingLevel(*model, provider->protocol, provider->baseUrl);
+
         const QString fullSystemPrompt = ComposeFullSystemPrompt();
         pendingStart = {{QStringLiteral("type"), QStringLiteral("start")},
             {QStringLiteral("sessionId"), binding},
@@ -617,7 +622,10 @@ public:
                 {QStringLiteral("protocol"), provider->protocol}, {QStringLiteral("baseUrl"), provider->baseUrl}, {QStringLiteral("apiKey"), secret}}},
             {QStringLiteral("model"), QJsonObject{{QStringLiteral("id"), model->id}, {QStringLiteral("name"), model->name},
                 {QStringLiteral("contextWindow"), context.tokens}, {QStringLiteral("maxOutputTokens"), model->maxOutputTokens},
-                {QStringLiteral("imagesSupported"), model->imagesSupported}}},
+                {QStringLiteral("imagesSupported"), model->imagesSupported},
+                {QStringLiteral("thinkingCustomized"), model->thinkingLevelsCustomized},
+                {QStringLiteral("supportedThinkingLevels"), supportedThinkingJson},
+                {QStringLiteral("thinkingEffort"), effectiveEffort}}},
             {QStringLiteral("tools"), enabledTools}, {QStringLiteral("messages"), messages}};
         if (QJsonDocument(pendingStart).toJson(QJsonDocument::Compact).size() > kLineBudget) {
             pendingStart = {}; Failure(QStringLiteral("任务与历史超过 8 MiB IPC 预算，未发送模型请求。")); return;

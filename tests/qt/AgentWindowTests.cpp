@@ -31,6 +31,8 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
+#include <QStyle>
+#include <QStyleOptionComboBox>
 #include <QTextBrowser>
 #include <QTextDocument>
 #include <QTextBlock>
@@ -1671,6 +1673,70 @@ void AgentWindowTests::claudeCodeContextBreakdownCacheHitRateAndExternalMcpUi() 
     QVERIFY(notice && notice->text().contains(QStringLiteral("load-older")));
     QMetaObject::invokeMethod(notice, "linkActivated", Q_ARG(QString, QStringLiteral("load-older")));
     QVERIFY(conv->toPlainText().contains(QStringLiteral("历史条目 0")));
+
+    // 4. 模型选择器不截断尾字符（如 DeepSeek V4.1 Flash Ultrafast）+ DSH 思考强度自动识别与未识别模型手动选档位
+    QSignalSpy thinkingSpy(&window, &AgentWindow::ModelThinkingConfigChanged);
+    auto thinkingSettings = settings;
+    ModelSettings dsUltrafast;
+    dsUltrafast.id = QStringLiteral("ds-v41-flash");
+    dsUltrafast.name = QStringLiteral("DeepSeek V4.1 Flash Ultrafast");
+    dsUltrafast.enabled = true;
+    dsUltrafast.providerContext = 1000000;
+    ModelSettings unknownCustom;
+    unknownCustom.id = QStringLiteral("unrecognized-custom-v1");
+    unknownCustom.name = QStringLiteral("Unrecognized Custom V1");
+    unknownCustom.enabled = true;
+    thinkingSettings.providers[0].models = {dsUltrafast, unknownCustom};
+    window.SetSettings(thinkingSettings);
+    QCoreApplication::processEvents();
+
+    auto* modelCombo = window.findChild<QComboBox*>(QStringLiteral("agentModel"));
+    auto* effortBtn = window.findChild<QToolButton*>(QStringLiteral("agentThinkingEffort"));
+    auto* effortMenu = window.findChild<QMenu*>(QStringLiteral("agentThinkingMenu"));
+    QVERIFY(modelCombo && effortBtn && effortMenu);
+    QCOMPARE(modelCombo->currentText(), QStringLiteral("DeepSeek V4.1 Flash Ultrafast"));
+
+    QStyleOptionComboBox comboOpt;
+    comboOpt.initFrom(modelCombo);
+    comboOpt.currentText = modelCombo->currentText();
+    const QRect editField = modelCombo->style()->subControlRect(QStyle::CC_ComboBox, &comboOpt, QStyle::SC_ComboBoxEditField, modelCombo);
+    const int textAdv = modelCombo->fontMetrics().horizontalAdvance(modelCombo->currentText());
+    QVERIFY2(editField.width() >= textAdv + 6,
+        qPrintable(QStringLiteral("editField=%1 textAdv=%2 totalWidth=%3").arg(editField.width()).arg(textAdv).arg(modelCombo->width())));
+
+    // DeepSeek V4.1 Flash Ultrafast 自动识别出 off / low / high / max，切换为 max
+    QVERIFY(effortBtn->isVisible());
+    QCOMPARE(effortBtn->text(), QStringLiteral("默认"));
+    emit effortMenu->aboutToShow();
+    QAction* maxAction = nullptr;
+    for (auto* act : effortMenu->actions()) {
+        if (act->data().toString() == QStringLiteral("max")) { maxAction = act; break; }
+    }
+    QVERIFY(maxAction != nullptr);
+    maxAction->trigger();
+    QCOMPARE(effortBtn->text(), QStringLiteral("最高"));
+    QCOMPARE(thinkingSpy.size(), qsizetype(1));
+    QCOMPARE(thinkingSpy.back().at(2).toString(), QStringLiteral("max"));
+
+    // 切换到未自动获取到思考强度的自定义模型：显示“设置思考…”并允许一键指定档位
+    thinkingSpy.clear();
+    modelCombo->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    QVERIFY(effortBtn->isVisible());
+    QCOMPARE(effortBtn->text(), QStringLiteral("设置思考…"));
+    QVERIFY(effortBtn->property("unrecognized").toBool());
+    emit effortMenu->aboutToShow();
+    QAction* quickPreset = nullptr;
+    for (auto* act : effortMenu->actions()) {
+        if (act->text().contains(QStringLiteral("通用推理档位"))) { quickPreset = act; break; }
+    }
+    QVERIFY(quickPreset != nullptr);
+    quickPreset->trigger();
+    QCOMPARE(effortBtn->text(), QStringLiteral("高"));
+    QVERIFY(!effortBtn->property("unrecognized").toBool());
+    QCOMPARE(thinkingSpy.size(), qsizetype(1));
+    QCOMPARE(thinkingSpy.back().at(2).toString(), QStringLiteral("high"));
+    QVERIFY(thinkingSpy.back().at(3).toBool());
 }
 
 QTEST_MAIN(AgentWindowTests)

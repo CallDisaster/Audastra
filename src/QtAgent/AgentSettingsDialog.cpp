@@ -412,6 +412,48 @@ public:
         modelForm->addRow(QStringLiteral("生效值"), contextStatus);
         modelForm->addRow(QStringLiteral("输出上限"), output);
         modelForm->addRow(QStringLiteral("模型能力"), capabilities);
+
+        auto* thinkingHeaderRow = new QHBoxLayout;
+        thinkingSourceStatus = Text(QString(), nullptr, true);
+        thinkingSourceStatus->setObjectName(QStringLiteral("agentModelThinkingSource"));
+        resetThinkingBtn = Button(QStringLiteral("恢复自动识别"), QStringLiteral("agentResetModelThinking"));
+        resetThinkingBtn->setEnabled(false);
+        thinkingHeaderRow->addWidget(thinkingSourceStatus, 1);
+        thinkingHeaderRow->addWidget(resetThinkingBtn);
+        modelForm->addRow(QStringLiteral("思考强度来源"), thinkingHeaderRow);
+
+        auto* thinkingBoxesRow = new QHBoxLayout;
+        thinkingBoxesRow->setSpacing(8);
+        for (const auto& lv : AllThinkingLevels()) {
+            auto* cb = new QCheckBox(ThinkingLevelShortLabel(lv));
+            cb->setObjectName(QStringLiteral("agentModelThinking_") + lv);
+            cb->setToolTip(ThinkingLevelMenuLabel(lv));
+            thinkingLevelChecks.insert(lv, cb);
+            thinkingBoxesRow->addWidget(cb);
+            QObject::connect(cb, &QCheckBox::toggled, dialog, [this] {
+                auto* model = CurrentModel();
+                if (loading || model == nullptr) return;
+                model->thinkingLevelsCustomized = true;
+                QStringList picked;
+                for (const auto& candidate : AllThinkingLevels()) {
+                    if (thinkingLevelChecks.value(candidate)->isChecked()) picked.push_back(candidate);
+                }
+                model->customThinkingLevels = picked;
+                if (!model->selectedThinkingLevel.isEmpty() && !picked.contains(model->selectedThinkingLevel)) {
+                    model->selectedThinkingLevel.clear();
+                }
+                RefreshModelThinkingUi();
+            });
+        }
+        thinkingBoxesRow->addStretch(1);
+        modelForm->addRow(QStringLiteral("支持思考档位"), thinkingBoxesRow);
+        QObject::connect(resetThinkingBtn, &QPushButton::clicked, dialog, [this] {
+            auto* model = CurrentModel();
+            if (loading || model == nullptr) return;
+            model->thinkingLevelsCustomized = false;
+            model->customThinkingLevels.clear();
+            RefreshModelThinkingUi();
+        });
         rightLayout->addWidget(modelEditor);
         scroll->setWidget(providerEditor);
         split->addWidget(scroll);
@@ -508,7 +550,9 @@ public:
             model->id = modelId->text().trimmed(); model->name = modelName->text();
             model->contextOverride = context->text().toLongLong(); model->maxOutputTokens = output->text().toLongLong();
             model->toolsSupported = toolsSupported->isChecked(); model->imagesSupported = imagesSupported->isChecked();
-            UpdateModelRow(modelIndex); UpdateStatus();
+            UpdateModelRow(modelIndex);
+            if (!model->thinkingLevelsCustomized) RefreshModelThinkingUi();
+            UpdateStatus();
         };
         for (auto* edit : {modelId, modelName, context, output}) QObject::connect(edit, &QLineEdit::textChanged, dialog, modelEdited);
         QObject::connect(toolsSupported, &QCheckBox::toggled, dialog, modelEdited);
@@ -882,6 +926,35 @@ public:
             .arg(effective.tokens).arg(effective.source, effective.estimated ? QStringLiteral("（估算）") : QString{}));
     }
 
+    void RefreshModelThinkingUi() {
+        const bool wasLoading = loading;
+        loading = true;
+        const auto* provider = CurrentProvider();
+        const auto* model = CurrentModel();
+        if (provider == nullptr || model == nullptr) {
+            for (auto* cb : thinkingLevelChecks) cb->setChecked(false);
+            if (thinkingSourceStatus) thinkingSourceStatus->clear();
+            if (resetThinkingBtn) resetThinkingBtn->setEnabled(false);
+            loading = wasLoading;
+            return;
+        }
+        const auto cap = ResolveThinkingCapability(*model, provider->protocol, provider->baseUrl);
+        for (auto it = thinkingLevelChecks.cbegin(); it != thinkingLevelChecks.cend(); ++it) {
+            it.value()->setChecked(cap.levels.contains(it.key()));
+        }
+        if (thinkingSourceStatus) {
+            if (!cap.discovered) {
+                thinkingSourceStatus->setText(QStringLiteral("未自动识别（可手动勾选该模型支持的思考档位）"));
+            } else if (cap.levels.isEmpty()) {
+                thinkingSourceStatus->setText(QStringLiteral("%1 · 无思考档位").arg(cap.source));
+            } else {
+                thinkingSourceStatus->setText(QStringLiteral("%1 · %2").arg(cap.source, cap.levels.join(QStringLiteral(", "))));
+            }
+        }
+        if (resetThinkingBtn) resetThinkingBtn->setEnabled(model->thinkingLevelsCustomized);
+        loading = wasLoading;
+    }
+
     void LoadModel(int row) {
         loading = true; modelIndex = row;
         const auto* model = CurrentModel(); modelEditor->setEnabled(model != nullptr);
@@ -892,6 +965,7 @@ public:
         toolsSupported->setChecked(model != nullptr && model->toolsSupported);
         imagesSupported->setChecked(model != nullptr && model->imagesSupported);
         if (model != nullptr) UpdateModelRow(row); else contextStatus->clear();
+        RefreshModelThinkingUi();
         loading = false;
     }
 
@@ -909,9 +983,12 @@ public:
         for (const auto& fetched : result) {
             auto existing = std::find_if(provider->models.begin(), provider->models.end(), [&fetched](const auto& model) { return model.id == fetched.id; });
             if (existing == provider->models.end()) provider->models.push_back(fetched);
-            else { existing->providerContext = fetched.providerContext;
+            else {
+                existing->providerContext = fetched.providerContext;
+                if (!fetched.providerThinkingLevels.isEmpty()) existing->providerThinkingLevels = fetched.providerThinkingLevels;
                 if (existing->maxOutputTokens == 0) existing->maxOutputTokens = fetched.maxOutputTokens;
-                if (existing->name.isEmpty() || existing->name == existing->id) existing->name = fetched.name; }
+                if (existing->name.isEmpty() || existing->name == existing->id) existing->name = fetched.name;
+            }
         }
         RefreshModels(provider->models.isEmpty() ? -1 : std::max(modelIndex, 0));
         Message(QStringLiteral("已读取 %1 个模型；新模型需勾选启用，原有配置保留。").arg(result.size())); UpdateStatus();
@@ -959,8 +1036,9 @@ public:
     QPushButton *importSettings = nullptr, *exportSettings = nullptr;
     QTableWidget* models = nullptr;
     QSpinBox *port = nullptr, *maxAutoStepsSpin = nullptr;
-    QLabel *status = nullptr, *contextStatus = nullptr, *message = nullptr, *endpoint = nullptr, *mcpStatus = nullptr;
-    QPushButton *fetchModels = nullptr, *cancelFetch = nullptr, *copyConfig = nullptr;
+    QLabel *status = nullptr, *contextStatus = nullptr, *thinkingSourceStatus = nullptr, *message = nullptr, *endpoint = nullptr, *mcpStatus = nullptr;
+    QPushButton *fetchModels = nullptr, *cancelFetch = nullptr, *copyConfig = nullptr, *resetThinkingBtn = nullptr;
+    QHash<QString, QCheckBox*> thinkingLevelChecks;
     ProviderCatalog* catalog = nullptr;
 };
 

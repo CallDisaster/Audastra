@@ -15,9 +15,12 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
@@ -47,6 +50,7 @@
 #include <QSignalBlocker>
 #include <QShowEvent>
 #include <QStyle>
+#include <QStyleOptionComboBox>
 #include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
@@ -372,6 +376,8 @@ struct AgentWindow::Private {
     QToolButton* attach = nullptr;
     QComboBox* models = nullptr;
     QToolButton* addModel = nullptr;
+    QToolButton* thinkingEffort = nullptr;
+    QMenu* thinkingMenu = nullptr;
     QLabel* context = nullptr;
     ContextRing* ring = nullptr;
     UiKit::PopoverSurface* contextPopover = nullptr;
@@ -417,6 +423,13 @@ struct AgentWindow::Private {
     void BuildRightInspector(QHBoxLayout* root);
     void ApplyAgentStyleSheet();
     void ModelChanged();
+    void UpdateThinkingSelector();
+    void RebuildThinkingMenu();
+    void ApplyModelThinkingUpdate(
+        const QString& providerId, const QString& modelId,
+        const QString& selectedLevel, bool levelsCustomized, const QStringList& customLevels);
+    void OpenThinkingLevelsDialog(const QString& providerId, const QString& modelId);
+    void UpdateModelSelectorGeometry(int centerWidth);
     void UpdateAvailability();
     void UpdateGeometry();
     void UpdatePromptHeight();
@@ -1408,6 +1421,23 @@ void AgentWindow::Private::Build() {
     addModel->setToolTip(QStringLiteral("在设置中添加提供商并启用模型"));
     QObject::connect(addModel, &QToolButton::clicked, q, &AgentWindow::SettingsRequested);
     controls->addWidget(addModel);
+
+    thinkingEffort = new QToolButton(card);
+    thinkingEffort->setObjectName(QStringLiteral("agentThinkingEffort"));
+    thinkingEffort->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/sparkles")));
+    thinkingEffort->setIconSize(QSize(13, 13));
+    thinkingEffort->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    thinkingEffort->setFixedHeight(30);
+    thinkingEffort->setPopupMode(QToolButton::InstantPopup);
+    thinkingEffort->setCursor(Qt::PointingHandCursor);
+    thinkingEffort->setAccessibleName(QStringLiteral("思考强度"));
+    thinkingMenu = new QMenu(thinkingEffort);
+    thinkingMenu->setObjectName(QStringLiteral("agentThinkingMenu"));
+    QObject::connect(thinkingMenu, &QMenu::aboutToShow, q, [this] { RebuildThinkingMenu(); });
+    thinkingEffort->setMenu(thinkingMenu);
+    thinkingEffort->hide();
+    controls->addWidget(thinkingEffort);
+
     // 数值标签保留给辅助技术与测试；界面上由圆环与右侧上下文分段栏呈现。
     context = new QLabel(card);
     context->setObjectName(QStringLiteral("agentContext"));
@@ -1639,14 +1669,23 @@ void AgentWindow::Private::ApplyAgentStyleSheet() {
         " padding:0 10px 0 9px; font-size:12px; color:%8; }"
         "QToolButton#agentPermissions:hover, QToolButton#agentAddModel:hover { background:%4; color:%6; }"
         "QToolButton#agentPermissions[level=\"full\"] { color:%14; }"
-        "QToolButton#agentPermissions::menu-indicator { image:none; width:0; }"
+        "QToolButton#agentPermissions::menu-indicator, QToolButton#agentThinkingEffort::menu-indicator { image:none; width:0; }"
+        "QToolButton#agentThinkingEffort { border:1px solid transparent; border-radius:15px; background:transparent;"
+        " padding:0 9px 0 8px; font-size:12px; color:%8; }"
+        "QToolButton#agentThinkingEffort:hover { background:%4; color:%6; }"
+        "QToolButton#agentThinkingEffort[activeEffort=\"true\"] { color:%10; }"
+        "QToolButton#agentThinkingEffort[unrecognized=\"true\"] { border-color:%5; color:%8; }"
         "QComboBox#agentModel { background:transparent; border:1px solid transparent; border-radius:15px; font-size:12px;"
-        " color:%8; padding:0 24px 0 10px; min-height:28px; }"
+        " color:%8; padding:0 6px 0 10px; min-height:28px; }"
         "QComboBox#agentModel:hover, QComboBox#agentModel:on { background:%4; color:%6; }"
-        "QComboBox#agentModel::drop-down { border:0; width:22px; }"
+        "QComboBox#agentModel::drop-down { border:0; width:20px; }"
         "QComboBox#agentModel QAbstractItemView { background:%3; color:%6; border:1px solid %5; border-radius:10px; padding:4px;"
-        " min-width:196px; font-size:12px; selection-background-color:%13; selection-color:%6; outline:0; }"
-        "QMenu#agentPermissionMenu { background:%3; color:%6; border:1px solid %5; border-radius:12px; padding:4px 0 6px 0; }"
+        " min-width:210px; font-size:12px; selection-background-color:%13; selection-color:%6; outline:0; }"
+        "QMenu#agentPermissionMenu, QMenu#agentThinkingMenu { background:%3; color:%6; border:1px solid %5; border-radius:12px; padding:4px 0 6px 0; }"
+        "QMenu#agentThinkingMenu::item { padding:6px 20px 6px 12px; font-size:12px; border-radius:6px; margin:1px 4px; }"
+        "QMenu#agentThinkingMenu::item:selected { background:%4; color:%6; }"
+        "QMenu#agentThinkingMenu::item:disabled { color:%9; font-size:11px; font-weight:600; }"
+        "QMenu#agentThinkingMenu::separator { height:1px; background:%5; margin:4px 8px; }"
         "QLabel#agentPermissionMenuTitle { font-size:11px; font-weight:600; color:%8; }"
         "QLabel#agentPermissionTitle { font-size:13px; font-weight:500; color:%6; }"
         "QLabel#agentPermissionTitle[warning=\"true\"] { color:%14; }"
@@ -2461,24 +2500,329 @@ void AgentWindow::Private::UpdateThemeTints() {
     }
     UpdateContextLegendColors();
     if (permissions) UpdatePermissions();
+    UpdateThinkingSelector();
     UpdateInspectorChanges();
 }
 
-void AgentWindow::Private::ModelChanged() {
-    // 宽度跟随当前模型名，只占所需位置；过长名称省略显示，完整名在提示里。
-    QFont font = models->font();
-    font.setPixelSize(12);
-    const QFontMetrics metrics(font);
-    const int textWidth = metrics.horizontalAdvance(models->currentText());
-    models->setFixedWidth(std::clamp(textWidth + 56, 96, 240));
+void AgentWindow::Private::UpdateModelSelectorGeometry(int centerWidth) {
+    if (!models) return;
+    QFont modelFont = models->font();
+    modelFont.setPixelSize(12);
+    const QFontMetrics explicitMetrics(modelFont);
+    const QString currentText = models->currentText();
+    const int textAdvance = std::max(
+        models->fontMetrics().horizontalAdvance(currentText),
+        explicitMetrics.horizontalAdvance(currentText));
+
+    QStyleOptionComboBox opt;
+    opt.initFrom(models);
+    opt.currentText = currentText;
+    const QRect editRect = models->style()->subControlRect(QStyle::CC_ComboBox, &opt, QStyle::SC_ComboBoxEditField, models);
+    const int actualChrome = (models->width() > 0 && editRect.width() > 0 && models->width() > editRect.width())
+        ? (models->width() - editRect.width())
+        : 38;
+    const int requestedModelWidth = textAdvance + std::max(38, actualChrome) + 18;
+
+    const int composerMax = (composerAxis && composerAxis->maximumWidth() > 0 && composerAxis->maximumWidth() < 10000)
+        ? composerAxis->maximumWidth()
+        : std::max(280, centerWidth - 24);
+    const bool showThinking = thinkingEffort && !thinkingEffort->isHidden();
+    const int thinkingReserve = showThinking
+        ? (centerWidth < 420 ? 40 : std::max(64, thinkingEffort->sizeHint().width() + 8))
+        : 0;
+    const int otherReserve = (centerWidth >= 460 ? 226 : 158) + thinkingReserve;
+    const int modelLimit = std::clamp(composerMax - otherReserve, 96, 380);
+    models->setFixedWidth(std::clamp(requestedModelWidth, 96, modelLimit));
+
     if (QAbstractItemView* popupView = models->view()) {
         popupView->setTextElideMode(Qt::ElideNone);
-        int popupWidth = 196;
+        int popupWidth = 210;
         for (int i = 0; i < models->count(); ++i) {
-            popupWidth = std::max(popupWidth, metrics.horizontalAdvance(models->itemText(i)) + 56);
+            const QString itemText = models->itemText(i);
+            const int adv = std::max(models->fontMetrics().horizontalAdvance(itemText), explicitMetrics.horizontalAdvance(itemText));
+            popupWidth = std::max(popupWidth, adv + 64);
         }
-        popupView->setMinimumWidth(std::clamp(popupWidth, 196, 320));
+        popupView->setMinimumWidth(std::clamp(popupWidth, 210, 420));
     }
+}
+
+void AgentWindow::Private::UpdateThinkingSelector() {
+    if (!thinkingEffort) return;
+    const bool hasModels = settings.aiEnabled && models && models->currentIndex() >= 0;
+    if (!hasModels) {
+        thinkingEffort->hide();
+        return;
+    }
+    const QVariantMap selected = models->currentData().toMap();
+    const QString providerId = selected.value(QStringLiteral("provider_id")).toString();
+    const QString modelId = selected.value(QStringLiteral("model_id")).toString();
+    const ProviderSettings* foundProvider = nullptr;
+    const ModelSettings* foundModel = nullptr;
+    for (const auto& p : settings.providers) {
+        if (p.id != providerId) continue;
+        foundProvider = &p;
+        for (const auto& m : p.models) {
+            if (m.id == modelId) { foundModel = &m; break; }
+        }
+        break;
+    }
+    if (!foundProvider || !foundModel) {
+        thinkingEffort->hide();
+        return;
+    }
+
+    const auto cap = ResolveThinkingCapability(*foundModel, foundProvider->protocol, foundProvider->baseUrl);
+    if (cap.levels.isEmpty() && cap.discovered) {
+        // 已知不支持思考（或用户手动标记为无思考档位）：隐藏选择器保持底部整洁。
+        thinkingEffort->hide();
+        return;
+    }
+
+    const auto& theme = UiKit::ThemeManager::ThemeForWidget(thinkingEffort);
+    if (!cap.discovered) {
+        thinkingEffort->setText(QStringLiteral("设置思考…"));
+        thinkingEffort->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/sparkles"), UiKit::ToQColor(theme.colors.muted)));
+        thinkingEffort->setToolTip(QStringLiteral("未自动获取到该模型的思考强度档位，点击手动选择支持的档位"));
+        SetStyleProperty(thinkingEffort, "activeEffort", false);
+        SetStyleProperty(thinkingEffort, "unrecognized", true);
+        thinkingEffort->setEnabled(!busy);
+        thinkingEffort->show();
+        return;
+    }
+
+    const QString active = EffectiveThinkingLevel(*foundModel, foundProvider->protocol, foundProvider->baseUrl);
+    const QString label = ThinkingLevelShortLabel(active);
+    const bool highlighted = !active.isEmpty() && active != QStringLiteral("off");
+    thinkingEffort->setText(label);
+    thinkingEffort->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/sparkles"),
+        UiKit::ToQColor(highlighted ? theme.colors.accent : theme.colors.muted)));
+    QString tip = QStringLiteral("思考强度：%1").arg(ThinkingLevelMenuLabel(active));
+    if (active.isEmpty() && !cap.defaultLevel.isEmpty()) {
+        tip += QStringLiteral("（模型推荐：%1）").arg(ThinkingLevelShortLabel(cap.defaultLevel));
+    }
+    if (!cap.source.isEmpty()) {
+        tip += QStringLiteral("\n档位来源：%1（%2）").arg(cap.source, cap.levels.join(QStringLiteral(", ")));
+    }
+    thinkingEffort->setToolTip(tip);
+    SetStyleProperty(thinkingEffort, "activeEffort", highlighted);
+    SetStyleProperty(thinkingEffort, "unrecognized", false);
+    thinkingEffort->setEnabled(!busy);
+    thinkingEffort->show();
+}
+
+void AgentWindow::Private::ApplyModelThinkingUpdate(
+    const QString& providerId, const QString& modelId,
+    const QString& selectedLevel, bool levelsCustomized, const QStringList& customLevels) {
+    for (auto& provider : settings.providers) {
+        if (provider.id != providerId) continue;
+        for (auto& model : provider.models) {
+            if (model.id != modelId) continue;
+            model.selectedThinkingLevel = NormalizeThinkingLevelToken(selectedLevel);
+            model.thinkingLevelsCustomized = levelsCustomized;
+            model.customThinkingLevels = NormalizeThinkingLevels(customLevels);
+            const auto cap = ResolveThinkingCapability(model, provider.protocol, provider.baseUrl);
+            if (!model.selectedThinkingLevel.isEmpty() && !cap.levels.contains(model.selectedThinkingLevel)) {
+                model.selectedThinkingLevel.clear();
+            }
+            UpdateThinkingSelector();
+            UpdateGeometry();
+            emit q->ModelThinkingConfigChanged(
+                providerId, modelId, model.selectedThinkingLevel, model.thinkingLevelsCustomized, model.customThinkingLevels);
+            return;
+        }
+    }
+}
+
+void AgentWindow::Private::OpenThinkingLevelsDialog(const QString& providerId, const QString& modelId) {
+    const ProviderSettings* foundProvider = nullptr;
+    const ModelSettings* foundModel = nullptr;
+    for (const auto& p : settings.providers) {
+        if (p.id != providerId) continue;
+        foundProvider = &p;
+        for (const auto& m : p.models) {
+            if (m.id == modelId) { foundModel = &m; break; }
+        }
+        break;
+    }
+    if (!foundProvider || !foundModel) return;
+
+    const auto currentCap = ResolveThinkingCapability(*foundModel, foundProvider->protocol, foundProvider->baseUrl);
+    ModelSettings uncustomizedCopy = *foundModel;
+    uncustomizedCopy.thinkingLevelsCustomized = false;
+    uncustomizedCopy.customThinkingLevels.clear();
+    const auto autoCap = ResolveThinkingCapability(uncustomizedCopy, foundProvider->protocol, foundProvider->baseUrl);
+
+    QDialog dlg(q);
+    dlg.setWindowTitle(QStringLiteral("设置模型的思考强度档位"));
+    dlg.setMinimumWidth(420);
+    auto* vbox = new QVBoxLayout(&dlg);
+    vbox->setContentsMargins(18, 16, 18, 14);
+    vbox->setSpacing(10);
+
+    const QString displayName = foundModel->name.isEmpty() ? foundModel->id : foundModel->name;
+    auto* titleLbl = new QLabel(QStringLiteral("模型：%1").arg(displayName), &dlg);
+    QFont tf = titleLbl->font(); tf.setBold(true); titleLbl->setFont(tf);
+    vbox->addWidget(titleLbl);
+
+    auto* hintLbl = new QLabel(autoCap.discovered
+        ? QStringLiteral("自动识别来源：%1（%2）。你也可以在下方手动勾选覆盖支持的思考档位。")
+            .arg(autoCap.source, autoCap.levels.isEmpty() ? QStringLiteral("无思考") : autoCap.levels.join(QStringLiteral(", ")))
+        : QStringLiteral("未从接口或内置目录识别到该模型的思考档位，请勾选此模型实际支持的思考强度："), &dlg);
+    hintLbl->setWordWrap(true);
+    vbox->addWidget(hintLbl);
+
+    QHash<QString, QCheckBox*> checks;
+    for (const auto& lv : AllThinkingLevels()) {
+        auto* cb = new QCheckBox(ThinkingLevelMenuLabel(lv), &dlg);
+        cb->setObjectName(QStringLiteral("agentCustomThinking_") + lv);
+        cb->setChecked(currentCap.levels.contains(lv));
+        checks.insert(lv, cb);
+        vbox->addWidget(cb);
+    }
+
+    auto* presetRow = new QHBoxLayout;
+    auto* dsPreset = new QPushButton(QStringLiteral("DeepSeek 预设"), &dlg);
+    auto* stdPreset = new QPushButton(QStringLiteral("通用四档"), &dlg);
+    auto* clearAllBtn = new QPushButton(QStringLiteral("无思考模型"), &dlg);
+    auto* autoResetBtn = new QPushButton(QStringLiteral("恢复自动识别"), &dlg);
+    autoResetBtn->setEnabled(foundModel->thinkingLevelsCustomized);
+    presetRow->addWidget(dsPreset);
+    presetRow->addWidget(stdPreset);
+    presetRow->addWidget(clearAllBtn);
+    presetRow->addWidget(autoResetBtn);
+    presetRow->addStretch(1);
+    vbox->addLayout(presetRow);
+
+    const auto applyList = [&checks](const QStringList& list) {
+        for (auto it = checks.cbegin(); it != checks.cend(); ++it) {
+            it.value()->setChecked(list.contains(it.key()));
+        }
+    };
+    bool resetToAuto = false;
+    QObject::connect(dsPreset, &QPushButton::clicked, &dlg, [&] {
+        resetToAuto = false;
+        applyList({QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")});
+    });
+    QObject::connect(stdPreset, &QPushButton::clicked, &dlg, [&] {
+        resetToAuto = false;
+        applyList({QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")});
+    });
+    QObject::connect(clearAllBtn, &QPushButton::clicked, &dlg, [&] {
+        resetToAuto = false;
+        applyList({});
+    });
+    QObject::connect(autoResetBtn, &QPushButton::clicked, &dlg, [&] {
+        resetToAuto = true;
+        applyList(autoCap.levels);
+    });
+    for (auto* cb : checks) {
+        QObject::connect(cb, &QCheckBox::clicked, &dlg, [&] { resetToAuto = false; });
+    }
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    vbox->addWidget(buttons);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+    if (resetToAuto) {
+        ApplyModelThinkingUpdate(providerId, modelId, foundModel->selectedThinkingLevel, false, {});
+        return;
+    }
+    QStringList picked;
+    for (const auto& lv : AllThinkingLevels()) {
+        if (checks.value(lv)->isChecked()) picked.push_back(lv);
+    }
+    ApplyModelThinkingUpdate(providerId, modelId, foundModel->selectedThinkingLevel, true, picked);
+}
+
+void AgentWindow::Private::RebuildThinkingMenu() {
+    if (!thinkingMenu || !models || models->currentIndex() < 0) return;
+    thinkingMenu->clear();
+    const QVariantMap selected = models->currentData().toMap();
+    const QString providerId = selected.value(QStringLiteral("provider_id")).toString();
+    const QString modelId = selected.value(QStringLiteral("model_id")).toString();
+    const ProviderSettings* foundProvider = nullptr;
+    const ModelSettings* foundModel = nullptr;
+    for (const auto& p : settings.providers) {
+        if (p.id != providerId) continue;
+        foundProvider = &p;
+        for (const auto& m : p.models) {
+            if (m.id == modelId) { foundModel = &m; break; }
+        }
+        break;
+    }
+    if (!foundProvider || !foundModel) return;
+
+    const auto cap = ResolveThinkingCapability(*foundModel, foundProvider->protocol, foundProvider->baseUrl);
+    const auto& theme = UiKit::ThemeManager::ThemeForWidget(thinkingMenu);
+    const QIcon checkIcon = UiKit::SvgIcon(QStringLiteral("lucide/check"), UiKit::ToQColor(theme.colors.accent));
+
+    if (!cap.discovered) {
+        auto* header = thinkingMenu->addAction(QStringLiteral("未自动识别思考强度"));
+        header->setEnabled(false);
+        auto* chooseAct = thinkingMenu->addAction(QStringLiteral("勾选支持的思考档位…"));
+        QObject::connect(chooseAct, &QAction::triggered, q, [this, providerId, modelId] {
+            OpenThinkingLevelsDialog(providerId, modelId);
+        });
+        thinkingMenu->addSeparator();
+        auto* dsQuick = thinkingMenu->addAction(QStringLiteral("设为 DeepSeek 档位 (关/低/高/最高)"));
+        QObject::connect(dsQuick, &QAction::triggered, q, [this, providerId, modelId] {
+            ApplyModelThinkingUpdate(providerId, modelId, QStringLiteral("high"), true,
+                {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")});
+        });
+        auto* stdQuick = thinkingMenu->addAction(QStringLiteral("设为通用推理档位 (关/低/中/高)"));
+        QObject::connect(stdQuick, &QAction::triggered, q, [this, providerId, modelId] {
+            ApplyModelThinkingUpdate(providerId, modelId, QStringLiteral("high"), true,
+                {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")});
+        });
+        auto* extQuick = thinkingMenu->addAction(QStringLiteral("设为完整推理档位 (关/低/中/高/超高/最高)"));
+        QObject::connect(extQuick, &QAction::triggered, q, [this, providerId, modelId] {
+            ApplyModelThinkingUpdate(providerId, modelId, QStringLiteral("high"), true,
+                {QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high"), QStringLiteral("xhigh"), QStringLiteral("max")});
+        });
+        auto* noneQuick = thinkingMenu->addAction(QStringLiteral("标记为无思考模型（隐藏此项）"));
+        QObject::connect(noneQuick, &QAction::triggered, q, [this, providerId, modelId] {
+            ApplyModelThinkingUpdate(providerId, modelId, QString(), true, {});
+        });
+        return;
+    }
+
+    auto* header = thinkingMenu->addAction(QStringLiteral("思考强度 · %1").arg(cap.source));
+    header->setEnabled(false);
+
+    const QString active = EffectiveThinkingLevel(*foundModel, foundProvider->protocol, foundProvider->baseUrl);
+    const bool cust = foundModel->thinkingLevelsCustomized;
+    const QStringList custList = foundModel->customThinkingLevels;
+
+    const QString defaultLabel = cap.defaultLevel.isEmpty()
+        ? QStringLiteral("默认（接口预设）")
+        : QStringLiteral("默认（推荐：%1）").arg(ThinkingLevelShortLabel(cap.defaultLevel));
+    auto* defAct = thinkingMenu->addAction(active.isEmpty() ? checkIcon : QIcon{}, defaultLabel);
+    defAct->setData(QStringLiteral("default"));
+    QObject::connect(defAct, &QAction::triggered, q, [this, providerId, modelId, cust, custList] {
+        ApplyModelThinkingUpdate(providerId, modelId, QString(), cust, custList);
+    });
+
+    for (const auto& lv : cap.levels) {
+        const bool isCurrent = (active == lv);
+        auto* act = thinkingMenu->addAction(isCurrent ? checkIcon : QIcon{}, ThinkingLevelMenuLabel(lv));
+        act->setData(lv);
+        QObject::connect(act, &QAction::triggered, q, [this, providerId, modelId, lv, cust, custList] {
+            ApplyModelThinkingUpdate(providerId, modelId, lv, cust, custList);
+        });
+    }
+
+    thinkingMenu->addSeparator();
+    auto* configAct = thinkingMenu->addAction(QStringLiteral("自定义支持的思考档位…"));
+    QObject::connect(configAct, &QAction::triggered, q, [this, providerId, modelId] {
+        OpenThinkingLevelsDialog(providerId, modelId);
+    });
+}
+
+void AgentWindow::Private::ModelChanged() {
     const QVariantMap selected = models->currentData().toMap();
     context->clear();
     ring->SetLimit(0, true, QString());
@@ -2495,9 +2839,11 @@ void AgentWindow::Private::ModelChanged() {
             models->setToolTip(models->currentText() + QLatin1Char('\n') + context->toolTip());
         }
     }
+    UpdateThinkingSelector();
     UpdateAvailability();
     UpdateContext();
     UpdateInspectorEnvironment();
+    UpdateGeometry();
 }
 
 void AgentWindow::Private::UpdateAvailability() {
@@ -2507,6 +2853,7 @@ void AgentWindow::Private::UpdateAvailability() {
     models->setVisible(hasModels);
     addModel->setVisible(!hasModels);
     addModel->setText(settings.aiEnabled ? QStringLiteral("选择模型") : QStringLiteral("启用 AI"));
+    if (thinkingEffort) thinkingEffort->setEnabled(hasModels && !busy);
     send->setEnabled(configured && !busy && !prompt->toPlainText().trimmed().isEmpty());
     send->setVisible(!busy);
     prompt->setEnabled(true); // 运行中仍可输入并用 Ctrl+Enter 排队
@@ -2523,7 +2870,7 @@ void AgentWindow::Private::UpdateAvailability() {
     QString reason;
     if (!settings.aiEnabled) reason = QStringLiteral("在设置中启用 AI 并添加模型后即可开始");
     else if (models->currentIndex() < 0) reason = QStringLiteral("在设置中添加提供商并启用模型后即可开始");
-    prompt->setPlaceholderText(reason.isEmpty() ? QStringLiteral("描述要完成的地图工作…（支持 /compact · /memory · /new · /mcp）") : reason);
+    prompt->setPlaceholderText(reason.isEmpty() ? QStringLiteral("描述要完成的地图工作…（支持 /effort · /compact · /memory · /new · /mcp）") : reason);
     if (!busy && !configured) SetStatus(reason);
     send->setToolTip(configured ? QStringLiteral("发送 · Enter；换行 · Shift+Enter；运行中排队 · Ctrl+Enter") : reason);
     UpdateSendIcons();
@@ -2646,11 +2993,10 @@ void AgentWindow::Private::UpdateGeometry() {
     composerAxis->setMinimumWidth(0);
     composerAxis->setMaximumWidth(std::min(centerWidth - 24, body + 32));
     ring->setVisible(true);
-    QFont modelFont = models->font();
-    modelFont.setPixelSize(12);
-    const int requestedModelWidth = QFontMetrics(modelFont).horizontalAdvance(models->currentText()) + 56;
-    const int modelLimit = centerWidth < 460 ? std::max(96, centerWidth - 240) : 240;
-    models->setFixedWidth(std::clamp(requestedModelWidth, 96, modelLimit));
+    if (thinkingEffort) {
+        thinkingEffort->setToolButtonStyle(centerWidth >= 420 ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonIconOnly);
+    }
+    UpdateModelSelectorGeometry(centerWidth);
     const bool compact = centerWidth < 560;
     changeDetails->setVisible(!compact);
     if (compact != compactSummary) { compactSummary = compact; UpdateSummary(); }
@@ -2740,6 +3086,45 @@ void AgentWindow::Private::Submit() {
         if (rawCmd == QStringLiteral("/mcp")) {
             prompt->clear();
             emit q->SettingsRequested();
+            return;
+        }
+        if (rawCmd == QStringLiteral("/effort") || rawCmd.startsWith(QStringLiteral("/effort "))
+            || rawCmd == QStringLiteral("/thinking") || rawCmd.startsWith(QStringLiteral("/thinking "))
+            || rawCmd == QStringLiteral("/思考") || rawCmd.startsWith(QStringLiteral("/思考 "))) {
+            prompt->clear();
+            if (models->currentIndex() >= 0) {
+                const QVariantMap selected = models->currentData().toMap();
+                const QString providerId = selected.value(QStringLiteral("provider_id")).toString();
+                const QString modelId = selected.value(QStringLiteral("model_id")).toString();
+                const QString arg = rawCmd.section(QLatin1Char(' '), 1).trimmed();
+                if (arg.isEmpty()) {
+                    OpenThinkingLevelsDialog(providerId, modelId);
+                } else {
+                    for (const auto& p : settings.providers) {
+                        if (p.id != providerId) continue;
+                        for (const auto& m : p.models) {
+                            if (m.id != modelId) continue;
+                            if (arg.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0 || arg == QStringLiteral("默认")) {
+                                ApplyModelThinkingUpdate(providerId, modelId, QString(), m.thinkingLevelsCustomized, m.customThinkingLevels);
+                            } else {
+                                const QString token = NormalizeThinkingLevelToken(arg);
+                                if (!token.isEmpty()) {
+                                    auto cap = ResolveThinkingCapability(m, p.protocol, p.baseUrl);
+                                    bool cust = m.thinkingLevelsCustomized;
+                                    QStringList custLevels = m.customThinkingLevels;
+                                    if (!cap.levels.contains(token)) {
+                                        cust = true;
+                                        custLevels = cap.levels;
+                                        custLevels.push_back(token);
+                                    }
+                                    ApplyModelThinkingUpdate(providerId, modelId, token, cust, custLevels);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
             return;
         }
     }

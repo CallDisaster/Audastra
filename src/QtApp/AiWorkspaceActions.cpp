@@ -583,6 +583,34 @@ void MainWindow::PresentAgentWorkspace(int mode) {
             [state](const QString& serverId) {
                 if (state->externalMcp) state->externalMcp->Reconnect(serverId);
             });
+        connect(state->window, &War3Map::Agent::AgentWindow::ModelThinkingConfigChanged, this,
+            [this, state](const QString& providerId, const QString& modelId,
+                const QString& selectedLevel, bool levelsCustomized, const QStringList& customLevels) {
+                auto next = state->settings;
+                bool found = false;
+                for (auto& provider : next.providers) {
+                    if (provider.id != providerId) continue;
+                    for (auto& model : provider.models) {
+                        if (model.id != modelId) continue;
+                        model.selectedThinkingLevel = selectedLevel;
+                        model.thinkingLevelsCustomized = levelsCustomized;
+                        model.customThinkingLevels = customLevels;
+                        found = true;
+                        break;
+                    }
+                    if (found) break;
+                }
+                if (!found) return;
+                QString error;
+                if (!state->store.Save(next, &error)) {
+                    AddDiagnostic(tr("错误"), tr("助手"), QStringLiteral("AGENT_SETTINGS_SAVE_FAILED"), error);
+                    state->window->SetSettings(state->settings);
+                    return;
+                }
+                state->settings = next;
+                state->controller->SetSettings(state->settings);
+                state->window->SetSettings(state->settings);
+            });
         connect(state->window, &War3Map::Agent::AgentWindow::StopRequested,
             state->controller.get(), &War3Map::Agent::AgentController::Stop);
         connect(state->window, &War3Map::Agent::AgentWindow::NewConversationRequested, state, [state]() {

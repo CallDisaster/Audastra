@@ -170,11 +170,20 @@ export function compactHistory(messages, contextWindow) {
   return { messages: retained, compacted: true, removedMessages: removed.length };
 }
 
-function isReasoningCapableModel(modelId = '', baseUrl = '') {
-  const id = String(modelId).toLowerCase();
+const VALID_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+function normalizeThinkingEffort(raw) {
+  const token = String(raw ?? '').trim().toLowerCase();
+  if (!token || token === 'default' || token === 'auto') return '';
+  if (token === 'none' || token === 'disabled') return 'off';
+  return VALID_THINKING_LEVELS.includes(token) ? token : '';
+}
+
+function isReasoningCapableModel(modelId = '', baseUrl = '', modelName = '') {
+  const id = `${String(modelId)} ${String(modelName)}`.toLowerCase();
   const url = String(baseUrl).toLowerCase();
-  if (/reasoner|thinking|deepseek-r1|deepseek-v4|deepseek-flash|\bo1\b|\bo3\b|\bo4\b|qwq/.test(id)) return true;
-  if (url.includes('deepseek.com') && /reasoner|v4|flash|r1/.test(id)) return true;
+  if (/reasoner|thinking|deepseek-r1|deepseek-v4|deepseek\s+v4|deepseek-flash|\bo1\b|\bo3\b|\bo4\b|qwq|gpt-5|gpt-6|claude-opus|claude-sonnet-4|claude-sonnet-5|claude-fable|gemini-2\.5|gemini-3/.test(id)) return true;
+  if (url.includes('deepseek') && /reasoner|v4|flash|r1/.test(id)) return true;
   return false;
 }
 
@@ -223,9 +232,47 @@ async function createProviderContext(input, key) {
 
   const apiModule = await apiLoaders[api]();
   const maxTokens = resolveDefaultMaxTokens(input.model, input.provider.baseUrl, contextWindow);
-  const reasoningModel = isReasoningCapableModel(input.model?.id, input.provider.baseUrl);
-  const isDeepSeek = String(input.provider.baseUrl).toLowerCase().includes('deepseek.com')
-    || /deepseek/i.test(String(input.model?.id ?? ''));
+  const isDeepSeek = String(input.provider.baseUrl).toLowerCase().includes('deepseek')
+    || /deepseek/i.test(`${input.model?.id ?? ''} ${input.model?.name ?? ''}`);
+
+  const requestedEffort = normalizeThinkingEffort(input.model?.thinkingEffort);
+  const explicitLevels = Array.isArray(input.model?.supportedThinkingLevels)
+    ? input.model.supportedThinkingLevels.map(normalizeThinkingEffort).filter(Boolean)
+    : [];
+  const thinkingCustomized = Boolean(input.model?.thinkingCustomized);
+  const supportedLevels = (explicitLevels.length > 0 || thinkingCustomized)
+    ? explicitLevels
+    : (isReasoningCapableModel(input.model?.id, input.provider.baseUrl, input.model?.name)
+      ? (isDeepSeek ? ['off', 'low', 'high', 'max'] : ['off', 'low', 'medium', 'high'])
+      : []);
+  const reasoningModel = supportedLevels.some(lv => lv !== 'off')
+    || (requestedEffort !== '' && requestedEffort !== 'off');
+
+  const thinkingLevelMap = {};
+  if (reasoningModel) {
+    for (const lv of VALID_THINKING_LEVELS) {
+      if (supportedLevels.includes(lv) || lv === requestedEffort) {
+        if (lv === 'off') {
+          if (api === 'openai-responses') thinkingLevelMap.off = 'none';
+        } else {
+          thinkingLevelMap[lv] = lv;
+        }
+      } else {
+        thinkingLevelMap[lv] = null;
+      }
+    }
+  }
+
+  const compat = (api === 'openai-completions' && isDeepSeek)
+    ? {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
+      maxTokensField: 'max_tokens',
+      requiresReasoningContentOnAssistantMessages: true,
+      thinkingFormat: 'deepseek',
+    }
+    : undefined;
 
   const model = {
     id: input.model.id,
@@ -234,6 +281,8 @@ async function createProviderContext(input, key) {
     provider: input.provider.id,
     baseUrl: input.provider.baseUrl,
     reasoning: reasoningModel,
+    ...(reasoningModel ? { thinkingLevelMap } : {}),
+    ...(compat ? { compat } : {}),
     input: input.model.imagesSupported ? ['text', 'image'] : ['text'],
     contextWindow,
     maxTokens,
@@ -249,10 +298,16 @@ async function createProviderContext(input, key) {
     api: { stream: apiModule.stream, streamSimple: apiModule.streamSimple },
   }));
 
-  return { api, contextWindow, maxTokens, reasoningModel, isDeepSeek, model, models };
+  return { api, contextWindow, maxTokens, reasoningModel, isDeepSeek, requestedEffort, supportedLevels, model, models };
 }
 
-function normalizeWirePayload(params, { isDeepSeek, reasoningModel, clampedMaxTokens }) {
+function isUnsupportedReasoningEffortError(errorMessage) {
+  const msg = String(errorMessage ?? '');
+  return /\b400\b|invalid|unknown|unrecognized|unsupported/i.test(msg)
+    && /reasoning_effort/i.test(msg);
+}
+
+function normalizeWirePayload(params, { api, isDeepSeek, reasoningModel, requestedEffort, stripReasoningEffort, clampedMaxTokens }) {
   if (!params || typeof params !== 'object') return params;
   const next = { ...params };
   if (clampedMaxTokens > 0) {
@@ -263,12 +318,31 @@ function normalizeWirePayload(params, { isDeepSeek, reasoningModel, clampedMaxTo
       next.max_completion_tokens = clampedMaxTokens;
     }
   }
-  // 对齐 deepseek-harness serialize.ts：
-  // 1) assistant 的 content 绝不发 null（纯工具回合或纯思考回合发 ""，防止 DeepSeek / 兼容网关 400）；
-  // 2) DeepSeek 思考模型带 tool_calls 的历史消息必须携带 reasoning_content 字段；
-  // 3) 若未显式开启 thinking 控制，不主动注入未知的 thinking: { type: "disabled" } 破坏兼容中转站。
-  if (!reasoningModel && next.thinking?.type === 'disabled') {
-    delete next.thinking;
+  // 对齐 deepseek-harness serialize.ts 的思考强度线协议：
+  // - 未显式选择强度（默认 ""）：不覆写接口默认，移除 pi-ai 因缺省 reasoning 误注入的 thinking: disabled；
+  // - 显式选择 "off"：DeepSeek 发送 thinking: { type: "disabled" } 且不发 reasoning_effort；普通 OpenAI 不发 reasoning_effort；
+  // - 显式选择 "low"/"high"/"max" 等：DeepSeek 发送 thinking: { type: "enabled" } + reasoning_effort（若旧网关拒绝 reasoning_effort 则自动剥离重试）。
+  if (api === 'openai-completions') {
+    if (!requestedEffort) {
+      delete next.thinking;
+      delete next.reasoning_effort;
+    } else if (requestedEffort === 'off') {
+      if (isDeepSeek && reasoningModel) {
+        next.thinking = { type: 'disabled' };
+      } else {
+        delete next.thinking;
+      }
+      delete next.reasoning_effort;
+    } else if (isDeepSeek) {
+      next.thinking = { type: 'enabled' };
+      if (stripReasoningEffort) {
+        delete next.reasoning_effort;
+      } else {
+        next.reasoning_effort = requestedEffort;
+      }
+    } else if (stripReasoningEffort) {
+      delete next.reasoning_effort;
+    }
   }
   if (Array.isArray(next.messages)) {
     const anyReasoning = next.messages.some(m => m?.role === 'assistant' && typeof m.reasoning_content === 'string');
@@ -289,7 +363,7 @@ function normalizeWirePayload(params, { isDeepSeek, reasoningModel, clampedMaxTo
 
 export async function runHarness(input, emit, invokeTool, signal) {
   const key = input.provider?.apiKey ?? '';
-  const { api, contextWindow, maxTokens, reasoningModel, isDeepSeek, model, models } = await createProviderContext(input, key);
+  const { api, contextWindow, maxTokens, reasoningModel, isDeepSeek, requestedEffort, supportedLevels, model, models } = await createProviderContext(input, key);
   const safeEmit = event => emit(JSON.parse(redact(event, [key])));
 
   const rawTools = input.tools ?? [];
@@ -328,42 +402,58 @@ export async function runHarness(input, emit, invokeTool, signal) {
   }));
 
   let clampedMaxTokens = 0;
+  let stripReasoningEffort = false;
   const resolvedModel = models.getModel(input.provider.id, model.id);
 
-  // 支持自动降级输出上限的流式包装（若兼容网关拒绝较大 max_tokens 返回 400，则在未产生输出前自动钳制重试一次）。
+  // 支持自动降级输出上限与旧网关 reasoning_effort 回退的流式包装。
   const resilientStreamFn = (targetModel, llmContext, options) => {
-    const mergedOptions = {
+    const isAuxCompaction = Boolean(options?.forgeCompaction);
+    const callEffort = isAuxCompaction ? '' : requestedEffort;
+    const buildStreamOptions = (extraMaxTokens = undefined) => ({
       ...options,
+      ...(extraMaxTokens !== undefined ? { maxTokens: extraMaxTokens } : {}),
+      reasoning: callEffort && callEffort !== 'off' ? callEffort : undefined,
       cacheRetention: 'short',
       sessionId: input.sessionId || options?.sessionId,
       onPayload: async (params, m) => {
         const base = options?.onPayload ? (await options.onPayload(params, m)) ?? params : params;
-        return normalizeWirePayload(base, { isDeepSeek, reasoningModel, clampedMaxTokens });
+        return normalizeWirePayload(base, {
+          api,
+          isDeepSeek,
+          reasoningModel,
+          requestedEffort: callEffort,
+          stripReasoningEffort,
+          clampedMaxTokens,
+        });
       },
-    };
-    const primary = models.streamSimple(targetModel, llmContext, mergedOptions);
+    });
+    const primary = models.streamSimple(targetModel, llmContext, buildStreamOptions());
     let activeStream = primary;
     return {
       async *[Symbol.asyncIterator]() {
-        const eventsBuffer = [];
         let sawOutput = false;
         for await (const ev of primary) {
           if (ev.type === 'text_delta' || ev.type === 'thinking_delta' || ev.type === 'toolcall_delta' || ev.type === 'toolcall_end') {
             sawOutput = true;
           }
-          if (!sawOutput && ev.type === 'error' && !clampedMaxTokens) {
-            const cap = parseMaxTokensRangeError(ev.error?.errorMessage);
-            if (cap && cap < (targetModel.maxTokens || maxTokens)) {
-              clampedMaxTokens = cap;
-              activeStream = models.streamSimple({ ...targetModel, maxTokens: cap }, llmContext, {
-                ...mergedOptions,
-                maxTokens: cap,
-              });
+          if (!sawOutput && ev.type === 'error') {
+            const errMsg = ev.error?.errorMessage;
+            if (!stripReasoningEffort && callEffort && callEffort !== 'off' && isUnsupportedReasoningEffortError(errMsg)) {
+              stripReasoningEffort = true;
+              activeStream = models.streamSimple(targetModel, llmContext, buildStreamOptions(clampedMaxTokens || undefined));
               for await (const retryEv of activeStream) yield retryEv;
               return;
             }
+            if (!clampedMaxTokens) {
+              const cap = parseMaxTokensRangeError(errMsg);
+              if (cap && cap < (targetModel.maxTokens || maxTokens)) {
+                clampedMaxTokens = cap;
+                activeStream = models.streamSimple({ ...targetModel, maxTokens: cap }, llmContext, buildStreamOptions(cap));
+                for await (const retryEv of activeStream) yield retryEv;
+                return;
+              }
+            }
           }
-          eventsBuffer.push(ev);
           yield ev;
         }
       },
@@ -387,6 +477,7 @@ export async function runHarness(input, emit, invokeTool, signal) {
     const response = resilientStreamFn(resolvedModel, normalizeContext({ messages: llmMessages }), {
       signal: sumSignal ?? signal,
       maxTokens: Math.min(4096, clampedMaxTokens || maxTokens),
+      forgeCompaction: true,
     });
     let text = '';
     for await (const ev of response) {
@@ -440,6 +531,10 @@ export async function runHarness(input, emit, invokeTool, signal) {
   let incompleteReason = '';
   let stepLimitReached = false;
 
+  const initialThinkingLevel = requestedEffort
+    ? requestedEffort
+    : (reasoningModel ? (supportedLevels.find(lv => lv !== 'off') || 'high') : 'off');
+
   const agent = new Agent({
     sessionId: input.sessionId || undefined,
     initialState: {
@@ -447,7 +542,7 @@ export async function runHarness(input, emit, invokeTool, signal) {
       model: resolvedModel,
       messages: initialMessages,
       tools,
-      thinkingLevel: reasoningModel ? 'medium' : 'off',
+      thinkingLevel: initialThinkingLevel,
     },
     streamFn: resilientStreamFn,
     toolExecution: 'sequential',
@@ -712,8 +807,11 @@ export async function runManualCompaction(input, emit, signal) {
           cacheRetention: 'short',
           sessionId: input.sessionId || undefined,
           onPayload: params => normalizeWirePayload(params, {
+            api: ctx.api,
             isDeepSeek: ctx.isDeepSeek,
             reasoningModel: ctx.reasoningModel,
+            requestedEffort: '',
+            stripReasoningEffort: false,
             clampedMaxTokens: 0,
           }),
         });

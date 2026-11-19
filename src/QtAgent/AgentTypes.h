@@ -18,6 +18,17 @@ struct ModelSettings {
     qint64 maxOutputTokens = 0;
     bool toolsSupported = true;
     bool imagesSupported = false;
+    QStringList providerThinkingLevels;
+    QStringList customThinkingLevels;
+    bool thinkingLevelsCustomized = false;
+    QString selectedThinkingLevel;
+};
+
+struct ResolvedThinkingCapability {
+    QStringList levels;      // 按标准升序排列的可选档位：off / minimal / low / medium / high / xhigh / max
+    QString defaultLevel;    // 模型预设档位（如 DeepSeek V4 为 high；为空代表跟随接口默认）
+    QString source;          // "手动指定" | "接口获取" | "内置目录" | ""
+    bool discovered = false; // false 表示未自动识别到该模型思考档位，可提示用户自行勾选
 };
 
 struct ProviderSettings {
@@ -110,6 +121,16 @@ struct ExternalMcpRuntimeStatus {
 };
 
 [[nodiscard]] ContextWindow ResolveContextWindow(const ModelSettings& model);
+[[nodiscard]] const QStringList& AllThinkingLevels();
+[[nodiscard]] bool IsValidThinkingLevel(const QString& level);
+[[nodiscard]] QString NormalizeThinkingLevelToken(const QString& raw);
+[[nodiscard]] QStringList NormalizeThinkingLevels(const QStringList& rawLevels);
+[[nodiscard]] QString ThinkingLevelShortLabel(const QString& level);
+[[nodiscard]] QString ThinkingLevelMenuLabel(const QString& level);
+[[nodiscard]] ResolvedThinkingCapability ResolveThinkingCapability(
+    const ModelSettings& model, const QString& protocol = {}, const QString& baseUrl = {});
+[[nodiscard]] QString EffectiveThinkingLevel(
+    const ModelSettings& model, const QString& protocol = {}, const QString& baseUrl = {});
 [[nodiscard]] bool ExternalMcpPermissionSatisfied(const QString& minimumPermission, const AgentSettings& settings);
 
 } // namespace War3Map::Agent

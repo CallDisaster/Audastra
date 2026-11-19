@@ -622,6 +622,61 @@ void AgentSettingsTests::externalMcpSettingsAndJsonImportIsolateSecrets() {
     unsafe.externalMcpServers[0].env.push_back({QStringLiteral("token"), QStringLiteral("bad")});
     QVERIFY(!store.Save(unsafe, &error));
     QVERIFY(!error.isEmpty());
+
+    // 思考强度获取（内置目录 / 接口获取 / 未识别手动指定）与持久化校验
+    ModelSettings dsFlash;
+    dsFlash.id = QStringLiteral("custom-ds-route");
+    dsFlash.name = QStringLiteral("DeepSeek V4.1 Flash Ultrafast");
+    const auto dsCap = ResolveThinkingCapability(dsFlash, QStringLiteral("openai-chat"), QStringLiteral("https://gateway.invalid/v1"));
+    QVERIFY(dsCap.discovered);
+    QCOMPARE(dsCap.levels, (QStringList{QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")}));
+    QCOMPARE(dsCap.defaultLevel, QStringLiteral("high"));
+
+    ModelSettings unknownModel;
+    unknownModel.id = QStringLiteral("private-relay-alpha");
+    unknownModel.name = QStringLiteral("Private Relay Alpha");
+    const auto unknownCap = ResolveThinkingCapability(unknownModel, QStringLiteral("openai-chat"), QStringLiteral("https://gateway.invalid/v1"));
+    QVERIFY(!unknownCap.discovered);
+    QVERIFY(unknownCap.levels.isEmpty());
+
+    unknownModel.thinkingLevelsCustomized = true;
+    unknownModel.customThinkingLevels = {QStringLiteral("xhigh"), QStringLiteral("off"), QStringLiteral("low")};
+    unknownModel.selectedThinkingLevel = QStringLiteral("xhigh");
+    const auto customCap = ResolveThinkingCapability(unknownModel, QStringLiteral("openai-chat"), QStringLiteral("https://gateway.invalid/v1"));
+    QVERIFY(customCap.discovered);
+    QCOMPARE(customCap.levels, (QStringList{QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("xhigh")}));
+    QCOMPARE(EffectiveThinkingLevel(unknownModel), QStringLiteral("xhigh"));
+
+    // 网关 /v1/models 字典格式与 reasoning_efforts 自动提取
+    LocalModelServer effortServer;
+    QVERIFY(effortServer.Start());
+    effortServer.responder = [](const auto&) {
+        return Http(R"({"models":{"gw-reasoning-1":{"displayName":"Gateway Reasoning 1","limit":{"context":512000,"output":64000},"reasoning_efforts":["off","low","high","max"]}}})");
+    };
+    ProviderCatalog catalog;
+    QList<ModelSettings> fetchedModels;
+    connect(&catalog, &ProviderCatalog::ModelsReady, this, [&fetchedModels](const QString&, const QList<ModelSettings>& list) { fetchedModels = list; });
+    QSignalSpy readySpy(&catalog, &ProviderCatalog::ModelsReady);
+    catalog.Fetch(Provider(effortServer.Url()), QStringLiteral("fixture-key"));
+    QTRY_COMPARE(readySpy.size(), qsizetype(1));
+    QCOMPARE(fetchedModels.size(), qsizetype(1));
+    QCOMPARE(fetchedModels.front().id, QStringLiteral("gw-reasoning-1"));
+    QCOMPARE(fetchedModels.front().providerContext, qint64(512000));
+    QCOMPARE(fetchedModels.front().maxOutputTokens, qint64(64000));
+    QCOMPARE(fetchedModels.front().providerThinkingLevels,
+        (QStringList{QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")}));
+
+    settings.providers.front().models = {unknownModel, fetchedModels.front()};
+    QVERIFY2(store.Save(settings, &error), qPrintable(error));
+    const auto reloaded = store.Load(&error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(reloaded.providers.front().models.size(), qsizetype(2));
+    QVERIFY(reloaded.providers.front().models[0].thinkingLevelsCustomized);
+    QCOMPARE(reloaded.providers.front().models[0].customThinkingLevels,
+        (QStringList{QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("xhigh")}));
+    QCOMPARE(reloaded.providers.front().models[0].selectedThinkingLevel, QStringLiteral("xhigh"));
+    QCOMPARE(reloaded.providers.front().models[1].providerThinkingLevels,
+        (QStringList{QStringLiteral("off"), QStringLiteral("low"), QStringLiteral("high"), QStringLiteral("max")}));
 }
 
 QTEST_MAIN(AgentSettingsTests)

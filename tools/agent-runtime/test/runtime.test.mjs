@@ -397,3 +397,73 @@ test('DSH 三级压缩：第1级修剪超大工具结果，第2级热前缀摘�
     summaryServer.close();
   }
 });
+
+test('思考强度对齐 DSH：DeepSeek off/max 线协议与自定义模型档位及旧网关 400 自动回退', async () => {
+  const bodies = [];
+  let rejectEffortOnce = false;
+  const server = createServer(async (req, res) => {
+    let raw = '';
+    for await (const part of req) raw += part;
+    const body = JSON.parse(raw);
+    bodies.push(body);
+    if (rejectEffortOnce && body.reasoning_effort) {
+      rejectEffortOnce = false;
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: '400 invalid parameter: unknown field reasoning_effort' } }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    chunk(res, [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }]);
+    chunk(res, [{ index: 0, delta: {}, finish_reason: 'stop' }]);
+    res.end('data: [DONE]\n\n');
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  try {
+    // 1) DeepSeek V4.1 Flash Ultrafast 选 max：发送 thinking: enabled + reasoning_effort: max
+    await runHarness({
+      provider: { id: 'p1', name: 'DeepSeek', protocol: 'openai-chat', baseUrl, apiKey: 'k1' },
+      model: { id: 'custom-ds-id', name: 'DeepSeek V4.1 Flash Ultrafast', contextWindow: 1000000,
+        supportedThinkingLevels: ['off', 'low', 'high', 'max'], thinkingEffort: 'max' },
+      systemPrompt: 'sys', prompt: 'hi', tools: [],
+    }, () => {}, async () => ({}));
+    assert.deepEqual(bodies.at(-1).thinking, { type: 'enabled' });
+    assert.equal(bodies.at(-1).reasoning_effort, 'max');
+
+    // 2) DeepSeek 选 off：发送 thinking: disabled 且不发 reasoning_effort
+    await runHarness({
+      provider: { id: 'p1', name: 'DeepSeek', protocol: 'openai-chat', baseUrl, apiKey: 'k1' },
+      model: { id: 'custom-ds-id', name: 'DeepSeek V4.1 Flash Ultrafast', contextWindow: 1000000,
+        supportedThinkingLevels: ['off', 'low', 'high', 'max'], thinkingEffort: 'off' },
+      systemPrompt: 'sys', prompt: 'hi', tools: [],
+    }, () => {}, async () => ({}));
+    assert.deepEqual(bodies.at(-1).thinking, { type: 'disabled' });
+    assert.equal(bodies.at(-1).reasoning_effort, undefined);
+
+    // 3) 未知网关模型由用户手动指定支持档位 ['off', 'low', 'xhigh'] 并选 xhigh
+    await runHarness({
+      provider: { id: 'p2', name: 'Custom', protocol: 'openai-chat', baseUrl, apiKey: 'k1' },
+      model: { id: 'my-private-model', name: 'My Private Model', contextWindow: 128000,
+        thinkingCustomized: true, supportedThinkingLevels: ['off', 'low', 'xhigh'], thinkingEffort: 'xhigh' },
+      systemPrompt: 'sys', prompt: 'hi', tools: [],
+    }, () => {}, async () => ({}));
+    assert.equal(bodies.at(-1).reasoning_effort, 'xhigh');
+
+    // 4) 旧版 V3.2 网关不接受 reasoning_effort 返回 400 时，自动剥离 reasoning_effort 保留 thinking 重试成功
+    rejectEffortOnce = true;
+    const retryEvents = [];
+    await runHarness({
+      provider: { id: 'p1', name: 'DeepSeek', protocol: 'openai-chat', baseUrl, apiKey: 'k1' },
+      model: { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', contextWindow: 128000,
+        supportedThinkingLevels: ['off', 'low', 'high', 'max'], thinkingEffort: 'high' },
+      systemPrompt: 'sys', prompt: 'hi', tools: [],
+    }, ev => retryEvents.push(ev), async () => ({}));
+    assert(retryEvents.some(e => e.type === 'run_end' && e.success));
+    assert.deepEqual(bodies.at(-1).thinking, { type: 'enabled' });
+    assert.equal(bodies.at(-1).reasoning_effort, undefined);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
