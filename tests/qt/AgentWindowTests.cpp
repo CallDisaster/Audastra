@@ -1770,8 +1770,17 @@ void AgentWindowTests::oversizedTranscriptLogIsTrimmedInsteadOfBlockingSave() {
     QCOMPARE(log.first().toObject().value(QStringLiteral("type")).toString(), QStringLiteral("transcript_trimmed"));
     QVERIFY(log.first().toObject().value(QStringLiteral("removed")).toInteger() > 0);
     QCOMPARE(log.last().toObject().value(QStringLiteral("text")).toString(), QStringLiteral("最新需求"));
-    for (const auto& value : log)
-        QVERIFY(value.toObject().value(QStringLiteral("type")).toString() != QStringLiteral("thinking_block"));
+    QVERIFY(QFileInfo(store.SessionPath(QStringLiteral("map-big"), session->id)).size() <= 8 * 1024 * 1024);
+    // 先移除思考：正文一条不少，思考只剩较新的一部分。
+    qsizetype thinking = 0, replies = 0;
+    for (const auto& value : log) {
+        const auto type = value.toObject().value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("thinking_block")) ++thinking;
+        if (type == QStringLiteral("assistant_message")) ++replies;
+    }
+    QCOMPARE(replies, qsizetype(96));
+    QVERIFY(thinking < 96);
+    QCOMPARE(log.first().toObject().value(QStringLiteral("removed")).toInteger(), qint64(96 - thinking));
 
     // 恢复时提示写明移除数量。
     AgentWindow window;

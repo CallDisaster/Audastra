@@ -1477,7 +1477,11 @@ void AgentControllerTests::externalMcpQualifiedNamesAreStable() {
     ExternalMcpServerSettings ascii;
     ascii.id = QStringLiteral("ascii-id");
     ascii.name = QStringLiteral("War3 Autotest!");
-    QVERIFY(ExternalMcpManager::QualifiedToolName(ascii, QStringLiteral("ping")).startsWith(QStringLiteral("mcp__war3_autotest_")));
+    // 改名不改变隔离名：作者禁用过的工具不会因为改名重新暴露给模型。
+    const QString beforeRename = ExternalMcpManager::QualifiedToolName(ascii, QStringLiteral("ping"));
+    auto renamed = ascii;
+    renamed.name = QStringLiteral("改过的名字");
+    QCOMPARE(ExternalMcpManager::QualifiedToolName(renamed, QStringLiteral("ping")), beforeRename);
     for (const QString& remote : {QString(200, QLatin1Char('a')), QStringLiteral("ns.tool/name"), QStringLiteral("工具")}) {
         const QString qualifiedName = ExternalMcpManager::QualifiedToolName(ascii, remote);
         QVERIFY2(kToolName.match(qualifiedName).hasMatch(), qPrintable(qualifiedName));

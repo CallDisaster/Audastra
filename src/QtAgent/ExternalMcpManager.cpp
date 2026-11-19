@@ -40,33 +40,13 @@ constexpr qint64 kStableConnectionMs = 60 * 1000;
 constexpr qsizetype kMaxInstructionBytes = 4096;
 constexpr qsizetype kMaxStoredInstructionChars = 16384;
 constexpr qsizetype kMaxQualifiedToolName = 64;
-constexpr qsizetype kMaxReadableSlug = 16;
 constexpr qsizetype kMaxRemoteMessageChars = 2000;
 
-// 服务器名的 ASCII 可读片段（小写字母数字，其他字符折叠为单个下划线）。
-QString ReadableSlugPart(const QString& name) {
-    QString out;
-    for (const QChar ch : name) {
-        const char16_t u = ch.unicode();
-        if ((u >= u'a' && u <= u'z') || (u >= u'0' && u <= u'9')) {
-            out.append(ch);
-        } else if (u >= u'A' && u <= u'Z') {
-            out.append(ch.toLower());
-        } else if (!out.isEmpty() && !out.endsWith(QLatin1Char('_'))) {
-            out.append(QLatin1Char('_'));
-        }
-    }
-    out = out.left(kMaxReadableSlug);
-    while (out.endsWith(QLatin1Char('_'))) out.chop(1);
-    return out;
-}
-
-// 由服务器 ID 决定的稳定片段：可读名 + ID 的 SHA-256 前 8 位；中文名、重排、增删服务器都不会让工具名漂移到别的服务器。
+// 只由服务器 ID 决定（SHA-256 前 8 位）：改名、重排、增删服务器都不会改变工具隔离名，
+// 作者禁用过的工具不会因为改名重新暴露给模型。服务器显示名放在工具说明里。
 QString ServerSlugFor(const ExternalMcpServerSettings& server) {
-    const QString hash = QString::fromLatin1(
+    return QStringLiteral("s") + QString::fromLatin1(
         QCryptographicHash::hash(server.id.toUtf8(), QCryptographicHash::Sha256).toHex().left(8));
-    const QString readable = ReadableSlugPart(server.name);
-    return readable.isEmpty() ? hash : readable + QLatin1Char('_') + hash;
 }
 
 // 模型接口只接受 [A-Za-z0-9_-]，其余字符替换为下划线。
@@ -220,8 +200,14 @@ const QStringList& InheritedEnvironmentNames() {
         QStringLiteral("COMMONPROGRAMFILES"), QStringLiteral("COMMONPROGRAMFILES(X86)"), QStringLiteral("COMMONPROGRAMW6432"),
         QStringLiteral("NUMBER_OF_PROCESSORS"), QStringLiteral("PROCESSOR_ARCHITECTURE"), QStringLiteral("PROCESSOR_IDENTIFIER"),
         QStringLiteral("OS"), QStringLiteral("USERNAME"), QStringLiteral("USERDOMAIN"), QStringLiteral("COMPUTERNAME"),
-        // npx/uvx 等下载依赖时需要沿用本机代理设置。
+        // npx/uvx 等下载依赖时需要沿用本机代理、证书与镜像源设置，以及常见运行时目录。
         QStringLiteral("HTTP_PROXY"), QStringLiteral("HTTPS_PROXY"), QStringLiteral("NO_PROXY"), QStringLiteral("ALL_PROXY"),
+        QStringLiteral("NODE_EXTRA_CA_CERTS"), QStringLiteral("SSL_CERT_FILE"), QStringLiteral("SSL_CERT_DIR"),
+        QStringLiteral("REQUESTS_CA_BUNDLE"), QStringLiteral("CURL_CA_BUNDLE"),
+        QStringLiteral("NPM_CONFIG_REGISTRY"), QStringLiteral("UV_INDEX_URL"), QStringLiteral("UV_DEFAULT_INDEX"),
+        QStringLiteral("UV_EXTRA_INDEX_URL"), QStringLiteral("PIP_INDEX_URL"), QStringLiteral("PIP_EXTRA_INDEX_URL"),
+        QStringLiteral("JAVA_HOME"), QStringLiteral("VOLTA_HOME"), QStringLiteral("PNPM_HOME"),
+        QStringLiteral("NVM_HOME"), QStringLiteral("NVM_SYMLINK"),
     };
     return kNames;
 }
@@ -718,6 +704,15 @@ public:
                     failure = QStringLiteral("HTTP MCP（%1）请求超时。").arg(host);
                 } else if (status >= 300 && status < 400) {
                     failure = QStringLiteral("HTTP MCP（%1）返回重定向（HTTP %2），已拒绝跟随。").arg(host, QString::number(status));
+                    // 同主机只差末尾斜杠的跳转（/mcp → /mcp/）很常见，写明应改成的地址；其他目标不回显，避免带出路径中的信息。
+                    const QUrl current(target->config.url);
+                    const QUrl next = current.resolved(reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl());
+                    if (next.host() == current.host() && next.scheme() == current.scheme() && next.port() == current.port()
+                        && !next.hasQuery() && next.path() != current.path()
+                        && (next.path() == current.path() + QLatin1Char('/') || next.path() + QLatin1Char('/') == current.path())) {
+                        failure += QStringLiteral(" 服务器地址应为末尾%1斜杠的形式。")
+                            .arg(next.path().endsWith(QLatin1Char('/')) ? QStringLiteral("带") : QStringLiteral("不带"));
+                    }
                 } else if (reply->error() != QNetworkReply::NoError || status >= 400) {
                     // 不使用 errorString()：其中含完整地址，可能把路径中的密钥带给模型。
                     failure = HttpFailureMessage(host, reply->error(), status);
@@ -1146,7 +1141,11 @@ QList<ExternalMcpServerSettings> ExternalMcpManager::ParseMcpServersJson(
                     break;
                 }
                 const QString value = eit.value().toString();
-                if (ExternalMcpSecretName(eit.key()) || ExternalMcpValueLooksSecret(value)) {
+                if (ExternalMcpEnvCarriesSecret(eit.key(), value)) {
+                    if (!ExternalMcpEnvironmentName(eit.key())) {
+                        refusal = QStringLiteral("密钥环境变量名 %1 只能包含字母、数字和下划线").arg(eit.key().left(64));
+                        break;
+                    }
                     // 密钥按原变量名保留（进程仍收到 GITHUB_TOKEN 等），值转入凭据库。
                     secretNames.push_back(eit.key());
                     secret = value;

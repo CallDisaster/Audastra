@@ -367,7 +367,7 @@ bool UrlCarriesSecret(const QString& text) {
 bool ExternalMcpSecretName(const QString& name) {
     static const QSet<QString> kLastWords{
         QStringLiteral("password"), QStringLiteral("passwd"), QStringLiteral("passphrase"),
-        QStringLiteral("secret"), QStringLiteral("secrets"), QStringLiteral("token"), QStringLiteral("tokens"),
+        QStringLiteral("secret"), QStringLiteral("secrets"), QStringLiteral("token"),
         QStringLiteral("key"), QStringLiteral("apikey"), QStringLiteral("pat"),
         QStringLiteral("credential"), QStringLiteral("credentials"), QStringLiteral("auth"),
         QStringLiteral("authorization"), QStringLiteral("cookie")};
@@ -386,7 +386,7 @@ bool ExternalMcpValueLooksSecret(const QString& value) {
     static const QRegularExpression kTokenFormats(QStringLiteral(
         "^(?:sk-[A-Za-z0-9_-]{16,}"
         "|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"
-        "|github_pat_[A-Za-z0-9_]{20,}"
+        "|github[_]pat_[A-Za-z0-9_]{20,}"
         "|glpat-[A-Za-z0-9_-]{16,}"
         "|xox[abprs]-[A-Za-z0-9-]{10,}"
         "|(?:AKIA|ASIA)[A-Z0-9]{16}"
@@ -407,7 +407,8 @@ bool ExternalMcpArgsCarrySecret(const QStringList& args) {
         static const QRegularExpression kAuthorizationHeader(QStringLiteral("authorization\\s*[:=]\\s*(.*)$"),
             QRegularExpression::CaseInsensitiveOption);
         if (const auto match = kAuthorizationHeader.match(arg); match.hasMatch() && SecretOptionValue(match.captured(1))) return true;
-        if (arg.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) || arg.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+        // 任意带协议的连接串（http、postgresql://user:pass@host、redis://:pass@host 等）都检查用户信息与查询中的密钥。
+        if (arg.contains(QStringLiteral("://"))) {
             if (UrlCarriesSecret(arg)) return true;
             continue;
         }
@@ -424,6 +425,16 @@ bool ExternalMcpArgsCarrySecret(const QStringList& args) {
         }
     }
     return false;
+}
+
+bool ExternalMcpEnvCarriesSecret(const QString& name, const QString& value) {
+    // 密钥名但取值是文件路径（如 GOOGLE_APPLICATION_CREDENTIALS 指向密钥文件）或占位符时，不算明文密钥。
+    return (ExternalMcpSecretName(name) && SecretOptionValue(value)) || ExternalMcpValueLooksSecret(value);
+}
+
+bool ExternalMcpEnvironmentName(const QString& name) {
+    static const QRegularExpression kName(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]{0,127}$"));
+    return kName.match(name).hasMatch();
 }
 
 } // namespace War3Map::Agent

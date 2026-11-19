@@ -144,9 +144,13 @@ struct ExternalMcpRuntimeStatus {
 [[nodiscard]] bool ExternalMcpConnectionAllowed(const ExternalMcpServerSettings& server, const AgentSettings& settings);
 // 名称（环境变量、参数、请求头、查询键）是否像密钥：末词为 password/secret/token/key/pat/credential/auth 等，大小写不敏感。
 [[nodiscard]] bool ExternalMcpSecretName(const QString& name);
-// 取值是否具有常见令牌格式（sk-、ghp_、github_pat_、AKIA…、Bearer/Basic 头值等）。
+// 取值是否具有常见令牌格式（OpenAI/GitHub/GitLab/Slack/AWS/Google/HF/npm 等前缀令牌、Bearer/Basic 头值等）。
 [[nodiscard]] bool ExternalMcpValueLooksSecret(const QString& value);
 // 启动参数是否疑似携带明文密钥：--token=…、--api-key 值、Authorization: …、URL 查询或用户信息中的密钥、常见令牌格式。
 [[nodiscard]] bool ExternalMcpArgsCarrySecret(const QStringList& args);
+// 环境变量是否携带明文密钥：密钥名且取值不是占位符/路径/纯数字，或取值本身是常见令牌格式。导入与保存校验共用。
+[[nodiscard]] bool ExternalMcpEnvCarriesSecret(const QString& name, const QString& value);
+// 环境变量名是否可作为密钥变量名（字母、数字、下划线，不以数字开头）。导入与保存校验共用。
+[[nodiscard]] bool ExternalMcpEnvironmentName(const QString& name);
 
 } // namespace War3Map::Agent

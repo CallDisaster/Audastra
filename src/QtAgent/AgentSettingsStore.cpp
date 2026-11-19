@@ -200,10 +200,6 @@ bool IsLoopbackHost(const QString& host) {
     return host.compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0 || QHostAddress(host).isLoopback();
 }
 
-bool IsEnvironmentName(const QString& name) {
-    static const QRegularExpression kName(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]{0,127}$"));
-    return kName.match(name).hasMatch();
-}
 
 // 单个外部 MCP 条目的全部内容规则；保存前校验与读取时的逐条校验共用，二者限制一致。
 bool ValidateExternalMcp(const ExternalMcpServerSettings& server, QString* error) {
@@ -226,7 +222,7 @@ bool ValidateExternalMcp(const ExternalMcpServerSettings& server, QString* error
         if (pair.first.isEmpty() || pair.first.size() > kMaximumMcpEnvNameChars || pair.first.contains(QLatin1Char('='))
             || pair.second.size() > kMaximumMcpValueChars)
             return Fail(error, QStringLiteral("外部 MCP“%1”的环境变量名为空、过长，或取值超过 4096 个字符。").arg(server.name));
-        if (ExternalMcpSecretName(pair.first) || ExternalMcpValueLooksSecret(pair.second))
+        if (ExternalMcpEnvCarriesSecret(pair.first, pair.second))
             return Fail(error, QStringLiteral("外部 MCP 环境变量不能直接存放明文密钥，请使用鉴权密钥栏保存。"));
         const QString folded = pair.first.toUpper();
         if (envNames.contains(folded))
@@ -234,7 +230,7 @@ bool ValidateExternalMcp(const ExternalMcpServerSettings& server, QString* error
         envNames.insert(folded);
     }
     if (!server.credentialEnv.isEmpty()) {
-        if (!IsEnvironmentName(server.credentialEnv))
+        if (!ExternalMcpEnvironmentName(server.credentialEnv))
             return Fail(error, QStringLiteral("外部 MCP 密钥变量名只能包含字母、数字和下划线，且不以数字开头。"));
         if (envNames.contains(server.credentialEnv.toUpper()))
             return Fail(error, QStringLiteral("外部 MCP 密钥变量名与普通环境变量重名。"));

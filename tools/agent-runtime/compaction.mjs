@@ -403,9 +403,17 @@ export async function compactWithWarmCache({
   if (!region) return unchanged(pruned);
 
   const { regionStart, regionEnd, keep } = region;
+  // 回合内压缩时摘要放在保留的当前需求之后；若摘要里也包含该需求之前的旧回合，需注明先后，避免旧要求被当成更新的指令。
+  let anchorIndex = -1;
+  if (region.midTurn) for (const i of keep) if (pruned.messages[i]?.role === 'user') { anchorIndex = i; break; }
+  let removedBeforeAnchor = false;
   const keptMessages = [];
   const removedSlice = [];
-  for (let i = regionStart; i < regionEnd; ++i) (keep.has(i) ? keptMessages : removedSlice).push(pruned.messages[i]);
+  for (let i = regionStart; i < regionEnd; ++i) {
+    if (keep.has(i)) { keptMessages.push(pruned.messages[i]); continue; }
+    removedSlice.push(pruned.messages[i]);
+    if (anchorIndex >= 0 && i < anchorIndex) removedBeforeAnchor = true;
+  }
   const removedTokens = removedSlice.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
 
   // 无进展保护：同一段内容上次已被拒绝，或自动压缩时区间太小，都不再发摘要请求。
@@ -451,6 +459,9 @@ export async function compactWithWarmCache({
   if (!summaryBody) {
     attemptMemo?.add(signature);
     return unchanged(pruned, { skipped: 'no_shrink' });
+  }
+  if (removedBeforeAnchor) {
+    summaryBody = '说明：本摘要中的较早回合发生在上方用户需求之前；与上方需求冲突时，以上方需求为准。\n\n' + summaryBody;
   }
 
   const regionSaved = Math.max(0, removedTokens - estimateMessageTokens(createCompactedSummaryMessage(summaryBody)));

@@ -312,7 +312,7 @@ std::optional<AgentSession> AgentSessionStore::Create(const QString& mapIdentity
     return session;
 }
 
-bool AgentSessionStore::Save(const AgentSession& session, QString* error) const {
+bool AgentSessionStore::Save(const AgentSession& session, QString* error, QJsonArray* writtenLog) const {
     const auto path = SessionPath(session.mapIdentity, session.id);
     if (path.isEmpty() || session.title.size() > 256 || !IsCompleteAgentTranscript(session.messages)) {
         Error(error, QStringLiteral("会话身份、标题或工具配对无效，未写入。")); return false;
@@ -342,6 +342,7 @@ bool AgentSessionStore::Save(const AgentSession& session, QString* error) const 
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
         Error(error, QStringLiteral("会话无法原子写入，原历史保留。")); return false;
     }
+    if (writtenLog != nullptr) *writtenLog = std::move(logToSave);
     return true;
 }
 

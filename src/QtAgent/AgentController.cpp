@@ -385,8 +385,9 @@ public:
             Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), error}}); return;
         }
         // 跳过损坏会话的提示只在内容变化时报告一次，避免每轮结束重复刷屏。
-        if (listWarning != lastListWarning) {
-            lastListWarning = listWarning;
+        if (const QString keyed = listWarning.isEmpty() ? QString() : sessionMap + QLatin1Char('\n') + listWarning;
+            keyed != lastListWarning) {
+            lastListWarning = keyed;
             if (!listWarning.isEmpty()) Publish({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("text"), listWarning}});
         }
         QJsonArray rows;
@@ -426,7 +427,11 @@ public:
                 }
             }
         }
-        if (!AgentSessionStore(historyDirectory).Save(session)) return false;
+        // 超预算时用实际写出的裁剪版替换内存副本，之后的检查点不必每次重做整套裁剪。
+        QJsonArray writtenLog;
+        if (!AgentSessionStore(historyDirectory).Save(session, nullptr, &writtenLog)) return false;
+        session.transcriptLog = writtenLog;
+        if (!activeTranscriptLog.isEmpty()) activeTranscriptLog = writtenLog;
         currentSession = std::move(session); memoryBinding = taskBinding; history = candidateHistory;
         return true;
     }
@@ -471,10 +476,15 @@ public:
     // 失败或取消、且本轮没有执行过任何工具时，把本轮提问及其后的残留从模型上下文中去掉：
     // 否则下一轮会把用户已放弃的指令连同新提问一起发给带写工具的模型。提问原文仍在 transcript_log。
     void DropUnansweredPrompt() {
+        // 本轮派发过工具（即使结果还没写进检查点）就保留整轮，让模型知道地图已被改过。
+        if (!dispatchedIds.isEmpty()) return;
         for (qsizetype i = candidateHistory.size() - 1; i >= 0; --i) {
             const auto message = candidateHistory.at(i).toObject();
             const auto role = message.value(QStringLiteral("role")).toString();
             if (role == QStringLiteral("toolResult")) return;
+            // 已有完整的文字回复：这一轮问答已成立，不删。
+            if (role == QStringLiteral("assistant") && !IsHiddenAgentMessage(message)
+                && !AgentMessageText(message).trimmed().isEmpty()) return;
             if (role != QStringLiteral("user") || IsHiddenAgentMessage(message)) continue;
             if (AgentMessageText(message) != taskPrompt) return;
             QJsonArray kept;

@@ -783,6 +783,8 @@ void AgentSettingsTests::externalMcpValidationRejectsPlaintextAndLoadSkipsUnsafe
     QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("DB_PASSWORD"), QStringLiteral("fixture")}); }));
     QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("GITHUB_PAT"), QStringLiteral("fixture")}); }));
     QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("OPTIONS"), QStringLiteral("sk-synthetic-fixture-value-0000")}); }));
+    // 非 http 协议的连接串同样检查用户信息中的密码。
+    QVERIFY(rejected([](Server& s) { s.args.push_back(QStringLiteral("postgresql://fixture:fixture-pass@db.example.invalid/maps")); }));
     // 与读取时相同的单值长度限制。
     QVERIFY(rejected([](Server& s) { s.args.push_back(QString(4097, QLatin1Char('a'))); }));
     QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("MODE"), QString(4097, QLatin1Char('a'))}); }));
@@ -790,10 +792,15 @@ void AgentSettingsTests::externalMcpValidationRejectsPlaintextAndLoadSkipsUnsafe
     QVERIFY(rejected([](Server& s) { s.env.push_back({QStringLiteral("MY_SLOT"), QStringLiteral("x")}); s.credentialEnv = QStringLiteral("MY_SLOT"); }));
     // 文件路径、占位符与普通变量不是明文密钥。
     auto allowed = settings;
-    allowed.externalMcpServers.front().args += QStringList{QStringLiteral("--key-file"), QStringLiteral("C:/certs/client.key"),
+    allowed.externalMcpServers.front().args += QStringList{QStringLiteral("--key-file"), QStringLiteral("C:/certs/client.key"), // Synthetic
         QStringLiteral("--token"), QStringLiteral("${MCP_TOKEN}")};
     allowed.externalMcpServers.front().env.push_back({QStringLiteral("MODE"), QStringLiteral("ci")});
     allowed.externalMcpServers.front().credentialEnv = QStringLiteral("GITHUB_TOKEN");
+    // 普通数量参数与指向文件的凭据路径不是明文密钥。
+    allowed.externalMcpServers.front().args += QStringList{QStringLiteral("--max-tokens"), QStringLiteral("4096"),
+        QStringLiteral("postgresql://db.example.invalid/maps")};
+    allowed.externalMcpServers.front().env.push_back({QStringLiteral("MAX_TOKENS"), QStringLiteral("4096")});
+    allowed.externalMcpServers.front().env.push_back({QStringLiteral("GOOGLE_APPLICATION_CREDENTIALS"), QStringLiteral("C:/keys/service.json")}); // Synthetic
     QVERIFY2(AgentSettingsStore::Validate(allowed, &error), qPrintable(error));
 
     // 超长参数在保存时即被拒绝，不会写出一份下次读取失败的设置文件。

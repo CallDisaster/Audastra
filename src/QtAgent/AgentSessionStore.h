@@ -40,7 +40,8 @@ public:
     [[nodiscard]] std::optional<AgentSession> Read(const QString& mapIdentity, const QString& id,
         QString* error = nullptr) const;
     [[nodiscard]] std::optional<AgentSession> Create(const QString& mapIdentity, QString* error = nullptr) const;
-    [[nodiscard]] bool Save(const AgentSession& session, QString* error = nullptr) const;
+    // writtenLog 返回实际写出的 transcript_log（超预算时为裁剪后的版本），调用方据此替换内存副本。
+    [[nodiscard]] bool Save(const AgentSession& session, QString* error = nullptr, QJsonArray* writtenLog = nullptr) const;
     [[nodiscard]] bool Rename(const QString& mapIdentity, const QString& id, const QString& title,
         QString* error = nullptr) const;
     [[nodiscard]] bool Archive(const QString& mapIdentity, const QString& id, QString* error = nullptr) const;

@@ -307,10 +307,14 @@ export function parseMaxTokensRangeError(errorMessage) {
 }
 
 // 站点拒绝思考/推理参数（字段未知、取值不支持等）的 400。
+// 只在错误点名我们实际发送的思考字段、并说明不支持时成立；thinking 块签名错误、工具 schema 错误等与参数无关，
+// 不能借此静默去掉作者选的思考强度。
 function isUnsupportedThinkingParamError(errorMessage) {
   const msg = String(errorMessage ?? '');
-  return /\b400\b|invalid|unknown|unrecognized|unsupported|not supported|not permitted|not allowed|extra inputs|does not support/i.test(msg)
-    && /reasoning_effort|reasoning|thinking|output_config|effort|budget_tokens/i.test(msg);
+  if (/signature|schema|function|tool/i.test(msg)) return false;
+  const namesField = /reasoning_effort|output_config|budget_tokens|thinking_?config|reasoning\.effort|thinking\.type|["'`]thinking["'`]|\bthinking\s+(?:parameter|param|field)|\beffort\b/i.test(msg);
+  const saysUnsupported = /unknown|unrecognized|unsupported|not supported|not permitted|not allowed|extra inputs|does not support|invalid value|is not valid|must be one of/i.test(msg);
+  return namesField && saysUnsupported;
 }
 
 function createAbortError() {

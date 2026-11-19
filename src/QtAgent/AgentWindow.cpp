@@ -3169,7 +3169,7 @@ void AgentWindow::Private::Queue() {
 
 void AgentWindow::Private::UpdateQueue(bool paused) {
     if (queued.isEmpty() && stepLimitPaused) {
-        queueNotice->setText(QStringLiteral("已达到单次自动步数上限，已完成改动与上下文均已保存　<a href=\"continue-run\">继续执行剩余步骤</a>　<a href=\"clear\">关闭提示</a>"));
+        queueNotice->setText(QStringLiteral("已达到单次自动步数上限　<a href=\"continue-run\">继续执行剩余步骤</a>　<a href=\"clear\">关闭提示</a>"));
         queueNotice->show();
         return;
     }
@@ -3286,9 +3286,10 @@ void AgentWindow::Private::RestoreHistory(QJsonObject event) {
         constexpr qsizetype kInitialUiEventLimit = 40;
         constexpr qsizetype kExpandedUiEventLimit = 1000;
         const qsizetype first = std::max<qsizetype>(0, uiEvents.size() - (expandAll ? kExpandedUiEventLimit : kInitialUiEventLimit));
+        // 运行中收到的恢复快照不提供“加载更多”：运行结束后它已过期。
         QString noticeText = first <= 0
             ? QStringLiteral("已恢复本地会话 · 共 %1 条记录").arg(uiEvents.size())
-            : expandAll
+            : (expandAll || busy)
             ? QStringLiteral("已恢复本地会话 · 最近 %1 条（共 %2 条）").arg(uiEvents.size() - first).arg(uiEvents.size())
             : QStringLiteral("已恢复本地会话 · 最近 %1 条　<a href=\"load-older\">加载更多（共 %2 条）</a>")
                 .arg(uiEvents.size() - first).arg(uiEvents.size());
@@ -3349,8 +3350,11 @@ void AgentWindow::Private::RestoreHistory(QJsonObject event) {
     QJsonArray messages;
     for (const auto& value : event.value(QStringLiteral("messages")).toArray())
         if (value.isObject() && !IsHiddenAgentMessage(value.toObject())) messages.append(value);
-    const qsizetype first = expandAll ? 0 : std::max<qsizetype>(0, messages.size() - kMaximumHistoryMessages);
-    historyNotice->setText(first > 0
+    constexpr qsizetype kExpandedHistoryMessages = 1000;
+    const qsizetype first = std::max<qsizetype>(0, messages.size() - (expandAll ? kExpandedHistoryMessages : kMaximumHistoryMessages));
+    historyNotice->setText(first > 0 && (expandAll || busy)
+        ? QStringLiteral("已恢复本地会话 · 最近 %1 条（共 %2 条）").arg(messages.size() - first).arg(messages.size())
+        : first > 0
         ? QStringLiteral("已恢复本地会话 · 最近 %1 条，较早记录保留在本地　<a href=\"load-older\">加载全部 %2 条</a>")
             .arg(messages.size() - first).arg(messages.size())
         : QStringLiteral("已恢复本地会话 · %1 条消息").arg(messages.size()));

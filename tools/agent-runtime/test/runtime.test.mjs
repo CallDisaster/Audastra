@@ -614,6 +614,10 @@ test('多回合会话：当前回合内长工具链也会被压缩，且不重�
     const promptIndex = saved.findIndex(m => m.role === 'user' && !m.forge_hidden && m.content?.[0]?.text === '当前长任务');
     assert(promptIndex >= 0);
     assert.equal(saved[promptIndex + 1].forge_injection, 'compaction_summary');
+    // 摘要排在当前提问之后；若其中含有提问之前的旧回合，须注明先后，避免旧要求被当成更新的指令。
+    const keptOld = saved.some(m => m.role === 'user' && m.content?.[0]?.text === '旧任务');
+    const summaryText = JSON.stringify(saved[promptIndex + 1].content);
+    assert.equal(summaryText.includes('较早回合发生在上方用户需求之前'), !keptOld);
     assert(events.some(event => event.type === 'run_end' && event.success));
   } finally {
     site.close();
