@@ -171,6 +171,8 @@ public:
     bool ProbeObjectEditAndSave(const std::filesystem::path& outputPath, QStringList& log);
     // 世界页交互探针：屏幕外窗口内持续播放、合成点选/框选/镜头旋转并记录（WorldProbeActions.cpp）。
     bool CaptureUi(const std::filesystem::path& directory, QStringList& log);
+    // 探针验收静态回退：世界页跳过动画场景，只准备静态模型。须在打开地图前调用。
+    void SetWorldStaticModelsOnly(bool enabled);
     bool ProbeWorldInteraction(int seconds, QStringList& log, bool passive = false, int readyTimeoutSeconds = 180,
         const std::filesystem::path& captureOutput = {}, bool frameOnly = false, bool modelListOnly = false,
         const QString& focusHostKey = {}, std::optional<std::uint32_t> sequenceIndex = {},

@@ -51,6 +51,10 @@ QString ButtonState(QWidget& page, const char* name) {
 
 } // namespace
 
+void MainWindow::SetWorldStaticModelsOnly(bool enabled) {
+    if (worldModule_) worldModule_->SetStaticModelsOnly(enabled);
+}
+
 bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passive, int readyTimeoutSeconds,
     const std::filesystem::path& captureOutput, bool frameOnly, bool modelListOnly, const QString& focusHostKey,
     std::optional<std::uint32_t> sequenceIndex, std::optional<std::uint64_t> elapsedMs, std::optional<std::uint64_t> globalMs) {
@@ -182,7 +186,7 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         const auto* player = worldModule_->AnimationPlayer();
         if (!viewport->RendererReady() || viewport->VertexCount() == 0 || !player) return false;
         if (modelListOnly) return worldModule_->ModelDiagnosticsReady();
-        return player->Ready() || (frameOnly && completedEmptyModelScene());
+        return player->Ready() || (frameOnly && (completedEmptyModelScene() || worldModule_->StaticModelSceneReady()));
     };
     snapshot(QStringLiteral("loading-start"));
     qint64 nextStatusMs = 5000;
@@ -303,13 +307,17 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         const auto stableScene = player->Scene();
         const auto revision = viewport->DocumentRevision();
         const bool terrainOnly = completedEmptyModelScene();
+        // 探针要求的静态模型场景同样没有动画帧；截图只绑定渲染完成帧与文档修订。
+        const bool staticOnly = worldModule_->StaticModelSceneReady();
+        const bool noAnimation = terrainOnly || staticOnly;
         Pump(50);
-        if ((!terrainOnly && (!stableFrame || !stableScene))
+        if ((!noAnimation && (!stableFrame || !stableScene))
             || (terrainOnly && !completedEmptyModelScene())
+            || (staticOnly && !worldModule_->StaticModelSceneReady())
             || player->Busy() || player->InstancesBusy() || player->Playing()
             || player->Frame() != stableFrame || viewport->AnimationTarget() != stableFrame
             || player->Scene() != stableScene || viewport->DocumentRevision() != revision
-            || (!terrainOnly && (stableFrame->sceneVersion != stableScene->sceneVersion
+            || (!noAnimation && (stableFrame->sceneVersion != stableScene->sceneVersion
                 || stableFrame->documentRevision != stableScene->documentRevision))) {
             log << QStringLiteral("world-frame-only=refused-unstable-animation"); return false;
         }
@@ -330,15 +338,17 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         const auto sourceStable = [&] {
             return viewport->AnimationTarget() == stableFrame && player->Frame() == stableFrame && player->Scene() == stableScene
                 && !player->Busy() && !player->InstancesBusy() && !player->Playing() && viewport->DocumentRevision() == revision
-                && (!terrainOnly || completedEmptyModelScene());
+                && (!terrainOnly || completedEmptyModelScene())
+                && (!staticOnly || worldModule_->StaticModelSceneReady());
         };
-        const QJsonObject noModelLayer{{"applicable", false}, {"reason", "completed-empty-model-scene"}};
+        const QJsonObject noModelLayer{{"applicable", false},
+            {"reason", staticOnly ? "static-model-scene" : "completed-empty-model-scene"}};
         const auto capturePrem = [&](const War3Map::Render::CapturedFrameRgba& captured) {
-            return terrainOnly ? War3Map::Result<QJsonObject>::Success(noModelLayer)
+            return noAnimation ? War3Map::Result<QJsonObject>::Success(noModelLayer)
                 : worldModule_->ModelPremCaptureSnapshot(captured);
         };
         const auto captureBug = [&](const War3Map::Render::CapturedFrameRgba& captured) {
-            return terrainOnly ? War3Map::Result<QJsonObject>::Success(noModelLayer)
+            return noAnimation ? War3Map::Result<QJsonObject>::Success(noModelLayer)
                 : worldModule_->ModelBugPlaceholderCaptureSnapshot(captured);
         };
         auto frame = viewport->CaptureCompletedFrame(revision, War3Map::Render::kMaximumFrameCaptureBytes);
@@ -395,7 +405,7 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         }
         QJsonObject context{{"mode", "frame-only"}, {"selection_acceptance", false},
             {"author_visible_acceptance", false}, {"input_kind", "owned-widget-no-interaction"},
-            {"model_scene", terrainOnly ? "completed-empty" : "animated"},
+            {"model_scene", staticOnly ? "static" : terrainOnly ? "completed-empty" : "animated"},
             {"stable_animation_content_version", stableFrame ? QJsonValue(QString::number(stableFrame->contentVersion)) : QJsonValue::Null},
             {"frame_metrics", metrics}, {"capture_frame_metrics", capturedMetric}};
         if (!bugCapture.Succeeded() || !bugCapture.value) {

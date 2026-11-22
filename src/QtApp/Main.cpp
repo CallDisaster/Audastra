@@ -131,6 +131,11 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     const auto worldOutputOption = arguments.indexOf(QStringLiteral("--probe-world-output"));
     const bool frameOnlyWorldProbe = arguments.contains(QStringLiteral("--probe-world-frame-only"));
     const bool modelListOnlyWorldProbe = arguments.contains(QStringLiteral("--probe-world-model-list-only"));
+    // 只准备静态模型（跳过动画场景），用于验收动画失败后的静态回退显示。
+    const bool staticModelsWorldProbe = arguments.contains(QStringLiteral("--probe-world-static-models"));
+    if (staticModelsWorldProbe && (arguments.count(QStringLiteral("--probe-world-static-models")) != 1 || !headlessProbe
+        || worldOption < 0 || !frameOnlyWorldProbe || modelListOnlyWorldProbe || passiveWorldProbe
+        || arguments.contains(QStringLiteral("--probe-world-focus-host-key")))) return 1;
     const auto worldFocusOption = arguments.indexOf(QStringLiteral("--probe-world-focus-host-key"));
     QString worldFocusHostKey;
     if (worldFocusOption >= 0) {
@@ -216,6 +221,7 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
             War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
         MainWindow probeWindow(startupCapture ? MainWindow::StartupMode::StartupProbe : MainWindow::StartupMode::HeadlessProbe);
         probeWindow.SetSaveInProcessOnly(saveInProcessOnly);
+        if (staticModelsWorldProbe) probeWindow.SetWorldStaticModelsOnly(true); // 必须早于打开地图：后台预读会先启动模型准备。
         // 资源根只在本次探针内生效，不写入用户设置。
         if (const auto uiRoot = pathOption(u"--ui-root"); !uiRoot.empty() && !probeWindow.UseUiDataRoot(uiRoot)) {
             return 3;

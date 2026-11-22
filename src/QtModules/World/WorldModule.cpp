@@ -680,7 +680,13 @@ void WorldModule::Refresh() {
     worker->start(QThread::LowPriority);
 }
 
+bool WorldModule::StaticModelSceneReady() const {
+    return staticModelsOnly_ && scene_ && !modelWorker_ && modelLoadGeneration_ == generation_
+        && modelLoadStage_ == QLatin1String("prepared-static");
+}
+
 void WorldModule::StartModels(std::uint64_t generation) {
+    if (staticModelsOnly_) { StartStaticModels(generation, tr("探针要求只显示静态姿态；没有准备动画场景。")); return; }
     if (animation_ && viewport_->HasAnimationSupport()) { StartAnimatedModels(generation); return; }
     const auto reason = tr("当前渲染插件不具备世界动画能力；仅显示静态姿态，播放控件不可用。");
     if (animation_) emit animation_->Message(reason);

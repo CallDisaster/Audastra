@@ -128,6 +128,10 @@ public:
     // 不要求无关的建筑贴画目录可用，也不把模型加载失败当作纯地形。
     [[nodiscard]] bool TerrainOnlySceneReady() const;
     [[nodiscard]] QJsonObject TerrainOnlySceneDiagnosticSnapshot() const;
+    // 探针验收静态回退用：跳过动画场景，只准备静态模型。须在打开地图前设置，不写入用户设置。
+    void SetStaticModelsOnly(bool enabled) noexcept { staticModelsOnly_ = enabled; }
+    // 当前地形这一代的静态模型场景已提交，且没有读取任务在运行。
+    [[nodiscard]] bool StaticModelSceneReady() const;
     [[nodiscard]] Result<WorldModelDiagnosticsCapture> CaptureModelDiagnosticsView();
     // capture须来自成功的Viewport完成帧读回；只核同次层与当前typed计划，不制造GPU回执。
     // 不授予可见、点选或游戏签收。
@@ -616,6 +620,7 @@ private:
     std::vector<Diagnostic> terrainLoadDiagnostics_;
     bool terrainLoadFailed_ = false;
     QString modelLoadStage_ = QStringLiteral("not-requested");
+    bool staticModelsOnly_ = false;
     std::vector<Diagnostic> modelLoadDiagnostics_;
     std::uint64_t modelLoadGeneration_ = 0;
     bool modelLoadFailed_ = false;
