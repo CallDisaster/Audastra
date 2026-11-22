@@ -71,6 +71,7 @@ private slots:
     void CapturedAnimationProperties();
     void CapturedFlightHeightAndCircleFieldsKeepRawPlacements();
     void UnitsStandOnTheDisplayedGroundWhateverHeightIsStored();
+    void BoatsAndHoverUnitsFloatOnWaterLikeTheGame();
     void SelectionCircleBatchCachesNativeTextureAndKeepsDisplayHeightSeparate();
     void SelectionOutlineUsesRendererEdges();
     void EffectiveClassificationsFollowStandardParentAndMapOverrides();
@@ -210,11 +211,12 @@ void WorldAssetBrowserTests::UnitsStandOnTheDisplayedGroundWhateverHeightIsStore
     const auto encoded = units.Serialize(); QVERIFY(encoded.Succeeded());
     const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", *encoded.value}};
     const auto document = MapDocument::FromMembers(members);
-    const auto terrain = FlatGround(364);
-    const auto captured = CaptureWorldPlacements(project, document, std::nullopt, &terrain);
+    const auto grid = FlatGround(364);
+    const WorldPlacementGround terrain{&grid};
+    const auto captured = CaptureWorldPlacements(project, document, std::nullopt, terrain);
     QCOMPARE(captured.requests.size(), std::size_t{3});
     const auto& foot = captured.requests[0]; const auto& flyer = captured.requests[1]; const auto& outside = captured.requests[2];
-    QVERIFY(foot.standsOnGround); QCOMPARE(foot.position, (std::array<float, 3>{10, 20, 364}));
+    QVERIFY(foot.groundAnchor == Render::ModelGroundAnchor::Ground); QCOMPARE(foot.position, (std::array<float, 3>{10, 20, 364}));
     QVERIFY(foot.selection); QCOMPARE(foot.selection->rawPlacementZ, 0.0f); // 原 Z 仍可查。
     QCOMPARE(flyer.position[2], 564.0f); // 地面 + 飞行高度。
     QCOMPARE(outside.position[2], 7.0f); // 地形外没有地面：保持存的 Z。
@@ -223,14 +225,71 @@ void WorldAssetBrowserTests::UnitsStandOnTheDisplayedGroundWhateverHeightIsStore
     QCOMPARE(raw.requests[0].position[2], 0.0f); QCOMPARE(raw.requests[1].position[2], 200.0f);
     // 指定行查询、放置预览、拖动预览与整表读取同一规则。
     const auto row = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, units.units[0]);
-    const auto rows = CapturePlacementRows(project, document, std::span(&row, 1), false, &terrain);
+    const auto rows = CapturePlacementRows(project, document, std::span(&row, 1), false, terrain);
     QVERIFY(rows.Succeeded()); QCOMPARE(rows.value->requests.front().position, foot.position);
-    const auto preview = CapturePlacementPreview(project, ObjectData::ObjectType::Unit, units.units[1], 0, nullptr, &terrain);
+    const auto preview = CapturePlacementPreview(project, ObjectData::ObjectType::Unit, units.units[1], 0, nullptr, terrain);
     QVERIFY(preview); QCOMPARE(preview->position, flyer.position);
-    QCOMPARE(WorldPlacementDisplayPosition(flyer, {-30, -40, -999}, &terrain), (std::array<float, 3>{-30, -40, 564}));
-    QCOMPARE(WorldPlacementDisplayPosition(flyer, {9000, 0, 12}, &terrain)[2], 212.0f);
+    QCOMPARE(WorldPlacementDisplayPosition(flyer, {-30, -40, -999}, terrain), (std::array<float, 3>{-30, -40, 564}));
+    QCOMPARE(WorldPlacementDisplayPosition(flyer, {9000, 0, 12}, terrain)[2], 212.0f);
     // 只是显示：地图里的摆放一个字节也不变。
     QCOMPARE(document.Units()->units[0].position[2], 0.0f); QCOMPARE(*units.Serialize().value, *encoded.value);
+}
+void WorldAssetBrowserTests::BoatsAndHoverUnitsFloatOnWaterLikeTheGame() {
+    // 游戏规则：船（float）和悬浮（hover）在有水处取地面与水面的高者；两栖（amph）只在深水里浮上水面；
+    // 步行单位站在水底地面上。水面 = 最近地形顶点的水高 + Water.slk 高度偏移。
+    QtProject::EditorProject project; QVERIFY(InstallObjects(project));
+    const std::string lni = "[hfoo]\numdl=\"Synthetic/Foot.mdl\"\n"
+        "[U002]\n_parent=\"hfoo\"\numvt=\"float\"\n[U003]\n_parent=\"hfoo\"\numvt=\"hover\"\n[U004]\n_parent=\"hfoo\"\numvt=\"amph\"\n";
+    auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
+    QVERIFY(parsed.Succeeded()); project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
+    MapData::UnitPlacements units;
+    for (const auto* rawcode : {"hfoo", "U002", "U003", "U004"})
+        units.units.push_back(std::get<MapData::UnitPlacement>(MakeNewPlacement(ObjectData::ObjectType::Unit, rawcode, 0, {10, 20, 0})));
+    units.units.push_back(std::get<MapData::UnitPlacement>(MakeNewPlacement(ObjectData::ObjectType::Unit, "U002", 0, {5000, 5000, 7})));
+    const auto encoded = units.Serialize(); QVERIFY(encoded.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", *encoded.value}};
+    const auto document = MapDocument::FromMembers(members);
+    // 水底地面 100；顶点水高 baseHeight，水面 = baseHeight + 50；深水阈值 64。
+    const auto water = [](float baseHeight) {
+        auto grid = FlatGround(100);
+        for (auto& vertex : grid.vertices) { vertex.textureAndFlagsRaw |= 0x40; vertex.waterBaseHeight = baseHeight; }
+        return grid;
+    };
+    const auto deepGrid = water(200), shallowGrid = water(100), dryGrid = water(0), plainGrid = FlatGround(100);
+    const auto anchors = [&](const MapData::TerrainGridSnapshot& grid, std::optional<float> offset) {
+        const auto captured = CaptureWorldPlacements(project, document, std::nullopt, WorldPlacementGround{&grid, offset, 64.0f});
+        std::vector<float> heights;
+        for (const auto& request : captured.requests) heights.push_back(request.position[2]);
+        return std::pair{captured, heights};
+    };
+    const auto [deep, deepHeights] = anchors(deepGrid, 50.0f);
+    QCOMPARE(deep.requests.size(), std::size_t{5});
+    QVERIFY(deep.requests[0].groundAnchor == Render::ModelGroundAnchor::Ground);
+    QVERIFY(deep.requests[1].groundAnchor == Render::ModelGroundAnchor::GroundOrWater);
+    QVERIFY(deep.requests[2].groundAnchor == Render::ModelGroundAnchor::GroundOrWater);
+    QVERIFY(deep.requests[3].groundAnchor == Render::ModelGroundAnchor::GroundOrDeepWater);
+    // 深水（水面 250，水深 150 ≥ 64）：步行在水底，船、悬浮、两栖都在水面；地形外的船保持存的 Z。
+    QCOMPARE(deepHeights, (std::vector<float>{100, 250, 250, 250, 7}));
+    // 浅水（水面 150，水深 50 < 64）：两栖单位走在水底，船和悬浮仍在水面。
+    QCOMPARE(anchors(shallowGrid, 50.0f).second, (std::vector<float>{100, 150, 150, 100, 7}));
+    // 水面不高于地面、没有水标记、或缺 Water.slk 偏移时都在地面上。
+    QCOMPARE(anchors(dryGrid, 50.0f).second, (std::vector<float>{100, 100, 100, 100, 7}));
+    QCOMPARE(anchors(plainGrid, 50.0f).second, (std::vector<float>{100, 100, 100, 100, 7}));
+    QCOMPARE(anchors(deepGrid, std::nullopt).second, (std::vector<float>{100, 100, 100, 100, 7}));
+    // 缺深水阈值时不能判断深水：两栖单位留在地面，船不受影响。
+    const auto noDeep = CaptureWorldPlacements(project, document, std::nullopt, WorldPlacementGround{&deepGrid, 50.0f, std::nullopt});
+    QCOMPARE(noDeep.requests[1].position[2], 250.0f); QCOMPARE(noDeep.requests[3].position[2], 100.0f);
+    // 拖动/放置预览与整表读取同一规则；水面查询取最近顶点。
+    const WorldPlacementGround ground{&deepGrid, 50.0f, 64.0f};
+    QCOMPARE(WorldPlacementDisplayPosition(deep.requests[1], {-50, 60, -999}, ground), (std::array<float, 3>{-50, 60, 250}));
+    const auto preview = CapturePlacementPreview(project, ObjectData::ObjectType::Unit, units.units[3], 0, nullptr, ground);
+    QVERIFY(preview); QCOMPARE(preview->position, deep.requests[3].position);
+    QVERIFY(WorldPlacementWaterSurface(ground, 10, 20) == std::optional<float>(250.0f));
+    QVERIFY(WorldPlacementWaterSurface(ground, 10, 20, true) == std::optional<float>(250.0f));
+    QVERIFY(!WorldPlacementWaterSurface({&shallowGrid, 50.0f, 64.0f}, 10, 20, true));
+    QVERIFY(!WorldPlacementWaterSurface(ground, 5000, 5000));
+    // 只是显示：地图里的摆放不变。
+    QCOMPARE(document.Units()->units[1].position[2], 0.0f); QCOMPARE(*units.Serialize().value, *encoded.value);
 }
 void WorldAssetBrowserTests::SelectionCircleBatchCachesNativeTextureAndKeepsDisplayHeightSeparate() {
     Image::DecodedImage image{2,2, std::vector<std::byte>(16, std::byte{255})}; image.rgba[3] = std::byte{0};

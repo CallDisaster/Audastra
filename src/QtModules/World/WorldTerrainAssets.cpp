@@ -14,7 +14,9 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <charconv>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -197,6 +199,27 @@ Result<Resources::ResourceReadResult> WithReadProvenance(Result<std::vector<std:
     return result;
 }
 
+Result<std::string> BlightTexturePath(Resources::ResourceResolver& resolver, std::uint8_t mainTileset);
+} // namespace
+
+std::optional<float> LoadWorldDeepWaterLevel(Resources::ResourceResolver& resolver) {
+    auto data = resolver.Read("UI\\MiscData.txt");
+    if (!data.Succeeded() || data.value->bytes.size() > 4 * 1024 * 1024) return std::nullopt;
+    std::string_view text(reinterpret_cast<const char*>(data.value->bytes.data()), data.value->bytes.size());
+    if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
+    std::optional<float> level;
+    Text::VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
+        if (level || section != "water" || key != "deeplevelpathing") return;
+        const auto trimmed = Text::TrimCWhitespace(value);
+        float parsed = 0;
+        const auto end = trimmed.data() + trimmed.size();
+        if (const auto [at, error] = std::from_chars(trimmed.data(), end, parsed); error == std::errc{} && at == end
+            && std::isfinite(parsed) && parsed >= 0) level = parsed;
+    });
+    return level;
+}
+
+namespace {
 Result<std::string> BlightTexturePath(Resources::ResourceResolver& resolver, std::uint8_t mainTileset) {
     auto table = resolver.Read("UI\\WorldEditData.txt");
     if (!table.Succeeded()) return {std::nullopt, std::move(table.diagnostics)};

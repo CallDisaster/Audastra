@@ -203,7 +203,7 @@ Result<WorldSelectionCircleFrame> BuildWorldSelectionCircleFrame(const WorldSele
         bool onWater = false;
         if (selection.circleOnWater) {
             if (waterHeight) {
-                if (auto water = waterHeight(x, y); water && std::isfinite(*water) && *water > rawZ) { rawZ = *water; onWater = true; }
+                if (auto water = waterHeight(x, y); water && std::isfinite(*water) && *water >= rawZ) { rawZ = *water; onWater = true; }
             } else ++output.waterSemanticsPending;
         }
         const float z = rawZ + selection.circleHeight + assets.baseHeight;

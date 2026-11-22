@@ -557,7 +557,7 @@ void WorldModule::Refresh() {
         pendingCamera_ = viewport_->SaveCamera(); pendingCameraMap_ = shownMap_;
     }
     shownMap_.clear();
-    terrain_.reset();
+    terrain_.reset(); waterSurfaceOffset_.reset(); deepWaterLevel_.reset();
     terrainHeightRules_.reset();
     rawTerrain_.reset();
     terrainCache_.reset();
@@ -648,6 +648,7 @@ void WorldModule::Refresh() {
             terrainStatus_->setText(tr("地形网格提交失败")); return;
         }
         terrain_ = result->value->terrain;
+        waterSurfaceOffset_ = result->value->waterSurfaceOffset; deepWaterLevel_ = result->value->deepWaterLevel;
         terrainHeightRules_ = result->value->heightRules;
         rawTerrain_ = sourceRaw ? sourceRaw : result->value->rawTerrain;
         if (!viewport_->SetPickingTerrain(terrain_, mesh.stride, displayRevision)) {
@@ -839,7 +840,7 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
     CaptureAuxiliary(*document);
     RefreshOutliner();
     RefreshBuildingSplats(false, &*document); // uubs资格独立于后续空模型/解析拒绝。
-    auto capture = CaptureWorldPlacements(project_, *document, std::nullopt, terrain_.get());
+    auto capture = CaptureWorldPlacements(project_, *document, std::nullopt, PlacementGround());
     placementsDirty_ = false;
     QString unresolved;
     if (capture.unresolved != 0) unresolved = tr(" · %1 个无模型").arg(Count(capture.unresolved));
@@ -1116,7 +1117,7 @@ void WorldModule::RefreshPlacements() {
     const auto document = CurrentDocument();
     if (!document) return;
     CaptureAuxiliary(*document);
-    auto capture = CaptureWorldPlacements(project_, *document, std::nullopt, terrain_.get());
+    auto capture = CaptureWorldPlacements(project_, *document, std::nullopt, PlacementGround());
     (void)ApplyModelVariantFallbacks(capture, modelVariants_);
     dragStart_.reset(); dragPosition_.reset(); dragRotation_.reset(); dragGroup_.clear();
     regionDraft_.reset(); cameraDraft_.reset();
@@ -1465,6 +1466,7 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
         return false;
     }
     terrain_ = loaded.terrain;
+    waterSurfaceOffset_ = loaded.waterSurfaceOffset; deepWaterLevel_ = loaded.deepWaterLevel;
     terrainHeightRules_ = loaded.heightRules;
     // 拖动预览与正式提交都把新悬崖层和地面一起显示；地面隐藏的悬崖格不会出现空洞。
     if (layered) cliffLayer_->Show(*loaded.cliffLayer);
@@ -1499,13 +1501,14 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
     }
     if (!preview && !waterFrameOnly && !placementsDirty_ && scene_ && !modelWorker_
         && !(animation_ && animation_->InstancesBusy())) {
-        // 单位和物品按地面高度显示。通常地形提交后紧跟一次摆放刷新；如果这次没有（摆放数据没变、
-        // 或刷新先于新地形完成），而它们脚下的地面确实变了，就补一次，免得留在旧高度。
-        const bool moved = std::any_of(requests_.begin(), requests_.end(), [this](const Render::ModelInstanceRequest& request) {
-            if (!request.standsOnGround) return false;
+        // 单位和物品按地面（或水面）高度显示。通常地形提交后紧跟一次摆放刷新；如果这次没有（摆放数据没变、
+        // 或刷新先于新地形完成），而它们脚下的地面或水面确实变了，就补一次，免得留在旧高度。
+        const auto ground = PlacementGround();
+        const bool moved = std::any_of(requests_.begin(), requests_.end(), [&ground](const Render::ModelInstanceRequest& request) {
+            if (request.groundAnchor == Render::ModelGroundAnchor::Stored) return false;
             auto raw = request.position;
             if (request.selection && request.selection->heightPreviewApproximate) raw[2] -= request.selection->flyHeightOffset;
-            return std::abs(WorldPlacementDisplayPosition(request, raw, terrain_.get())[2] - request.position[2]) > 0.5f;
+            return std::abs(WorldPlacementDisplayPosition(request, raw, ground)[2] - request.position[2]) > 0.5f;
         });
         if (moved) {
             if (viewport_->HasAnimationScene()) StartModels(generation_);

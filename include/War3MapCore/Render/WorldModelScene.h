@@ -31,6 +31,13 @@ struct ModelSelectionDescription {
     float rawPlacementZ = 0, flyHeightOffset = 0;
     bool heightPreviewApproximate = false; // fly仅rawZ+moveHeight，不修改存盘坐标。
 };
+// 单位和物品：游戏只按 (x, y) 创建，摆放文件里存的 Z 不参与（常见全为 0），落点由移动类型决定。
+enum class ModelGroundAnchor : std::uint8_t {
+    Stored,           // 用存的 Z（装饰物、可破坏物）
+    Ground,           // 地面（步行、骑乘、飞行单位，物品）
+    GroundOrWater,    // 地面和水面取高者（船、悬浮单位）
+    GroundOrDeepWater // 深水处在水面，其余在地面（两栖单位）
+};
 struct ModelInstanceRequest {
     std::string modelPath;          // 含 .mdx 扩展名的虚拟路径
     std::string replaceableTexture; // 替换贴图 ID ≥ 3（树木等）使用的贴图路径；空则该层按白色
@@ -42,9 +49,8 @@ struct ModelInstanceRequest {
     bool previewGhost = false;      // 编辑器临时实例：独立材质变体，使用半透明混合；不写地图。
     std::string animationProperties; // 继承物编uani/animProps；按完整词选择动作，不改变静态资产身份。
     std::optional<ModelSelectionDescription> selection; // 宿主显示描述，不影响资源身份或精确拾取。
-    // 单位和物品：游戏按 (x, y) 创建并让它站在地面上，摆放文件里存的 Z 不参与（常见全为 0）。
-    // 宿主有地形时按地面高度显示；只是显示描述，不影响资源身份，也不写回地图。
-    bool standsOnGround = false;
+    // 宿主按什么高度显示该摆放；只是显示描述，不影响资源身份，也不写回地图。
+    ModelGroundAnchor groundAnchor = ModelGroundAnchor::Stored;
     // 编辑器原创辅助几何，独立typed资产身份；modelPath仍是原实际资源描述，不送入伪MDX读取器。
     std::shared_ptr<const OwnedStaticModelAsset> ownedStaticAsset;
 };

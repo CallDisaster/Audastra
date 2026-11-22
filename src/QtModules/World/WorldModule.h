@@ -75,6 +75,7 @@ struct WorldTerrainCache;
 struct WorldTerrainLoaded;
 class WorldTerrainHeightRules;
 struct WorldPlacementPresentationCandidate;
+struct WorldPlacementGround;
 struct WorldPathingHelperCache;
 struct WorldPathingHelperPrepared;
 
@@ -188,6 +189,8 @@ private:
     void UpdateSelectionCircles();
     void RefreshBuildingSplats(bool rebindParent = false, const MapDocument* capturedDocument = nullptr);
     [[nodiscard]] Services::WorldSelectionVersion PlacementPresentationVersion() const;
+    // 单位和物品落地用的当前显示地形与水面事实；返回值借用 terrain_，只在本次调用内使用。
+    [[nodiscard]] WorldPlacementGround PlacementGround() const;
     void RefreshMapEdits();
     [[nodiscard]] bool RefreshEnvironment(); // 已改为完整重新读取时返回 true
     void CaptureAuxiliary(const MapDocument& document);
@@ -535,6 +538,7 @@ private:
     std::shared_ptr<std::uint64_t> instanceRevisionGate_;
     std::uint64_t modelGeneration_ = 0; // 模型线程运行期间又换代时，结束后按此补一次加载
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain_;
+    std::optional<float> waterSurfaceOffset_, deepWaterLevel_; // 与 terrain_ 同时发布，单位浮水用
     std::shared_ptr<const WorldTerrainHeightRules> terrainHeightRules_; // 与最后实际显示地形同时发布的只读owner及来源租约。
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain_; // 对应编辑会话的不可变原始快照
     std::shared_ptr<const Render::TerrainCliffs> cliffs_; // 当前地形已烘焙的悬崖，随模型场景提交

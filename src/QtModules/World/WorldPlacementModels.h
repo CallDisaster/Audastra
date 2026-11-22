@@ -23,6 +23,17 @@ namespace War3Map::MapData { struct TerrainGridSnapshot; }
 namespace War3Map::QtProject { class EditorProject; }
 namespace War3Map::Modules {
 
+// 摆放落地所需的当前显示事实。terrain 只借用，调用期间须有效；不跨线程保存。
+struct WorldPlacementGround {
+    const MapData::TerrainGridSnapshot* terrain = nullptr;
+    std::optional<float> waterSurfaceOffset; // Water.slk 当前地形集 height × 128；缺时不判断水面
+    std::optional<float> deepWaterLevel;     // UI/MiscData.txt [Water] DeepLevelPathing；缺时两栖单位不上浮
+};
+// 与游戏相同：取离 (x, y) 最近的地形顶点，有水标记且水面高于该点地面时返回水面高度。
+// deepOnly 另要求水深不小于 DeepLevelPathing（两栖单位只在深水里浮在水面）。
+[[nodiscard]] std::optional<float> WorldPlacementWaterSurface(const WorldPlacementGround& ground,
+    double x, double y, bool deepOnly = false);
+
 // GUI仅捕获有效字段与实际父链来源；TGA和原创辅助资产由同一资源worker准备。
 struct WorldPlacementPresentationCandidate {
     std::uint32_t requestIndex = 0;
@@ -58,8 +69,7 @@ struct WorldPlacementCapture {
 // document 为当前地图文档（含未保存的摆放编辑）；物编字段取自 project。
 // file非空时只捕获该成员，计数也只覆盖该成员。复用另一个成员的宿主仍须通过
 // 同来源/物编修订与WorldInstanceRegistry::Prepare的完整成员SHA、谱系检查。
-// terrain 是当前显示的地形：单位和物品按它的地面高度显示（见 WorldPlacementDisplayPosition）。
-// 为空时退回摆放文件里存的 Z，只用于没有地形的调用方。
+// 单位和物品按当前显示的地形落地（见 WorldPlacementDisplayPosition）；默认空值退回摆放文件里存的 Z。
 // 变体模型路径 → 判定结果：无编号模型路径，或空串表示保留变体路径。
 // 只在“变体文件确实不存在、无编号文件存在”时改用；其他读取错误保持原路径与原错误。
 using ModelVariantFallbacks = std::map<std::string, std::string, std::less<>>;
@@ -69,7 +79,7 @@ void ResolveModelVariantFallbacks(const WorldPlacementCapture& capture, const Re
 // 按已判定的表替换请求路径（主线程增量捕获复用后台判定）。返回替换数。
 std::size_t ApplyModelVariantFallbacks(WorldPlacementCapture& capture, const ModelVariantFallbacks& fallbacks);
 [[nodiscard]] WorldPlacementCapture CaptureWorldPlacements(const QtProject::EditorProject& project, const MapDocument& document,
-    std::optional<MapData::PlacementFile> file = std::nullopt, const MapData::TerrainGridSnapshot* terrain = nullptr);
+    std::optional<MapData::PlacementFile> file = std::nullopt, const WorldPlacementGround& ground = {});
 // 独立于模型可用性的有效建筑贴画输入。继承规则仍由ObjectNames解析；目录字段
 // 来源是实际sourceFiles集合，不伪造逐字段唯一文件/偏移。身份绑定owned有效值与来源。
 struct WorldBuildingSplatCapture {
@@ -94,19 +104,20 @@ struct WorldBuildingSplatCapture {
 // 正式创建占位保留真实落点，空modelPath明确表示未知模型/占地，不进入主模型提交。
 [[nodiscard]] Result<WorldPlacementCapture> CapturePlacementRows(const QtProject::EditorProject& project,
     const MapDocument& document, std::span<const MapData::PlacementId> rows, bool retainUnresolved = false,
-    const MapData::TerrainGridSnapshot* terrain = nullptr);
+    const WorldPlacementGround& ground = {});
 // 与正式摆放读取同一物编父链；仅生成模型请求，不创建地图行。
 [[nodiscard]] std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(
     const QtProject::EditorProject& project, ObjectData::ObjectType type,
     const MapData::PlacementTransform& placement, std::int32_t owner,
-    WorldPlacementPresentationCandidate* presentation = nullptr, const MapData::TerrainGridSnapshot* terrain = nullptr);
+    WorldPlacementPresentationCandidate* presentation = nullptr, const WorldPlacementGround& ground = {});
 // 已有/新放置/拖动预览共享：rawPosition属于地图事务，返回值只用于渲染。
-// 单位和物品（standsOnGround）在有地形且该点有地面时取地面高度，不看 rawPosition 的 Z：
+// 单位和物品（groundAnchor 不是 Stored）在有地形且该点有地面时按地面高度显示，不看 rawPosition 的 Z：
 // 游戏只按 (x, y) 创建它们，摆放文件里的 Z 常为 0，照它画会把单位埋到地面以下。
+// 船和悬浮单位取地面与水面的高者，两栖单位只在深水里取水面（游戏同一规则）。
 // 其余摆放保持原 Z。不把selZ当模型高度；仅显式fly的有效moveHeight作为预览偏移。
 [[nodiscard]] std::array<float, 3> WorldPlacementDisplayPosition(
     const Render::ModelInstanceRequest& request, const std::array<float, 3>& rawPosition,
-    const MapData::TerrainGridSnapshot* terrain = nullptr);
+    const WorldPlacementGround& ground = {});
 
 // 单位的移动类型（umvt/movetp，例如 foot、horse、fly、hover、float、amph）；rawcode 不是单位时为空。
 [[nodiscard]] std::optional<std::string> WorldUnitMovementType(const QtProject::EditorProject& project, const std::string& rawcode);

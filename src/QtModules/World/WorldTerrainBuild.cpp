@@ -121,6 +121,8 @@ void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_p
         if (!atlases.Succeeded()) cache.atlasNotes << WorldDiagnosticText(atlases.diagnostics);
         else { cache.atlases = std::move(*atlases.value); cache.atlasNotes << Messages(atlases.diagnostics); }
     }
+    loaded.waterSurfaceOffset = cache.water ? std::optional<float>(cache.water->heightOffset) : std::nullopt;
+    loaded.deepWaterLevel = cache.deepWaterLevel;
     if (groundChanged || cliffsChanged) {
         cache.names = {};
         if (auto names = LoadWorldTerrainNames(cache.reader->Resolver(), header); names.Succeeded())
@@ -294,6 +296,7 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         // 名称只用于笔刷面板显示；读取失败时面板回退到 rawcode。
         if (auto names = LoadWorldTerrainNames(resolver, loaded.terrain->header); names.Succeeded())
             created->names = std::move(*names.value);
+        created->deepWaterLevel = LoadWorldDeepWaterLevel(resolver);
         Surface(loaded, *created, nullptr, nullptr, blightPolicy, representation);
         if (const auto current = created->reader->VerifyCurrentSource(); !current.Succeeded())
             return {std::nullopt, current.diagnostics};

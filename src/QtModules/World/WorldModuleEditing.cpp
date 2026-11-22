@@ -94,7 +94,7 @@ std::optional<ObjectData::ObjectType> PlaceableType(const QString& kind) {
 
 std::vector<std::array<float, 12>> PreviewTransforms(const std::vector<Render::ModelInstanceRequest>& requests,
     const std::optional<std::array<float, 3>>& hover, bool pasting, const std::array<float, 3>& anchor,
-    const std::optional<float>& oldGround, const MapData::TerrainGridSnapshot* terrain) {
+    const std::optional<float>& oldGround, const WorldPlacementGround& ground) {
     if (!hover || (pasting && !oldGround)) return {};
     std::vector<std::array<float, 12>> transforms;
     transforms.reserve(requests.size());
@@ -103,13 +103,13 @@ std::vector<std::array<float, 12>> PreviewTransforms(const std::vector<Render::M
             request.position[0] += (*hover)[0] - anchor[0];
             request.position[1] += (*hover)[1] - anchor[1];
             request.position[2] += (*hover)[2] - *oldGround;
-            if (request.standsOnGround && terrain) {
-                // 单位和物品落在新位置的地面上，与粘贴后的正式显示一致；该点没有地面时保持整组平移的高度。
+            if (request.groundAnchor != Render::ModelGroundAnchor::Stored && ground.terrain) {
+                // 单位和物品落在新位置的地面（或水面）上，与粘贴后的正式显示一致；该点没有地面时保持整组平移的高度。
                 auto raw = request.position;
                 if (request.selection && request.selection->heightPreviewApproximate) raw[2] -= request.selection->flyHeightOffset;
-                request.position = WorldPlacementDisplayPosition(request, raw, terrain);
+                request.position = WorldPlacementDisplayPosition(request, raw, ground);
             }
-        } else request.position = WorldPlacementDisplayPosition(request, *hover, terrain);
+        } else request.position = WorldPlacementDisplayPosition(request, *hover, ground);
         transforms.push_back(Render::ModelInstanceTransform(request));
     }
     return transforms;
@@ -325,7 +325,7 @@ void WorldModule::DragSelection(double x, double y) {
             if (index >= requests_.size()) continue;
             const auto instance = InstanceOfRequest(index);
             if (!instance) continue;
-            auto moved = requests_[index]; moved.position = WorldPlacementDisplayPosition(moved, move.position, terrain_.get());
+            auto moved = requests_[index]; moved.position = WorldPlacementDisplayPosition(moved, move.position, PlacementGround());
             const auto transform = Render::ModelInstanceTransform(moved);
             std::copy(transform.begin(), transform.end(), scene_->instances[*instance].transform);
         }
@@ -372,7 +372,7 @@ void WorldModule::RotateSelection(double x, double y) {
         const auto request = static_cast<std::uint32_t>(found - placementIds_.begin());
         const auto instance = InstanceOfRequest(request);
         if (!instance || request >= requests_.size()) continue;
-        auto preview = requests_[request]; preview.position = WorldPlacementDisplayPosition(preview, move.position, terrain_.get());
+        auto preview = requests_[request]; preview.position = WorldPlacementDisplayPosition(preview, move.position, PlacementGround());
         if (move.rotation) preview.angle = *move.rotation;
         const auto transform = Render::ModelInstanceTransform(preview);
         std::copy(transform.begin(), transform.end(), scene_->instances[*instance].transform);
@@ -571,7 +571,7 @@ void WorldModule::PlaceAt(double x, double y, bool snap) {
     auto placement = std::move(*prepared.value);
     // 只读取刚创建记录的同一物编父链，不为即时占位解析整个doo。
     const auto& transform = std::visit([](const auto& value) -> const MapData::PlacementTransform& { return value; }, placement);
-    auto model = CapturePlacementPreview(project_, placing_->first, transform, owner, nullptr, terrain_.get());
+    auto model = CapturePlacementPreview(project_, placing_->first, transform, owner, nullptr, PlacementGround());
     Render::ModelInstanceRequest request;
     if (model) { request = std::move(*model); request.previewGhost = false; }
     else { request.position = transform.position; request.angle = transform.rotation; request.scale = transform.scale; }
@@ -603,7 +603,7 @@ void WorldModule::CopySelection() {
         }
     }
     clipboard_ = selectedPlacements_;
-    const auto captured = CapturePlacementRows(project_, document, clipboard_, true, terrain_.get());
+    const auto captured = CapturePlacementRows(project_, document, clipboard_, true, PlacementGround());
     if (!captured.Succeeded() || captured.value->ids != clipboard_) {
         clipboard_.clear(); clipboardRequests_.clear(); clipboardPresentations_.clear();
         project_.AddDiagnostics(captured.diagnostics);
@@ -669,7 +669,7 @@ void WorldModule::StartPlacementPreview() {
         const auto placement = MakeNewPlacement(placing_->first, placing_->second, owner, {0, 0, 0});
         const auto& transform = std::visit([](const auto& value) -> const MapData::PlacementTransform& { return value; }, placement);
         WorldPlacementPresentationCandidate presentation;
-        if (auto request = CapturePlacementPreview(project_, placing_->first, transform, owner, &presentation, terrain_.get())) {
+        if (auto request = CapturePlacementPreview(project_, placing_->first, transform, owner, &presentation, PlacementGround())) {
             previewRequests_.push_back(std::move(*request));
             if (presentation.fields) presentations.push_back(std::move(presentation));
         }
@@ -723,7 +723,7 @@ void WorldModule::StartPlacementPreview() {
     } else if (animation_) animation_->CancelAssetPrefetch();
     const auto oldGround = pasting_ && terrain_
         ? Render::SampleTerrainHeight(*terrain_, clipboardAnchor_[0], clipboardAnchor_[1]) : std::optional<float>{};
-    auto transforms = PreviewTransforms(previewRequests_, previewHover_, pasting_, clipboardAnchor_, oldGround, terrain_.get());
+    auto transforms = PreviewTransforms(previewRequests_, previewHover_, pasting_, clipboardAnchor_, oldGround, PlacementGround());
     placementPreview_->Show(previewRequests_, *sources.value, revision, [this, generation, catalogRevision, sessionGeneration, mapKey] {
         return page_ && (placing_ || pasting_) && generation_ == generation && MapKey() == mapKey
             && selectionCatalogRevision_ == catalogRevision && project_.editRevision_.Generation() == sessionGeneration;
@@ -754,7 +754,7 @@ void WorldModule::UpdatePlacementPreview() {
     if (!placementPreview_ || previewRequests_.empty()) return;
     const auto oldGround = pasting_ && terrain_
         ? Render::SampleTerrainHeight(*terrain_, clipboardAnchor_[0], clipboardAnchor_[1]) : std::optional<float>{};
-    placementPreview_->SetTransforms(PreviewTransforms(previewRequests_, previewHover_, pasting_, clipboardAnchor_, oldGround, terrain_.get()));
+    placementPreview_->SetTransforms(PreviewTransforms(previewRequests_, previewHover_, pasting_, clipboardAnchor_, oldGround, PlacementGround()));
 }
 
 void WorldModule::PasteAt(double x, double y) {

@@ -113,6 +113,9 @@ private:
     std::optional<Render::TerrainWaterStyle>* water = nullptr,
     std::shared_ptr<const Render::TerrainAtlasSnapshot>* blight = nullptr,
     std::optional<Render::WaterMaterialDefinition>* waterDefinition = nullptr);
+// 游戏判断“深水”的水深（UI/MiscData.txt [Water] DeepLevelPathing，世界单位）：两栖单位只在深水里浮上水面。
+// 取文件里的第一个值（与游戏读取相同）；读不到或不是有限非负数时为空，调用方不判断深水。
+[[nodiscard]] std::optional<float> LoadWorldDeepWaterLevel(Resources::ResourceResolver& resolver);
 // 悬崖类型：与 header.cliffTilesets 同序，CliffTypes.slk 未定义的留空（由烘焙计数说明）。
 [[nodiscard]] Result<std::vector<std::optional<Render::CliffTypeSource>>> LoadWorldCliffTypes(
     Resources::ResourceResolver& resolver, const MapData::TerrainHeader& terrain);

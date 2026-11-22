@@ -60,6 +60,8 @@ struct WorldTerrainLoaded {
     std::shared_ptr<const Render::TerrainCliffs> cliffs; // 只与贴图地面一起使用（地面已隐藏被覆盖的格）
     std::shared_ptr<const Render::SceneEnvironment> environment; // 模型光照、雾、静态阴影
     std::optional<Render::TerrainWaterStyle> selectedWater; // worker 产物；UI 成功提交完成帧后才写入缓存
+    // 单位浮水用：当前地形集水面高度偏移（Water.slk height × 128）与深水阈值；资源不可用时为空。
+    std::optional<float> waterSurfaceOffset, deepWaterLevel;
     std::optional<WorldCliffLayerFrame> cliffLayer; // 请求时为新烘焙的悬崖准备的独立层
     std::vector<Diagnostic> cliffLayerDiagnostics;
     std::vector<Diagnostic> cliffDiagnostics; // 本次悬崖烘焙原诊断；失败保留高度预览，不发布部分覆盖。
@@ -79,6 +81,7 @@ struct WorldTerrainCache {
     std::shared_ptr<const Render::TerrainAtlasSnapshot> blightAtlas;
     std::optional<Render::TerrainWaterStyle> water;
     std::optional<Render::WaterMaterialDefinition> waterDefinition;
+    std::optional<float> deepWaterLevel; // UI/MiscData.txt [Water] DeepLevelPathing，完整读取时读一次
     QStringList atlasNotes;
     Render::TerrainLighting lighting;
     std::vector<std::optional<Render::CliffTypeSource>> cliffTypes;

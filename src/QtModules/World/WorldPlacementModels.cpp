@@ -357,7 +357,8 @@ void UnitPresentation(const ObjectFields& fields, Render::ModelInstanceRequest& 
     display.circleHeight = static_cast<float>(fields.Value({"uslz", "selz"}, 0));
     display.circleOnWater = fields.Value({"usew", "selcirconwater"}, 0) != 0;
     display.scalesProjectiles = fields.Value({"uscb", "scalebull"}, 0) != 0;
-    if (const auto movement = fields.Text({"umvt", "movetp"}); movement && *movement == "fly") {
+    const auto movement = fields.Text({"umvt", "movetp"});
+    if (movement && *movement == "fly") {
         const auto height = fields.Value({"umvh", "moveheight"}, 0);
         if (std::isfinite(static_cast<float>(height)) && std::isfinite(static_cast<float>(request.position[2] + height))) {
             display.flyHeightOffset = static_cast<float>(height);
@@ -365,6 +366,10 @@ void UnitPresentation(const ObjectFields& fields, Render::ModelInstanceRequest& 
         }
     }
     request.selection = display;
+    // 游戏按移动类型落地：船（float）和悬浮（hover）在有水处取地面与水面的高者，
+    // 两栖（amph）只在深水里浮上水面，其余站在地面上。
+    request.groundAnchor = movement && (*movement == "float" || *movement == "hover") ? Render::ModelGroundAnchor::GroundOrWater
+        : movement && *movement == "amph" ? Render::ModelGroundAnchor::GroundOrDeepWater : Render::ModelGroundAnchor::Ground;
 }
 
 std::uint32_t Variation(std::int32_t variation, double count) {
@@ -380,12 +385,36 @@ std::optional<std::string> WorldUnitMovementType(const QtProject::EditorProject&
     return fields.Text({"umvt", "movetp"}).value_or(std::string{});
 }
 
+std::optional<float> WorldPlacementWaterSurface(const WorldPlacementGround& ground, double x, double y, bool deepOnly) {
+    if (!ground.terrain || !ground.waterSurfaceOffset || !std::isfinite(x) || !std::isfinite(y)) return std::nullopt;
+    const auto& terrain = *ground.terrain;
+    const auto width = terrain.header.width, height = terrain.header.height;
+    if (width == 0 || height == 0 || terrain.vertices.size() != static_cast<std::size_t>(width) * height) return std::nullopt;
+    // 最近顶点，原点与 SampleGroundHeight 的显示副本相同。
+    const auto& origin = terrain.vertices.front().position;
+    const double column = std::floor((x - origin[0]) / MapData::TerrainGridSnapshot::tileSize + 0.5);
+    const double row = std::floor((y - origin[1]) / MapData::TerrainGridSnapshot::tileSize + 0.5);
+    if (!(column >= 0 && row >= 0 && column < width && row < height)) return std::nullopt;
+    const auto& vertex = terrain.vertices[static_cast<std::size_t>(row) * width + static_cast<std::size_t>(column)];
+    if (!vertex.HasWater()) return std::nullopt;
+    const float surface = vertex.waterBaseHeight + *ground.waterSurfaceOffset, bottom = vertex.position[2];
+    if (!std::isfinite(surface) || !(surface > bottom)) return std::nullopt;
+    if (deepOnly && (!ground.deepWaterLevel || !(bottom <= surface - *ground.deepWaterLevel))) return std::nullopt;
+    return surface;
+}
+
 std::array<float, 3> WorldPlacementDisplayPosition(const Render::ModelInstanceRequest& request,
-    const std::array<float, 3>& rawPosition, const MapData::TerrainGridSnapshot* terrain) {
+    const std::array<float, 3>& rawPosition, const WorldPlacementGround& ground) {
+    using Render::ModelGroundAnchor;
     auto result = rawPosition;
-    if (request.standsOnGround && terrain)
-        if (const auto ground = MapData::SampleGroundHeight(*terrain, rawPosition[0], rawPosition[1]); ground && std::isfinite(*ground))
-            result[2] = *ground; // 地图外或没有地面的点保持原 Z。
+    if (request.groundAnchor != ModelGroundAnchor::Stored && ground.terrain)
+        if (auto height = MapData::SampleGroundHeight(*ground.terrain, rawPosition[0], rawPosition[1]); height && std::isfinite(*height)) {
+            if (request.groundAnchor == ModelGroundAnchor::GroundOrWater || request.groundAnchor == ModelGroundAnchor::GroundOrDeepWater)
+                if (const auto water = WorldPlacementWaterSurface(ground, rawPosition[0], rawPosition[1],
+                        request.groundAnchor == ModelGroundAnchor::GroundOrDeepWater); water && *water > *height)
+                    height = water;
+            result[2] = *height; // 地图外或没有地面的点保持原 Z。
+        }
     if (request.selection && request.selection->heightPreviewApproximate)
         result[2] += request.selection->flyHeightOffset;
     return result;
@@ -394,7 +423,7 @@ std::array<float, 3> WorldPlacementDisplayPosition(const Render::ModelInstanceRe
 namespace {
 std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields& fields, ObjectType type,
     const MapData::PlacementTransform& placement, std::int32_t owner, std::int32_t teamColor, std::int32_t variationIndex,
-    const MapData::TerrainGridSnapshot* terrain, std::string* variantFallback = nullptr) {
+    const WorldPlacementGround& ground, std::string* variantFallback = nullptr) {
     const bool doodad = type == ObjectType::Doodad;
     const bool destructable = type == ObjectType::Destructable;
     const bool unit = type == ObjectType::Unit;
@@ -429,15 +458,15 @@ std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields
         request.teamColor = static_cast<std::uint32_t>(std::clamp(teamColor >= 0 ? teamColor : owner, 0, 15));
         request.tint = unit ? fields.Tint({"red", "uclr"}, {"green", "uclg"}, {"blue", "uclb"})
             : fields.Tint({"colorr", "iclr"}, {"colorg", "iclg"}, {"colorb", "iclb"});
-        // 单位和物品站在地面上；原 Z 仍留在 selection->rawPlacementZ 和地图里。
-        request.standsOnGround = true;
-        request.position = WorldPlacementDisplayPosition(request, request.position, terrain);
+        // 单位按移动类型落地（UnitPresentation 已设定），物品站在地面上；原 Z 仍留在地图里。
+        if (!unit) request.groundAnchor = Render::ModelGroundAnchor::Ground;
+        request.position = WorldPlacementDisplayPosition(request, request.position, ground);
     }
     return request;
 }
 void CaptureRow(const QtProject::EditorProject& project, ObjectFields& fields, const MapDocument& document,
     const MapData::PlacementId& id, WorldPlacementCapture& capture, bool retainUnresolved,
-    const MapData::TerrainGridSnapshot* terrain) {
+    const WorldPlacementGround& ground) {
     (void)project; // fields持有同一project父链查询，不重复构造目录。
     const MapData::PlacementTransform* placement = nullptr;
     std::optional<ObjectType> type;
@@ -453,7 +482,7 @@ void CaptureRow(const QtProject::EditorProject& project, ObjectFields& fields, c
         else if (fields.Find(ObjectType::Item, id.rawcode)) type = ObjectType::Item;
     }
     std::string fallback;
-    auto request = type ? RequestFromFields(fields, *type, *placement, owner, teamColor, variation, terrain, &fallback) : std::nullopt;
+    auto request = type ? RequestFromFields(fields, *type, *placement, owner, teamColor, variation, ground, &fallback) : std::nullopt;
     if (!request) {
         WorldUnresolvedPlacement row; row.owner = id; row.position = placement->position; row.objectType = type;
         if (!type) { row.reasonCode = "WORLD_OBJECT_DEFINITION_MISSING"; row.reason = "摆放rawcode在当前地图/原版目录中没有可解析物体定义。"; }
@@ -514,17 +543,17 @@ std::size_t ApplyModelVariantFallbacks(WorldPlacementCapture& capture, const Mod
 }
 
 WorldPlacementCapture CaptureWorldPlacements(const QtProject::EditorProject& project, const MapDocument& document,
-    std::optional<MapData::PlacementFile> file, const MapData::TerrainGridSnapshot* terrain) {
+    std::optional<MapData::PlacementFile> file, const WorldPlacementGround& ground) {
     WorldPlacementCapture capture; ObjectFields fields(project);
     if (!file || *file == MapData::PlacementFile::Doodads) {
         if (const auto& doodads = document.Doodads())
             for (std::uint32_t i = 0; i < doodads->doodads.size(); ++i)
-                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Doodads, i, doodads->doodads[i]), capture, false, terrain);
+                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Doodads, i, doodads->doodads[i]), capture, false, ground);
     }
     if (!file || *file == MapData::PlacementFile::Units) {
         if (const auto& units = document.Units())
             for (std::uint32_t i = 0; i < units->units.size(); ++i)
-                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Units, i, units->units[i]), capture, false, terrain);
+                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Units, i, units->units[i]), capture, false, ground);
     }
     return capture;
 }
@@ -584,7 +613,7 @@ Result<WorldBuildingSplatCapture> CaptureWorldBuildingSplats(const QtProject::Ed
     return Result<WorldBuildingSplatCapture>::Success(std::move(capture));
 }
 Result<WorldPlacementCapture> CapturePlacementRows(const QtProject::EditorProject& project, const MapDocument& document,
-    std::span<const MapData::PlacementId> rows, bool retainUnresolved, const MapData::TerrainGridSnapshot* terrain) {
+    std::span<const MapData::PlacementId> rows, bool retainUnresolved, const WorldPlacementGround& ground) {
     WorldPlacementCapture capture; ObjectFields fields(project);
     constexpr std::size_t budget = 64ull * 1024 * 1024;
     if (rows.size() > budget / (sizeof(Render::ModelInstanceRequest) + sizeof(MapData::PlacementId)))
@@ -592,16 +621,16 @@ Result<WorldPlacementCapture> CapturePlacementRows(const QtProject::EditorProjec
     for (const auto& id : rows) {
         auto source = MapData::FindPlacement(document, id);
         if (!source.Succeeded()) return {std::nullopt, std::move(source.diagnostics)};
-        CaptureRow(project, fields, document, id, capture, retainUnresolved, terrain);
+        CaptureRow(project, fields, document, id, capture, retainUnresolved, ground);
     }
     return Result<WorldPlacementCapture>::Success(std::move(capture));
 }
 std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(const QtProject::EditorProject& project, ObjectType type,
     const MapData::PlacementTransform& placement, std::int32_t owner, WorldPlacementPresentationCandidate* presentation,
-    const MapData::TerrainGridSnapshot* terrain) {
+    const WorldPlacementGround& ground) {
     ObjectFields fields(project);
     if (!fields.Find(type, placement.rawcode)) return std::nullopt;
-    auto request = RequestFromFields(fields, type, placement, type == ObjectType::Item ? 15 : owner, -1, 0, terrain);
+    auto request = RequestFromFields(fields, type, placement, type == ObjectType::Item ? 15 : owner, -1, 0, ground);
     if (request) {
         request->previewGhost = true;
         if (presentation && type == ObjectType::Destructable)

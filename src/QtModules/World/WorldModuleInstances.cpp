@@ -11,6 +11,7 @@
 #include <QPushButton>
 #include <QTimer>
 #include <algorithm>
+#include <functional>
 #include <unordered_map>
 #include <utility>
 
@@ -20,7 +21,7 @@ std::optional<WorldPlacementCapture> CaptureUnitTail(const QtProject::EditorProj
     const MapDocument& document, const MapData::MapDataEditSession::EditReceipt& receipt,
     const Services::WorldInstanceRegistry& previous, std::span<const Render::ModelInstanceRequest> requests,
     std::span<const MapData::PlacementId> ids, std::span<const WorldPlacementPresentationCandidate> presentations,
-    const MapData::TerrainGridSnapshot* terrain) {
+    const WorldPlacementGround& ground) {
     const auto& units = document.Units();
     const auto lineage = receipt.PlacementLineage();
     if (!units || units->version != 8 || units->subversion != 11
@@ -54,7 +55,7 @@ std::optional<WorldPlacementCapture> CaptureUnitTail(const QtProject::EditorProj
     std::vector<MapData::PlacementId> added;
     for (std::uint32_t i = oldCount; i < newCount; ++i)
         added.push_back(MapData::MakePlacementId(MapData::PlacementFile::Units, i, units->units[i]));
-    auto captured = CapturePlacementRows(project, document, added, false, terrain);
+    auto captured = CapturePlacementRows(project, document, added, false, ground);
     if (!captured.Succeeded()) return std::nullopt;
     WorldPlacementCapture merged;
     merged.requests.reserve(requests.size() + captured.value->requests.size());
@@ -157,9 +158,9 @@ bool WorldModule::StagePlacementInstances(const MapDocument& document, const Wor
         }
     }
     auto tail = changedFile == MapData::PlacementFile::Units
-        ? CaptureUnitTail(project_, document, receipt, *stagedInstanceRegistry_, stagedRequests_, stagedPlacementIds_, stagedPresentations_, terrain_.get())
+        ? CaptureUnitTail(project_, document, receipt, *stagedInstanceRegistry_, stagedRequests_, stagedPlacementIds_, stagedPresentations_, PlacementGround())
         : std::nullopt;
-    auto capture = tail ? std::move(*tail) : CaptureWorldPlacements(project_, document, changedFile, terrain_.get());
+    auto capture = tail ? std::move(*tail) : CaptureWorldPlacements(project_, document, changedFile, PlacementGround());
     (void)ApplyModelVariantFallbacks(capture, modelVariants_);
     if (changedFile && !tail) {
         WorldPlacementCapture merged;
@@ -375,16 +376,24 @@ void WorldModule::UpdateSelectionCircles() {
         if (index >= requests_.size() || !requests_[index].selection) continue;
         auto request = requests_[index];
         for (const auto& move : dragGroup_) if (move.id == id) {
-            request.position = WorldPlacementDisplayPosition(request, move.position, terrain_.get());
+            request.position = WorldPlacementDisplayPosition(request, move.position, PlacementGround());
             if (move.rotation) request.angle = *move.rotation;
         }
         if (selection_ && id == *selection_) {
-            if (dragPosition_) request.position = WorldPlacementDisplayPosition(request, *dragPosition_, terrain_.get());
+            if (dragPosition_) request.position = WorldPlacementDisplayPosition(request, *dragPosition_, PlacementGround());
             if (dragRotation_) request.angle = *dragRotation_;
         }
         requests.push_back(std::move(request)); ids.push_back(id);
     }
     if (requests.empty()) selectionPresenter_->Hide();
-    else selectionPresenter_->Show(std::move(requests), terrain_, {}, std::move(ids));
+    else {
+        // 选取圈“在水面上”与单位浮水同一个水面查询；只捕获拥有的只读值。
+        std::function<std::optional<float>(double, double)> water;
+        if (terrain_ && waterSurfaceOffset_)
+            water = [terrain = terrain_, offset = waterSurfaceOffset_](double x, double y) {
+                return WorldPlacementWaterSurface({terrain.get(), offset, std::nullopt}, x, y);
+            };
+        selectionPresenter_->Show(std::move(requests), terrain_, std::move(water), std::move(ids));
+    }
 }
 } // namespace War3Map::Modules
