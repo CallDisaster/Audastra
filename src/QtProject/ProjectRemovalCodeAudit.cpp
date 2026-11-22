@@ -109,6 +109,15 @@ Trigger::RemovalPreprocessProvider LazyRemovalPreprocessProvider(const EditorPro
     };
 }
 
+Trigger::BatchRemovalPreprocessProvider LazyBatchRemovalPreprocessProvider(
+    const EditorProject& project, std::shared_ptr<Services::BatchRemovalPreprocessCache> sharedCache) {
+    return [&project, sharedCache = std::move(sharedCache), provider = Trigger::BatchRemovalPreprocessProvider{}](
+        const auto& document, const auto& catalog, const auto& targets) mutable {
+        if (!provider) provider = Services::MakeProjectBatchRemovalPreprocessProvider(project.CaptureCodeCheckSnapshot(), sharedCache);
+        return provider(document, catalog, targets);
+    };
+}
+
 bool RemovalCodeAudit::Current(const EditorProject& project) const {
     // 快照身份已含修订、引用索引与来源变化标记；没有快照时只核对修订。
     if (snapshot_ && !project.IsCodeCheckBindingCurrent(snapshot_->binding)) return false;

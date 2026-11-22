@@ -111,6 +111,13 @@ struct GraphRemove {
     GraphParentExpectation parent;
     std::vector<RemovalCodeConfirmation> codeAudits;
 };
+struct GraphBatchRemove {
+    // 批量删除声明（触发器与/或变量）；同批内部互引闭合，一次预处理与一次代码审阅覆盖全批。
+    std::vector<GraphRemove> targets;
+    // 随同删除的分类（须在移除 targets 后为空）。
+    std::vector<StableId> categoryIds;
+    std::vector<RemovalCodeConfirmation> codeAudits;
+};
 struct GraphInsertSubtree {
     GraphParentExpectation parent;
     std::optional<GraphRecordRef> before;
@@ -169,9 +176,9 @@ struct GraphPlace {
 };
 class PreparedTriggerCodeIdentityChange;
 struct GraphCodeIdentityChange { std::shared_ptr<const PreparedTriggerCodeIdentityChange> prepared; };
-using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphInsertSubtree,
-    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText, GraphPatchTriggerText, GraphPlace,
-    GraphCodeIdentityChange>;
+using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphBatchRemove,
+    GraphInsertSubtree, GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText,
+    GraphPatchTriggerText, GraphPlace, GraphCodeIdentityChange>;
 struct TriggerGraphBinding {
     std::string sourceWtgSha256, sourceWctSha256, uiCatalogSha256;
     std::string currentWtgSha256, currentWctSha256;
@@ -205,6 +212,8 @@ struct RemovalPreprocessCoverage {
 };
 // 仅宿主提供；不接受请求端伪造的覆盖结果。每次查询/发布重新捕获实际候选来源。
 using RemovalPreprocessProvider = std::function<Result<RemovalPreprocessCoverage>(const TriggerDocument&, const UiCatalog&, const GraphRemove&)>;
+using BatchRemovalPreprocessProvider = std::function<Result<RemovalPreprocessCoverage>(
+    const TriggerDocument&, const UiCatalog&, std::span<const GraphRemove>)>;
 struct TriggerGraphEditLimits {
     std::size_t maxOperations = 256;
     std::size_t maxAddedRecords = 16384;
@@ -220,6 +229,7 @@ struct TriggerGraphEditLimits {
     std::shared_ptr<const TriggerStorageCapabilities> storageCapabilities; // 宿主冻结来源，不接受工具请求设置。
     std::function<Result<std::shared_ptr<const TriggerStorageCapabilities>>(std::span<const std::string>)> storageCapabilityProvider;
     RemovalPreprocessProvider removalPreprocessProvider;
+    BatchRemovalPreprocessProvider batchRemovalPreprocessProvider;
 };
 struct TriggerGraphEditReceipt {
     TriggerGraphBinding before, after;

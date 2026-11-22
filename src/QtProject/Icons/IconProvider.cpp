@@ -1,7 +1,7 @@
 #include "Icons/IconProvider.h"
 
 #include "War3MapCore/Game/WorldEditStringLoader.h"
-#include "War3MapCore/Image/BlpImage.h"
+#include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -239,27 +239,28 @@ QIcon IconProvider::IconForTexture(const QString& texturePath, const QString& la
         return {};
     }
 
-    if (!key.endsWith(".blp")) {
-        const auto qimg = QImage::fromData(reinterpret_cast<const uchar*>(bytes.data()), static_cast<int>(bytes.size()));
-        const QIcon icon = qimg.isNull() ? QIcon{} : QIcon(QPixmap::fromImage(qimg));
+    if (key.endsWith(".blp") || key.endsWith(".tga")) {
+        auto decoded = War3Map::Image::DecodeTexture(key.toStdString(), bytes);
+        if (!decoded.Succeeded() || !decoded.value.has_value() || !decoded.value->Valid()) {
+            iconCache_.insert(cacheKey, QIcon{});
+            return {};
+        }
+
+        const auto& img = *decoded.value;
+        QImage qimg(static_cast<int>(img.width), static_cast<int>(img.height),
+                    QImage::Format_RGBA8888);
+        for (std::uint32_t y = 0; y < img.height; ++y) {
+            std::memcpy(qimg.scanLine(static_cast<int>(y)),
+                        img.rgba.data() + static_cast<std::size_t>(y) * img.width * 4,
+                        static_cast<std::size_t>(img.width) * 4);
+        }
+        QIcon icon(QPixmap::fromImage(qimg));
         iconCache_.insert(cacheKey, icon);
         return icon;
     }
-    auto decoded = War3Map::Image::DecodeBlp(bytes);
-    if (!decoded.Succeeded() || !decoded.value.has_value() || !decoded.value->Valid()) {
-        iconCache_.insert(cacheKey, QIcon{});
-        return {};
-    }
 
-    const auto& img = *decoded.value;
-    QImage qimg(static_cast<int>(img.width), static_cast<int>(img.height),
-                QImage::Format_RGBA8888);
-    for (std::uint32_t y = 0; y < img.height; ++y) {
-        std::memcpy(qimg.scanLine(static_cast<int>(y)),
-                    img.rgba.data() + static_cast<std::size_t>(y) * img.width * 4,
-                    static_cast<std::size_t>(img.width) * 4);
-    }
-    QIcon icon(QPixmap::fromImage(qimg));
+    const auto qimg = QImage::fromData(reinterpret_cast<const uchar*>(bytes.data()), static_cast<int>(bytes.size()));
+    const QIcon icon = qimg.isNull() ? QIcon{} : QIcon(QPixmap::fromImage(qimg));
     iconCache_.insert(cacheKey, icon);
     return icon;
 }

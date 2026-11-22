@@ -25,4 +25,16 @@ struct RemovalTemplateInputs {
     const Trigger::GraphRemove& removedTarget,
     std::string_view versionString = "1.32.13", bool scriptInjection = true,
     const RemovalTemplateInputs* templates = nullptr);
+// 批量删除覆盖：一次移除整批目标触发器与变量后生成并预处理整图一次。
+[[nodiscard]] Result<Trigger::RemovalPreprocessCoverage> CaptureBatchRemovalPreprocessCoverage(
+    const MapScriptInputs& inputs, const ScriptFrameworkInputs& framework,
+    std::span<const Trigger::GraphRemove> removedTargets,
+    std::string_view versionString = "1.32.13", bool scriptInjection = true,
+    const RemovalTemplateInputs* templates = nullptr);
+[[nodiscard]] Result<Trigger::RemovalPreprocessCoverage> CaptureBatchRemovalPreprocessCoverage(
+    const MapScriptInputs& inputs, const ScriptUserSourcePlan& entryPlan,
+    const ScriptUserSourceRequest& currentSources, const ScriptInjectionSources& injection,
+    std::span<const Trigger::GraphRemove> removedTargets,
+    std::string_view versionString = "1.32.13", bool scriptInjection = true,
+    const RemovalTemplateInputs* templates = nullptr);
 }

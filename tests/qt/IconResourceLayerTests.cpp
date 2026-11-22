@@ -75,6 +75,7 @@ private slots:
     void NormalizedRelativePathsShareCache();
     void RejectPathsOutsideResourceRoot();
     void UiLibraryCategoryIconsResolveToolAndLayerPaths();
+    void DecodesImportedTgaIcons();
 };
 
 void IconResourceLayerTests::ArchiveWorkspaceGameExtraPriority() {
@@ -266,6 +267,36 @@ void IconResourceLayerTests::UiLibraryCategoryIconsResolveToolAndLayerPaths() {
     QVERIFY(provider.IconForCategory("TC_ROOT").isNull());
     provider.ResetUiMappings();
     QVERIFY(provider.CategoryForFunction("QuotedCategory").isEmpty());
+}
+
+void IconResourceLayerTests::DecodesImportedTgaIcons() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString resource = temporary.filePath("resource");
+    // 1x1 32-bit BGRA uncompressed top-left TGA pixel: RGB(0x22, 0xCC, 0x44), A=0xFF
+    std::array<unsigned char, 22> tga{};
+    tga[2] = 2;    // uncompressed true-color
+    tga[12] = 1;   // width = 1
+    tga[14] = 1;   // height = 1
+    tga[16] = 32;  // 32 bpp
+    tga[17] = 0x28;// top-left origin + 8-bit alpha
+    tga[18] = 0x44;// B
+    tga[19] = 0xCC;// G
+    tga[20] = 0x22;// R
+    tga[21] = 0xFF;// A
+    const QString tgaPath = resource + "/ReplaceableTextures/CommandButtons/BTNTestCustom.tga";
+    QVERIFY(QDir().mkpath(QFileInfo(tgaPath).path()));
+    QFile file(tgaPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(reinterpret_cast<const char*>(tga.data()), static_cast<qint64>(tga.size())),
+             static_cast<qint64>(tga.size()));
+    file.close();
+
+    IconProvider provider;
+    provider.SetMapResourceDirectory(Path(resource));
+    const QIcon icon = provider.IconForTexture(QStringLiteral("ReplaceableTextures\\CommandButtons\\BTNTestCustom.tga"));
+    QVERIFY(!icon.isNull());
+    QCOMPARE(Pixel(icon), QColor(0x22, 0xCC, 0x44));
 }
 
 int main(int argc, char* argv[]) {

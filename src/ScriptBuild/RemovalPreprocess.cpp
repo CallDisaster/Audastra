@@ -39,12 +39,15 @@ Result<std::string> AuditText(const Jass::PreprocessResult& result, std::size_t&
 }
 static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     const MapScriptInputs& inputs, const ScriptFrameworkInputs* framework, const ScriptUserSourcePlan& entry,
-    const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection, const Trigger::GraphRemove& removedTarget,
+    const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection,
+    std::span<const Trigger::GraphRemove> removedTargets,
     std::string_view versionString, bool scriptInjection, const RemovalTemplateInputs* templates) {
     using Out = Result<Trigger::RemovalPreprocessCoverage>;
     using Kind = Trigger::AtomicRenameCodeKind;
     if (!inputs.triggers || !inputs.catalog || !current.layout || inputs.catalog->Sha256() != entry.catalogSha256)
         return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "预处理覆盖需要当前候选与同一工具链目录。");
+    if (removedTargets.empty())
+        return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影至少需要一个声明目标。");
     const auto verified = framework ? VerifyScriptFrameworkInputs(*framework, *current.layout)
         : VerifyScriptInjectionSources(injection, entry, current, !current.layout->allowReturnBug);
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
@@ -52,21 +55,35 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         : Sha256Text("remove-modern-profile-v1:" + injection.entryPlanIdentitySha256);
     if (!profile.Succeeded()) return {{}, profile.diagnostics};
     Trigger::RemovalPreprocessCoverage result; result.profileSha256 = *profile.value;
-    // 私有删除投影仍由生产生成器组成整图。去掉目标自身的声明/初始化，再扫描全部生成正文，
-    // 避免把自动生成的自引用误当存活引用，也覆盖宏经GUI参数生成的新引用；不发布这个投影。
+    // 私有删除投影仍由生产生成器组成整图。一次性去掉本批全部目标的声明/初始化，再扫描全部生成正文，
+    // 避免把自动生成的自引用或同批互引误当存活引用，也覆盖宏经GUI参数生成的新引用；不发布这个投影。
     auto projected = *inputs.triggers;
-    if (removedTarget.target.kind == Trigger::GraphRecordKind::Trigger) {
-        const auto found = std::find_if(projected.triggers.begin(), projected.triggers.end(), [&](const auto& t) { return t.id == removedTarget.target.id && t.name.text == removedTarget.expectedName; });
-        if (found == projected.triggers.end() || found->customTextFlag)
-            return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影需要同一普通触发器身份。");
-        const auto removed = Trigger::TriggerDocumentEditor::RemoveTrigger(projected, found->id);
+    std::vector<StableId> triggerIds, variableIds;
+    triggerIds.reserve(removedTargets.size());
+    variableIds.reserve(removedTargets.size());
+    for (const auto& removedTarget : removedTargets) {
+        if (removedTarget.target.kind == Trigger::GraphRecordKind::Trigger) {
+            const auto found = std::find_if(projected.triggers.begin(), projected.triggers.end(),
+                [&](const auto& t) { return t.id == removedTarget.target.id && t.name.text == removedTarget.expectedName; });
+            if (found == projected.triggers.end() || found->customTextFlag)
+                return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影需要同一普通触发器身份。");
+            triggerIds.push_back(found->id);
+        } else if (removedTarget.target.kind == Trigger::GraphRecordKind::Variable) {
+            const auto found = std::find_if(projected.variables.begin(), projected.variables.end(),
+                [&](const auto& v) { return v.id == removedTarget.target.id && v.name.text == removedTarget.expectedName; });
+            if (found == projected.variables.end())
+                return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影的变量身份已改变。");
+            variableIds.push_back(found->id);
+        } else return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "不支持此类删除投影。");
+    }
+    if (!triggerIds.empty()) {
+        const auto removed = Trigger::TriggerDocumentEditor::RemoveTriggers(projected, triggerIds);
         if (!removed.Succeeded()) return {{}, removed.diagnostics};
-    } else if (removedTarget.target.kind == Trigger::GraphRecordKind::Variable) {
-        const auto found = std::find_if(projected.variables.begin(), projected.variables.end(), [&](const auto& v) { return v.id == removedTarget.target.id && v.name.text == removedTarget.expectedName; });
-        if (found == projected.variables.end()) return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影的变量身份已改变。");
-        const auto removed = Trigger::TriggerDocumentEditor::RemoveVariable(projected, found->name.text);
+    }
+    if (!variableIds.empty()) {
+        const auto removed = Trigger::TriggerDocumentEditor::RemoveVariables(projected, variableIds);
         if (!removed.Succeeded()) return {{}, removed.diagnostics};
-    } else return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "不支持此类删除投影。");
+    }
     auto projectedInputs = inputs; projectedInputs.triggers = &projected;
     const auto generated = GenerateMapScript(projectedInputs);
     if (!generated.Succeeded()) return {{}, generated.diagnostics};
@@ -357,11 +374,20 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
 }
 Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(const MapScriptInputs& inputs,
     const ScriptFrameworkInputs& framework, const Trigger::GraphRemove& target, std::string_view version, bool inject, const RemovalTemplateInputs* templates) {
-    return CaptureCoverage(inputs, &framework, framework.entryPlan, FrameworkSourceRequest(framework), framework.injection, target, version, inject, templates);
+    return CaptureCoverage(inputs, &framework, framework.entryPlan, FrameworkSourceRequest(framework), framework.injection, std::span(&target, 1), version, inject, templates);
 }
 Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(const MapScriptInputs& inputs,
     const ScriptUserSourcePlan& entry, const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection,
     const Trigger::GraphRemove& target, std::string_view version, bool inject, const RemovalTemplateInputs* templates) {
-    return CaptureCoverage(inputs, nullptr, entry, current, injection, target, version, inject, templates);
+    return CaptureCoverage(inputs, nullptr, entry, current, injection, std::span(&target, 1), version, inject, templates);
+}
+Result<Trigger::RemovalPreprocessCoverage> CaptureBatchRemovalPreprocessCoverage(const MapScriptInputs& inputs,
+    const ScriptFrameworkInputs& framework, std::span<const Trigger::GraphRemove> targets, std::string_view version, bool inject, const RemovalTemplateInputs* templates) {
+    return CaptureCoverage(inputs, &framework, framework.entryPlan, FrameworkSourceRequest(framework), framework.injection, targets, version, inject, templates);
+}
+Result<Trigger::RemovalPreprocessCoverage> CaptureBatchRemovalPreprocessCoverage(const MapScriptInputs& inputs,
+    const ScriptUserSourcePlan& entry, const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection,
+    std::span<const Trigger::GraphRemove> targets, std::string_view version, bool inject, const RemovalTemplateInputs* templates) {
+    return CaptureCoverage(inputs, nullptr, entry, current, injection, targets, version, inject, templates);
 }
 }

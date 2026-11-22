@@ -259,6 +259,11 @@ public:
         TriggerDocument& document,
         StableId triggerId);
 
+    // 批量删除多个触发器并只压实一次节点表（无孤儿，不改变其余顺序）。
+    [[nodiscard]] static Status RemoveTriggers(
+        TriggerDocument& document,
+        std::span<const StableId> triggerIds);
+
     // 撤销 RemoveTrigger：触发器与其全部子树按回执恢复。
     [[nodiscard]] static Status UndoRemoveTrigger(
         TriggerDocument& document,
@@ -350,6 +355,9 @@ public:
     [[nodiscard]] static Status RemoveVariable(
         TriggerDocument& document,
         std::string_view name);
+    [[nodiscard]] static Status RemoveVariables(
+        TriggerDocument& document,
+        std::span<const StableId> variableIds);
 };
 
 } // namespace War3Map::Trigger

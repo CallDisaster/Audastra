@@ -1548,6 +1548,33 @@ TriggerDocumentEditor::RemoveTrigger(
     return ResultT::Success(std::move(receipt));
 }
 
+Status TriggerDocumentEditor::RemoveTriggers(
+    TriggerDocument& document,
+    std::span<const StableId> triggerIds) {
+    if (triggerIds.empty()) return Status::Ok();
+    std::unordered_set<StableId> targetIds;
+    targetIds.reserve(triggerIds.size());
+    for (const StableId id : triggerIds) {
+        if (!targetIds.insert(id).second) {
+            return Status::Failure("Trigger.Edit", "TRIGGER_BATCH_DUPLICATE", "批量删除列表中存在重复的触发器 ID。");
+        }
+    }
+    std::vector<char> removedEca(document.ecaNodes.size(), 0);
+    std::vector<char> removedArg(document.argumentNodes.size(), 0);
+    std::size_t matched = 0;
+    for (const auto& trigger : document.triggers) {
+        if (!targetIds.contains(trigger.id)) continue;
+        MarkSubtreeNodes(document, trigger.ecas, removedEca, removedArg);
+        ++matched;
+    }
+    if (matched != targetIds.size()) {
+        return Status::Failure("Trigger.Edit", "TRIGGER_MISSING", "批量删除中存在找不到的触发器。");
+    }
+    std::erase_if(document.triggers, [&](const TriggerRecord& trigger) { return targetIds.contains(trigger.id); });
+    CompactNodes(document, removedEca, removedArg);
+    return Status::Ok();
+}
+
 Status TriggerDocumentEditor::UndoRemoveTrigger(
     TriggerDocument& document,
     const TriggerRemoveReceipt& receipt) {
@@ -1694,6 +1721,25 @@ Status TriggerDocumentEditor::RemoveVariable(
             "variable not found: " + std::string(name));
     }
     document.variables.erase(it);
+    return Status::Ok();
+}
+
+Status TriggerDocumentEditor::RemoveVariables(
+    TriggerDocument& document,
+    std::span<const StableId> variableIds) {
+    if (variableIds.empty()) return Status::Ok();
+    std::unordered_set<StableId> targetIds;
+    targetIds.reserve(variableIds.size());
+    for (const StableId id : variableIds) {
+        if (!targetIds.insert(id).second) {
+            return Status::Failure("Trigger", "VARIABLE_BATCH_DUPLICATE", "批量删除列表中存在重复的变量 ID。");
+        }
+    }
+    const auto before = document.variables.size();
+    std::erase_if(document.variables, [&](const VariableRecord& variable) { return targetIds.contains(variable.id); });
+    if (before - document.variables.size() != targetIds.size()) {
+        return Status::Failure("Trigger", "var-not-found", "批量删除中存在找不到的变量。");
+    }
     return Status::Ok();
 }
 

@@ -448,10 +448,34 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
     return RefJson(argument ? GraphRecordKind::Argument : GraphRecordKind::Eca,
         argument ? document.argumentNodes[*index].id : document.ecaNodes[*index].id);
 }
+QJsonArray RemovalAuditBlocksJson(const std::vector<RemovalCodeBlock>& blocks) {
+    QJsonArray result;
+    for (const auto& block : blocks) {
+        const auto& b = block.identity;
+        const char* kind = b.kind == AtomicRenameCodeKind::GlobalCustomCode ? "global_custom_code"
+            : b.kind == AtomicRenameCodeKind::TriggerCustomCode ? "trigger_custom_code"
+            : b.kind == AtomicRenameCodeKind::ArgumentCode ? "argument_code" : "variable_initial_value";
+        QJsonArray evidence;
+        for (const auto& hit : block.evidence) evidence.append(QJsonObject{{"context", QString::fromStdString(hit.context)},
+            {"source_file", QString::fromStdString(hit.sourceFile)}, {"source_line", QString::number(hit.sourceLine)},
+            {"text", QString::fromStdString(hit.text)}, {"decoded_byte_offset", QString::number(hit.decodedByteOffset)},
+            {"snippet_truncated", hit.text.size() < hit.decodedByteLength},
+            {"decoded_byte_length", QString::number(hit.decodedByteLength)}, {"line", QString::number(hit.line)},
+            {"column", QString::number(hit.column)}, {"raw_byte_offset", QString::number(hit.rawByteOffset)},
+            {"raw_byte_length", QString::number(hit.rawByteLength)}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
+        result.append(QJsonObject{{"identity", QJsonObject{{"kind", kind}, {"id", QString::number(b.id)}, {"encoding", EncodingName(b.encoding)},
+            {"source_sha256", QString::fromStdString(b.sourceSha256)}, {"evidence_sha256", QString::fromStdString(b.evidenceSha256)}}},
+            {"complete", block.complete}, {"dynamic", block.dynamic}, {"referenced", block.referenced},
+            {"incomplete_reason", QString::fromStdString(block.incompleteReason)}, {"evidence", evidence},
+            {"sample_text", QString::fromStdString(block.sampleText)}, {"sample_truncated", block.sampleTruncated}});
+    }
+    return result;
+}
+
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
     const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}, const TriggerGraphEditLimits& limits = {}) {
-    Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
-        "functions", "ui_layer", "trigger_id", "category_id", "type", "match", "plan", "operation_index"});
+    Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "trigger_ids", "category_ids",
+        "include_category_triggers", "include_replacement_guard", "functions", "ui_layer", "trigger_id", "category_id", "type", "match", "plan", "operation_index"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
     const auto table = String(request, "table");
     if (table == "remove_audit") {
@@ -462,42 +486,123 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         const auto plan = DecodeGraphBatch(request.value("plan").toObject()); if (!plan.Succeeded()) return Failure(plan);
         const auto review = QueryDeclarationRemovalAudit(document, catalog, *plan.value, static_cast<std::size_t>(index), limits, mapObjects);
         if (!review.Succeeded()) return Failure(review);
-        const auto rows = [](const auto& blocks) {
-            QJsonArray result;
-            for (const auto& block : blocks) {
-                const auto& b = block.identity;
-                const char* kind = b.kind == AtomicRenameCodeKind::GlobalCustomCode ? "global_custom_code"
-                    : b.kind == AtomicRenameCodeKind::TriggerCustomCode ? "trigger_custom_code"
-                    : b.kind == AtomicRenameCodeKind::ArgumentCode ? "argument_code" : "variable_initial_value";
-                QJsonArray evidence;
-                for (const auto& hit : block.evidence) evidence.append(QJsonObject{{"context", QString::fromStdString(hit.context)},
-                    {"source_file", QString::fromStdString(hit.sourceFile)}, {"source_line", QString::number(hit.sourceLine)},
-                    {"text", QString::fromStdString(hit.text)}, {"decoded_byte_offset", QString::number(hit.decodedByteOffset)},
-                    {"snippet_truncated", hit.text.size() < hit.decodedByteLength},
-                    {"decoded_byte_length", QString::number(hit.decodedByteLength)}, {"line", QString::number(hit.line)},
-                    {"column", QString::number(hit.column)}, {"raw_byte_offset", QString::number(hit.rawByteOffset)},
-                    {"raw_byte_length", QString::number(hit.rawByteLength)}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
-                result.append(QJsonObject{{"identity", QJsonObject{{"kind", kind}, {"id", QString::number(b.id)}, {"encoding", EncodingName(b.encoding)},
-                    {"source_sha256", QString::fromStdString(b.sourceSha256)}, {"evidence_sha256", QString::fromStdString(b.evidenceSha256)}}},
-                    {"complete", block.complete}, {"dynamic", block.dynamic}, {"referenced", block.referenced},
-                    {"incomplete_reason", QString::fromStdString(block.incompleteReason)}, {"evidence", evidence},
-                    {"sample_text", QString::fromStdString(block.sampleText)}, {"sample_truncated", block.sampleTruncated}});
-            }
-            return result;
-        };
         QJsonArray symbols, typed;
         for (const auto& symbol : review.value->symbols) symbols.append(QString::fromStdString(symbol));
         for (const auto id : review.value->typedArgumentIds) typed.append(QString::number(id));
         QJsonObject result{{"ok", true}, {"schema_version", 1}, {"table", "remove_audit"}, {"binding", BindingJson(review.value->binding)},
             {"review_sha256", QString::fromStdString(review.value->reviewSha256)}, {"symbols", symbols}, {"typed_argument_ids", typed},
             {"complete", review.value->complete}, {"groupable_count", static_cast<qint64>(review.value->groupableCount)},
-            {"groupable_sha256", QString::fromStdString(review.value->groupableSha256)}, {"groupable_samples", rows(review.value->groupableSamples)},
-            {"individual_blocks", rows(review.value->individualBlocks)}, {"external_dependencies_verified", review.value->externalDependenciesVerified},
+            {"groupable_sha256", QString::fromStdString(review.value->groupableSha256)}, {"groupable_samples", RemovalAuditBlocksJson(review.value->groupableSamples)},
+            {"individual_blocks", RemovalAuditBlocksJson(review.value->individualBlocks)}, {"external_dependencies_verified", review.value->externalDependenciesVerified},
             {"preprocess_identity_sha256", QString::fromStdString(review.value->preprocessIdentitySha256)},
             {"preprocess_profile_sha256", QString::fromStdString(review.value->preprocessProfileSha256)},
             {"included_file_count", static_cast<qint64>(review.value->includedFileCount)}};
         if (static_cast<std::size_t>(QJsonDocument(result).toJson(QJsonDocument::Compact).size()) > kResponseBytes)
             throw GraphJsonError("完整删除审计超过回执预算，未截断放行。", "MCP_TRIGGER_GRAPH_RESPONSE_BUDGET");
+        return result;
+    }
+    if (table == "batch_remove_audit") {
+        Object(request, {"table"}, {"schema_version", "trigger_ids", "category_ids", "include_category_triggers", "variable_ids"});
+        const bool includeCategoryTriggers = request.contains("include_category_triggers") ? Boolean(request, "include_category_triggers") : true;
+        std::vector<StableId> triggerIds, categoryIds, variableIds;
+        std::set<StableId> triggerSet, categorySet, variableSet;
+        const auto parseIdArray = [&](const char* key, std::size_t maxCount, std::vector<StableId>& out, std::set<StableId>& seen) {
+            if (!request.contains(key)) return;
+            const auto arr = Array(request, key);
+            if (static_cast<std::size_t>(arr.size()) > maxCount)
+                throw GraphJsonError(std::string(key) + " 最多支持 " + std::to_string(maxCount) + " 项。");
+            for (const auto& item : arr) {
+                const auto id = Id(QJsonObject{{"id", item}}, "id");
+                if (!seen.insert(id).second) throw GraphJsonError(std::string(key) + " 中存在重复 ID。");
+                out.push_back(id);
+            }
+        };
+        parseIdArray("trigger_ids", 512, triggerIds, triggerSet);
+        parseIdArray("category_ids", 128, categoryIds, categorySet);
+        parseIdArray("variable_ids", 512, variableIds, variableSet);
+        if (triggerIds.empty() && categoryIds.empty() && variableIds.empty())
+            throw GraphJsonError("batch_remove_audit 至少需要提供 trigger_ids、category_ids 或 variable_ids 之一。");
+
+        std::set<std::uint32_t> expandedCategoryRawIds;
+        for (const StableId catStableId : categoryIds) {
+            const auto found = std::find_if(document.categories.begin(), document.categories.end(),
+                [catStableId](const auto& c) { return c.id == catStableId; });
+            if (found == document.categories.end()) return Failure("TRIGGER_GRAPH_TARGET_MISSING", "找不到要审阅的分类 ID：" + std::to_string(catStableId));
+            if (includeCategoryTriggers) expandedCategoryRawIds.insert(found->categoryId);
+        }
+        if (includeCategoryTriggers && !expandedCategoryRawIds.empty()) {
+            for (const auto& trig : document.triggers) {
+                if (expandedCategoryRawIds.contains(trig.categoryId) && triggerSet.insert(trig.id).second) {
+                    triggerIds.push_back(trig.id);
+                }
+            }
+        }
+        if (triggerIds.size() + variableIds.size() > 512)
+            throw GraphJsonError("批量删除审计合并后的触发器与变量总数不能超过 512。");
+
+        std::vector<GraphRemove> targets;
+        targets.reserve(triggerIds.size() + variableIds.size());
+        for (const StableId id : triggerIds) {
+            const auto found = std::find_if(document.triggers.begin(), document.triggers.end(),
+                [id](const auto& t) { return t.id == id; });
+            if (found == document.triggers.end()) return Failure("TRIGGER_GRAPH_TARGET_MISSING", "找不到要审阅的触发器 ID：" + std::to_string(id));
+            GraphRemove op; op.target = {GraphRecordKind::Trigger, id, {}}; op.expectedName = found->name.text;
+            targets.push_back(std::move(op));
+        }
+        for (const StableId id : variableIds) {
+            const auto found = std::find_if(document.variables.begin(), document.variables.end(),
+                [id](const auto& v) { return v.id == id; });
+            if (found == document.variables.end()) return Failure("TRIGGER_GRAPH_TARGET_MISSING", "找不到要审阅的变量 ID：" + std::to_string(id));
+            GraphRemove op; op.target = {GraphRecordKind::Variable, id, {}}; op.expectedName = found->name.text;
+            targets.push_back(std::move(op));
+        }
+        QJsonArray catJson;
+        for (const StableId id : categoryIds) catJson.append(QString::number(id));
+        if (targets.empty()) {
+            const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
+            if (!binding.Succeeded()) return Failure(binding);
+            return QJsonObject{{"ok", true}, {"schema_version", 1}, {"table", "batch_remove_audit"},
+                {"binding", BindingJson(*binding.value)}, {"review_sha256", QString{}}, {"code_audit_required", false},
+                {"targets", QJsonArray{}}, {"category_ids", catJson}, {"typed_argument_ids", QJsonArray{}},
+                {"referenced_target_ids", QJsonArray{}}, {"complete", true}, {"groupable_count", 0},
+                {"groupable_sha256", QString{}}, {"groupable_samples", QJsonArray{}}, {"individual_blocks", QJsonArray{}},
+                {"external_dependencies_verified", false}, {"preprocess_identity_sha256", QString{}},
+                {"preprocess_profile_sha256", QString{}}, {"included_file_count", 0}};
+        }
+        const BatchRemovalPreprocessProvider* provider = limits.batchRemovalPreprocessProvider
+            ? &limits.batchRemovalPreprocessProvider : nullptr;
+        const auto review = QueryBatchDeclarationRemovalAudit(document, catalog, targets, mapObjects, provider);
+        if (!review.Succeeded()) return Failure(review);
+        QJsonArray targetRows, typed, refTargets;
+        for (const auto& item : review.value->targets) {
+            QJsonArray itemTyped;
+            for (const auto argId : item.typedArgumentIds) itemTyped.append(QString::number(argId));
+            if (!item.typedArgumentIds.empty()) refTargets.append(QString::number(item.target.id));
+            targetRows.append(QJsonObject{
+                {"kind", item.target.kind == GraphRecordKind::Variable ? "variable" : "trigger"},
+                {"id", QString::number(item.target.id)},
+                {"name", QString::fromStdString(item.expectedName)},
+                {"typed_reference_count", static_cast<qint64>(item.typedArgumentIds.size())},
+            });
+        }
+        for (const auto id : review.value->typedArgumentIds) typed.append(QString::number(id));
+        QJsonObject result{{"ok", true}, {"schema_version", 1}, {"table", "batch_remove_audit"},
+            {"binding", BindingJson(review.value->binding)},
+            {"review_sha256", QString::fromStdString(review.value->reviewSha256)},
+            {"code_audit_required", review.value->groupableCount > 0 || !review.value->individualBlocks.empty()},
+            {"target_count", static_cast<qint64>(review.value->targets.size())},
+            {"targets", targetRows}, {"category_ids", catJson}, {"typed_argument_ids", typed},
+            {"referenced_target_ids", refTargets}, {"complete", review.value->complete},
+            {"groupable_count", static_cast<qint64>(review.value->groupableCount)},
+            {"groupable_sha256", QString::fromStdString(review.value->groupableSha256)},
+            {"groupable_samples", RemovalAuditBlocksJson(review.value->groupableSamples)},
+            {"individual_blocks", RemovalAuditBlocksJson(review.value->individualBlocks)},
+            {"external_dependencies_verified", review.value->externalDependenciesVerified},
+            {"preprocess_identity_sha256", QString::fromStdString(review.value->preprocessIdentitySha256)},
+            {"preprocess_profile_sha256", QString::fromStdString(review.value->preprocessProfileSha256)},
+            {"included_file_count", static_cast<qint64>(review.value->includedFileCount)}};
+        if (static_cast<std::size_t>(QJsonDocument(result).toJson(QJsonDocument::Compact).size()) > kResponseBytes)
+            throw GraphJsonError("完整批量删除审计超过回执预算，未截断放行。", "MCP_TRIGGER_GRAPH_RESPONSE_BUDGET");
         return result;
     }
     if (table == "trigger_text") {
@@ -648,6 +753,8 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
     if (request.contains("type")) throw GraphJsonError("type 只适用于 presets 表。");
     if (request.contains("trigger_id")) throw GraphJsonError("trigger_id 只适用于 trigger_text 表。");
     if (request.contains("category_id")) throw GraphJsonError("category_id 只适用于 feature_text 表。");
+    if (request.contains("trigger_ids") || request.contains("category_ids") || request.contains("include_category_triggers"))
+        throw GraphJsonError("trigger_ids/category_ids/include_category_triggers 只适用于 batch_remove_audit 表。");
     const bool exactArguments = request.contains("argument_ids"), exactVariables = request.contains("variable_ids");
     const bool exact = exactArguments || exactVariables;
     const bool guards = request.contains("include_replacement_guard") && Boolean(request, "include_replacement_guard");
@@ -1072,11 +1179,15 @@ QJsonObject GraphQueryProperties() {
     plan.remove("$defs");
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
-            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline", "legacy_trigger_references", "remove_audit"}}}},
+            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline", "legacy_trigger_references",
+            "remove_audit", "batch_remove_audit"}}}},
         {"plan", plan}, {"operation_index", QJsonObject{{"type", "integer"}, {"minimum", 0}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
-        {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
+        {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 512}, {"uniqueItems", true}, {"items", id}}},
+        {"trigger_ids", QJsonObject{{"type", "array"}, {"minItems", 0}, {"maxItems", 512}, {"uniqueItems", true}, {"items", id}}},
+        {"category_ids", QJsonObject{{"type", "array"}, {"minItems", 0}, {"maxItems", 128}, {"uniqueItems", true}, {"items", id}}},
+        {"include_category_triggers", QJsonObject{{"type", "boolean"}, {"default", true}}},
         {"include_replacement_guard", QJsonObject{{"type", "boolean"}}}, {"functions", EcaFunctionFilterSchema()},
         {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}, {"category_id", id},
         {"type", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"match", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}}};
@@ -1103,13 +1214,106 @@ QJsonObject QueryGraphDocument(const Trigger::TriggerDocument& document, const T
     catch (const GraphJsonError& failure) { return Failure(failure.code, failure.what()); }
 }
 
+QJsonObject TriggerBatchDeleteProperties() {
+    const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
+    return {
+        {"trigger_ids", QJsonObject{{"type", "array"}, {"minItems", 0}, {"maxItems", 512}, {"uniqueItems", true}, {"items", id}}},
+        {"category_ids", QJsonObject{{"type", "array"}, {"minItems", 0}, {"maxItems", 128}, {"uniqueItems", true}, {"items", id}}},
+        {"delete_category_triggers", QJsonObject{{"type", "boolean"}, {"default", true}}},
+        {"code_audits", QJsonObject{{"type", "array"}, {"maxItems", 16385}, {"items", GraphRemovalCodeAuditSchema()}}},
+        {"dry_run", QJsonObject{{"type", "boolean"}, {"default", false}}},
+    };
+}
+
+Result<BatchDeleteTriggerPlan> BuildTriggerBatchDeletePlan(
+    const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
+    const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request) {
+    try {
+        if (static_cast<std::size_t>(QJsonDocument(request).toJson(QJsonDocument::Compact).size()) > kRequestBytes)
+            throw GraphJsonError("批量删除请求超过 4 MiB 编码预算。", "MCP_TRIGGER_GRAPH_REQUEST_BUDGET");
+        Object(request, {}, {"trigger_ids", "category_ids", "delete_category_triggers", "code_audits", "dry_run"});
+        const bool deleteCategoryTriggers = !request.contains("delete_category_triggers") || Boolean(request, "delete_category_triggers");
+        if (request.contains("dry_run")) (void)Boolean(request, "dry_run");
+
+        std::vector<StableId> triggerIds, categoryIds;
+        std::set<StableId> triggerSet, categorySet;
+        const auto parseIdArray = [&](const char* key, std::size_t maxCount, std::vector<StableId>& out, std::set<StableId>& seen) {
+            if (!request.contains(key)) return;
+            const auto arr = Array(request, key);
+            if (static_cast<std::size_t>(arr.size()) > maxCount)
+                throw GraphJsonError(std::string(key) + " 最多支持 " + std::to_string(maxCount) + " 项。", "TRIGGER_REMOVE_BATCH_BUDGET");
+            for (const auto& item : arr) {
+                const auto id = Id(QJsonObject{{"id", item}}, "id");
+                if (!seen.insert(id).second) throw GraphJsonError(std::string(key) + " 中存在重复 ID。", "TRIGGER_REMOVE_BATCH_DUPLICATE");
+                out.push_back(id);
+            }
+        };
+        parseIdArray("trigger_ids", 512, triggerIds, triggerSet);
+        parseIdArray("category_ids", 128, categoryIds, categorySet);
+        if (triggerIds.empty() && categoryIds.empty())
+            throw GraphJsonError("triggers_batch_delete 至少需要提供 trigger_ids 或 category_ids 之一。", "TRIGGER_REMOVE_BATCH_EMPTY");
+
+        BatchDeleteTriggerPlan plan;
+        std::set<std::uint32_t> expandedCategoryRawIds;
+        for (const StableId catStableId : categoryIds) {
+            const auto found = std::find_if(document.categories.begin(), document.categories.end(),
+                [catStableId](const auto& c) { return c.id == catStableId; });
+            if (found == document.categories.end())
+                return Result<BatchDeleteTriggerPlan>::Failure("MCP", "TRIGGER_GRAPH_TARGET_MISSING",
+                    "找不到要删除的分类 ID：" + std::to_string(catStableId));
+            plan.categoryIds.push_back(catStableId);
+            plan.categoryNames.push_back(found->name.text);
+            if (deleteCategoryTriggers) expandedCategoryRawIds.insert(found->categoryId);
+        }
+        if (deleteCategoryTriggers && !expandedCategoryRawIds.empty()) {
+            for (const auto& trig : document.triggers) {
+                if (expandedCategoryRawIds.contains(trig.categoryId) && triggerSet.insert(trig.id).second) {
+                    triggerIds.push_back(trig.id);
+                }
+            }
+        }
+        if (triggerIds.size() > 512)
+            throw GraphJsonError("展开分类后待删除触发器总数超过 512 上限，请分批删除。", "TRIGGER_REMOVE_BATCH_BUDGET");
+
+        GraphBatchRemove op;
+        op.categoryIds = plan.categoryIds;
+        op.targets.reserve(triggerIds.size());
+        for (const StableId id : triggerIds) {
+            const auto found = std::find_if(document.triggers.begin(), document.triggers.end(),
+                [id](const auto& t) { return t.id == id; });
+            if (found == document.triggers.end())
+                return Result<BatchDeleteTriggerPlan>::Failure("MCP", "TRIGGER_GRAPH_TARGET_MISSING",
+                    "找不到要删除的触发器 ID：" + std::to_string(id));
+            GraphRemove target;
+            target.target = {GraphRecordKind::Trigger, id, {}};
+            target.expectedName = found->name.text;
+            op.targets.push_back(std::move(target));
+            plan.triggerIds.push_back(id);
+            plan.triggerNames.push_back(found->name.text);
+        }
+        if (request.contains("code_audits")) {
+            const auto audits = DecodeGraphRemovalCodeAudits(Array(request, "code_audits"));
+            if (!audits.Succeeded()) return {std::nullopt, audits.diagnostics};
+            op.codeAudits = *audits.value;
+        }
+        const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
+        if (!binding.Succeeded()) return {std::nullopt, binding.diagnostics};
+        plan.batch.expected = *binding.value;
+        plan.batch.operations.emplace_back(std::move(op));
+        return Result<BatchDeleteTriggerPlan>::Success(std::move(plan));
+    } catch (const GraphJsonError& failure) {
+        return Result<BatchDeleteTriggerPlan>::Failure("MCP", failure.code, failure.what());
+    }
+}
+
 void RegisterTriggerGraphTools(McpServer& server) {
     ToolDefinition query;
     query.name = "query_trigger_graph";
     query.description = "分页查询 GUI 图；ecas 可用 functions（精确函数名）或 ui_layer（函数库层）筛选后再分页；arguments 可用 argument_ids 定点查询最多16项，并通过 include_replacement_guard 取得共用核心的原位替换资格；"
         "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别（触发器与引用的变量）导出为功能写法；"
         "presets 表（可配 type）列出函数库预设；function_examples 表配 functions 给出这些函数在本图里的真实用法原句；"
-        "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选。";
+        "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选；"
+        "batch_remove_audit 表配 trigger_ids/category_ids/variable_ids 一次对整批待删目标做删除审计（只预处理整图一次，同批互相引用不误报）。";
     query.inputSchema = WithGraphQueryDefinitions(BasicSchema(GraphQueryProperties(), {"table"}));
     query.maxResponseBytes = kResponseBytes;
     query.handler = [&server](const QJsonObject& request) -> QJsonValue {
@@ -1165,5 +1369,55 @@ void RegisterTriggerGraphTools(McpServer& server) {
         } catch (const GraphJsonError& failure) { return Failure(failure.code, failure.what()); }
     };
     server.RegisterTool(std::move(edit));
+    {
+        ToolDefinition batchDelete;
+        batchDelete.name = "triggers_batch_delete";
+        batchDelete.permission = ToolPermission::Edit;
+        batchDelete.description = "在单一目录事务内原子批量删除触发器（最多512个）与分类（最多128个）；"
+            "delete_category_triggers=true（默认）时自动连同分类内所有触发器一并删除。先用 query_trigger_graph 的 batch_remove_audit 一次取证，"
+            "再用 code_audits 提交整批确认；同批内互相引用不误报，外部存活引用或证据缺口时整批拒绝。dry_run=true 只预检不发布。";
+        auto props = TriggerBatchDeleteProperties();
+        batchDelete.inputSchema = BasicSchema(props, {"transaction_id", "expected_revision"});
+        batchDelete.maxResponseBytes = kResponseBytes;
+        batchDelete.handler = [&server](const QJsonObject& request) -> QJsonValue {
+            QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;
+            try {
+                if (!request.contains("transaction_id") || !request.contains("expected_revision"))
+                    throw GraphJsonError("缺少 transaction_id 或 expected_revision。");
+                Object(request.value("expected_revision"), {"generation", "source_sha256", "ui_catalog_sha256"});
+                const auto envelope = ParseEnvelope(request); if (!envelope.Succeeded()) return Failure(envelope);
+                const auto environment = workspace->EnvironmentStatus();
+                if (!environment.Succeeded()) return Failure(environment);
+                auto body = request;
+                body.remove("transaction_id"); body.remove("expected_revision");
+                const bool dryRun = body.contains("dry_run") && Boolean(body, "dry_run");
+                const auto capturedObjects = workspace->MapObjectReferences();
+                const auto* mapObjects = capturedObjects.Succeeded() && capturedObjects.value &&
+                    !(*capturedObjects.value)->References().empty() ? capturedObjects.value->get() : nullptr;
+                const auto plan = BuildTriggerBatchDeletePlan(workspace->VisibleDocument(), workspace->Catalog(), mapObjects, body);
+                if (!plan.Succeeded()) return Failure(plan);
+                const auto result = workspace->ApplyGraphEdit(envelope.value->first, envelope.value->second, plan.value->batch, {}, dryRun);
+                if (!result.Succeeded()) return Failure(result);
+                auto payload = GraphReceipt(*result.value, *workspace);
+                QJsonArray trigIds, trigNames, catIds, catNames;
+                for (const auto id : plan.value->triggerIds) trigIds.append(QString::number(id));
+                for (const auto& name : plan.value->triggerNames) trigNames.append(QString::fromStdString(name));
+                for (const auto id : plan.value->categoryIds) catIds.append(QString::number(id));
+                for (const auto& name : plan.value->categoryNames) catNames.append(QString::fromStdString(name));
+                payload.insert("deleted_trigger_ids", trigIds);
+                payload.insert("deleted_trigger_names", trigNames);
+                payload.insert("deleted_trigger_count", static_cast<qint64>(plan.value->triggerIds.size()));
+                payload.insert("deleted_category_ids", catIds);
+                payload.insert("deleted_category_names", catNames);
+                payload.insert("deleted_category_count", static_cast<qint64>(plan.value->categoryIds.size()));
+                payload.insert("dry_run", dryRun);
+                payload.insert("diagnostics", DiagnosticsJson(result.diagnostics).value("diagnostics"));
+                payload.insert("published", !dryRun && (result.value->before.currentWtgSha256 != result.value->after.currentWtgSha256
+                    || result.value->before.currentWctSha256 != result.value->after.currentWctSha256));
+                return payload;
+            } catch (const GraphJsonError& failure) { return Failure(failure.code, failure.what()); }
+        };
+        server.RegisterTool(std::move(batchDelete));
+    }
 }
 } // namespace War3Map::Mcp

@@ -7,7 +7,7 @@
 #include <optional>
 #include <set>
 
-namespace War3Map::Services { struct CodeCheckProjectSnapshot; }
+namespace War3Map::Services { struct CodeCheckProjectSnapshot; class BatchRemovalPreprocessCache; }
 namespace War3Map::QtProject {
 class EditorProject;
 
@@ -43,4 +43,6 @@ private:
 // 触发器编辑事务里删除声明用的预处理覆盖：第一次删除声明时才冻结工程快照，与 remove_audit 查询同一来源。
 // 返回的提供器引用 project，只在本次事务内使用。
 [[nodiscard]] Trigger::RemovalPreprocessProvider LazyRemovalPreprocessProvider(const EditorProject& project);
+[[nodiscard]] Trigger::BatchRemovalPreprocessProvider LazyBatchRemovalPreprocessProvider(
+    const EditorProject& project, std::shared_ptr<Services::BatchRemovalPreprocessCache> sharedCache = {});
 }

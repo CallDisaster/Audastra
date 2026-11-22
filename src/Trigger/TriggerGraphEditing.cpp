@@ -126,6 +126,21 @@ struct RequestBudget {
                         if (!AddText(block.sourceSha256) || !AddText(block.evidenceSha256)) return false;
                 }
                 return true;
+            } else if constexpr (std::is_same_v<T, GraphBatchRemove>) {
+                if ((item.targets.empty() && item.categoryIds.empty()) || item.targets.size() > 512 || item.categoryIds.size() > 128
+                    || item.codeAudits.size() > 16385) return false;
+                for (const auto& target : item.targets) {
+                    if (!Ref(target.target) || !AddText(target.expectedName)) return false;
+                }
+                std::size_t blocks = 0;
+                for (const auto& audit : item.codeAudits) {
+                    if (!AddText(audit.reviewSha256) || !AddText(audit.decision) || !AddText(audit.reason)) return false;
+                    if (audit.blocks.size() > 16384 - blocks) return false;
+                    blocks += audit.blocks.size();
+                    for (const auto& block : audit.blocks)
+                        if (!AddText(block.sourceSha256) || !AddText(block.evidenceSha256)) return false;
+                }
+                return true;
             } else if constexpr (std::is_same_v<T, GraphReplaceArgument>) {
                 return Ref(item.target) && AddText(item.expected.uiSignature) && AddText(item.expected.expectedType)
                     && AddText(item.expected.subtreeSha256) && Arg(item.value, 0, true);
@@ -541,6 +556,67 @@ struct Editor {
         if (op.target.kind == GraphRecordKind::Variable) return TriggerDocumentEditor::RemoveVariable(doc, name);
         if (Find(doc.triggers, *id.value)->customTextFlag) return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "不能删除既有自定义代码槽。");
         auto removed = TriggerDocumentEditor::RemoveTrigger(doc, *id.value); return {std::move(removed.diagnostics)};
+    }
+    Status Apply(const GraphBatchRemove& op) {
+        if (op.targets.empty() && op.categoryIds.empty())
+            return Fail("TRIGGER_REMOVE_BATCH_EMPTY", "批量删除至少需要一个触发器、变量或分类。");
+        if (op.targets.size() > 512 || op.categoryIds.size() > 128)
+            return Fail("TRIGGER_REMOVE_BATCH_BUDGET", "批量删除超出上限（最多 512 个声明与 128 个分类）。");
+        std::vector<GraphRemove> resolvedTargets;
+        resolvedTargets.reserve(op.targets.size());
+        std::vector<StableId> triggerIds, variableIds;
+        std::set<std::pair<GraphRecordKind, StableId>> seenTargets;
+        for (const auto& item : op.targets) {
+            const auto id = Resolve(item.target);
+            if (!id.Succeeded()) return {id.diagnostics};
+            if (item.target.kind != GraphRecordKind::Trigger && item.target.kind != GraphRecordKind::Variable)
+                return Fail("TRIGGER_GRAPH_REMOVE_UNSUPPORTED", "批量删除声明只支持触发器或变量。");
+            if (!seenTargets.emplace(item.target.kind, *id.value).second)
+                return Fail("TRIGGER_REMOVE_BATCH_DUPLICATE", "批量删除列表中包含重复目标。");
+            if (item.target.kind == GraphRecordKind::Variable) {
+                const auto* variable = Find(doc.variables, *id.value);
+                if (!variable || variable->name.text != item.expectedName)
+                    return Fail("TRIGGER_GRAPH_NAME_STALE", "批量删除变量身份或名称前值已变化：" + item.expectedName);
+                variableIds.push_back(*id.value);
+            } else {
+                const auto* trigger = Find(doc.triggers, *id.value);
+                if (!trigger || trigger->name.text != item.expectedName)
+                    return Fail("TRIGGER_GRAPH_NAME_STALE", "批量删除触发器身份或名称前值已变化：" + item.expectedName);
+                if (trigger->customTextFlag != 0)
+                    return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "批量删除不能删除既有自定义代码槽：" + item.expectedName);
+                triggerIds.push_back(*id.value);
+            }
+            GraphRemove resolved;
+            resolved.target = {item.target.kind, *id.value, {}};
+            resolved.expectedName = item.expectedName;
+            resolvedTargets.push_back(std::move(resolved));
+        }
+        std::set<StableId> seenCategories;
+        for (const StableId catId : op.categoryIds) {
+            if (!seenCategories.insert(catId).second)
+                return Fail("TRIGGER_REMOVE_BATCH_DUPLICATE", "批量删除分类列表中存在重复 ID。");
+            if (!Find(doc.categories, catId))
+                return Fail("TRIGGER_GRAPH_TARGET_MISSING", "批量删除中找不到目标分类。");
+        }
+        if (!resolvedTargets.empty()) {
+            const BatchRemovalPreprocessProvider* provider = limits.batchRemovalPreprocessProvider
+                ? &limits.batchRemovalPreprocessProvider : nullptr;
+            if (auto checked = CheckBatchDeclarationRemovalAudit(doc, catalog, resolvedTargets, op.codeAudits, mapObjects, provider);
+                !checked.Succeeded()) return checked;
+            receipt.removalAudits.insert(receipt.removalAudits.end(), op.codeAudits.begin(), op.codeAudits.end());
+        }
+        if (!triggerIds.empty()) {
+            if (auto removed = TriggerDocumentEditor::RemoveTriggers(doc, triggerIds); !removed.Succeeded()) return removed;
+        }
+        if (!variableIds.empty()) {
+            if (auto removed = TriggerDocumentEditor::RemoveVariables(doc, variableIds); !removed.Succeeded()) return removed;
+        }
+        for (const StableId catId : op.categoryIds) {
+            const auto* cat = Find(doc.categories, catId);
+            if (!cat) return Fail("TRIGGER_GRAPH_TARGET_MISSING", "批量删除中找不到目标分类。");
+            if (auto removed = TriggerDirectoryEditor::RemoveEmptyCategory(doc, cat->categoryId); !removed.Succeeded()) return removed;
+        }
+        return Status::Ok();
     }
     Status ClearDefaultCall(StableId argumentId) {
         if (!Find(doc.argumentNodes, argumentId)->callEca) return Status::Ok();

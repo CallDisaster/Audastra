@@ -165,6 +165,11 @@ std::vector<ToolDefinition> VariableToolDefinitions() {
     remove.insert("code_audits", QJsonObject{{"type", "array"}, {"maxItems", 16385}, {"items", GraphRemovalCodeAuditSchema()}});
     add("variables_delete", "按精确StableId删除变量；用query_trigger_graph的remove_audit取证，code_audits确认完整代码清单。确定引用或证据缺口仍拒绝，不自动保存。", remove,
         {"project_identity", "expected_revision", "id"}, ToolPermission::Edit);
+    auto batchRemove = identity;
+    batchRemove.insert("ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 512}, {"uniqueItems", true}, {"items", IdSchema()}});
+    batchRemove.insert("code_audits", QJsonObject{{"type", "array"}, {"maxItems", 16385}, {"items", GraphRemovalCodeAuditSchema()}});
+    add("variables_batch_delete", "一次按精确StableId批量删除1..512个变量并进入单个撤销步骤；先用query_trigger_graph的batch_remove_audit一次取证，再用code_audits提交整批确认。任一变量仍有引用或证据缺口时整批拒绝，不自动保存。",
+        batchRemove, {"project_identity", "expected_revision", "ids"}, ToolPermission::Edit);
     return result;
 }
 
@@ -235,6 +240,71 @@ QJsonObject InvokeVariableTool(const QString& name, const QJsonObject& arguments
         const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
         if (!binding.Succeeded()) return Failure(binding);
         TriggerGraphEditBatch batch; batch.expected = *binding.value;
+        if (name == "variables_batch_delete") {
+            const auto rawIds = arguments.value("ids");
+            if (!rawIds.isArray() || rawIds.toArray().isEmpty() || rawIds.toArray().size() > 512)
+                throw VariableJsonError("VARIABLE_ARGUMENT_TYPE", "ids 必须是 1..512 个唯一变量 ID 的数组。");
+            GraphBatchRemove batchOp;
+            std::vector<StableId> deletedIds;
+            std::vector<std::string> deletedNames;
+            std::vector<StableId> seen;
+            seen.reserve(static_cast<std::size_t>(rawIds.toArray().size()));
+            for (const auto& entry : rawIds.toArray()) {
+                const StableId varId = Id(QJsonObject{{"id", entry}});
+                if (std::find(seen.begin(), seen.end(), varId) != seen.end())
+                    throw VariableJsonError("VARIABLE_ARGUMENT_TYPE", "ids 中包含重复的变量 ID。");
+                seen.push_back(varId);
+                const auto* rec = FindVariable(document, varId);
+                if (!rec) return Failure("MCP_TRIGGER_GRAPH_VARIABLE_MISSING", "批量删除中变量 ID 已不存在：" + std::to_string(varId));
+                GraphRemove item;
+                item.target = {GraphRecordKind::Variable, varId, {}};
+                item.expectedName = rec->name.text;
+                batchOp.targets.push_back(std::move(item));
+                deletedIds.push_back(varId);
+                deletedNames.push_back(rec->name.text);
+            }
+            if (arguments.contains("code_audits")) {
+                if (!arguments.value("code_audits").isArray()) throw VariableJsonError("VARIABLE_ARGUMENT_TYPE", "code_audits必须为删除确认数组。");
+                const auto audits = DecodeGraphRemovalCodeAudits(arguments.value("code_audits").toArray());
+                if (!audits.Succeeded()) return Failure(audits);
+                batchOp.codeAudits = *audits.value;
+            }
+            batch.operations.emplace_back(std::move(batchOp));
+            if (!SameIdentity(identity, Identity(host))) return Failure("VARIABLE_REVISION_CONFLICT", "变量计划期间修订变化，未执行候选。");
+            QJsonObject prepared;
+            bool previewed = false;
+            const auto validate = [&](const TriggerDocument&, const TriggerDocument&,
+                const TriggerGraphEditReceipt& receipt, const QJsonObject& changes) -> Status {
+                if (previewed) return Status::Failure("MCP.Variable", "VARIABLE_HOST_PROTOCOL", "宿主重复调用变量发布前门禁。");
+                previewed = true;
+                if (!SameIdentity(identity, Identity(host))) return Status::Failure("MCP.Variable", "VARIABLE_REVISION_CONFLICT", "发布候选前修订已变化。");
+                QJsonArray idsJson, namesJson, itemsJson;
+                for (std::size_t i = 0; i < deletedIds.size(); ++i) {
+                    const auto idStr = QString::number(deletedIds[i]);
+                    const auto nameStr = QString::fromStdString(deletedNames[i]);
+                    idsJson.append(idStr);
+                    namesJson.append(nameStr);
+                    if (itemsJson.size() < 32) {
+                        itemsJson.append(QJsonObject{{"kind", "variable"}, {"object_id", idStr}, {"title", nameStr},
+                            {"before", nameStr}, {"after", QJsonValue::Null}});
+                    }
+                }
+                const bool changed = receipt.before.currentWtgSha256 != receipt.after.currentWtgSha256
+                    || receipt.before.currentWctSha256 != receipt.after.currentWctSha256;
+                auto panel = changes;
+                if (panel.isEmpty()) panel = {{"items", itemsJson}, {"removed_records", static_cast<qint64>(deletedIds.size())}};
+                prepared = {{"ok", true}, {"deleted_ids", idsJson}, {"deleted_names", namesJson},
+                    {"deleted_count", static_cast<qint64>(deletedIds.size())}, {"changed", changed},
+                    {"before_binding", GraphBindingJson(receipt.before)}, {"binding", GraphBindingJson(receipt.after)},
+                    {"applied_operations", QString::number(receipt.appliedOperations)},
+                    {"external_dependencies_verified", false}, {"saved", false}, {"runtime_verified", false}, {"changes", panel}};
+                return BodyBudget(prepared);
+            };
+            const auto applied = host.apply(batch, validate);
+            if (!applied.Succeeded()) return Failure(applied);
+            if (!previewed || prepared.isEmpty()) return Failure("VARIABLE_HOST_PROTOCOL", "宿主没有执行发布前回执门禁。");
+            return Stamp(std::move(prepared), Identity(host));
+        }
         StableId subject = name == "variables_create" ? 0 : Id(arguments);
         const auto* variable = subject ? FindVariable(document, subject) : nullptr;
         if (subject && !variable) return Failure("MCP_TRIGGER_GRAPH_VARIABLE_MISSING", "变量 ID 已不存在；重新查询。");

@@ -15,6 +15,7 @@
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Script/ScriptToolchainLayout.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Script/TriggerStorageCapabilities.h"
@@ -1001,6 +1002,111 @@ Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::sha
                 ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path()), *owned.injection, operation, "1.32.13", true, &templates);
         } catch (const std::exception&) {
             return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "无法完整捕获预处理覆盖，未删除。");
+        }
+    };
+}
+struct BatchRemovalPreprocessCache::Impl {
+    std::mutex mutex;
+    std::string key;
+    std::filesystem::path sourcePath;
+    std::string sourceSha256;
+    std::optional<Trigger::RemovalPreprocessCoverage> coverage;
+};
+
+BatchRemovalPreprocessCache::BatchRemovalPreprocessCache() : impl_(std::make_unique<Impl>()) {}
+BatchRemovalPreprocessCache::~BatchRemovalPreprocessCache() = default;
+void BatchRemovalPreprocessCache::Clear() noexcept {
+    if (!impl_) return;
+    std::lock_guard lock(impl_->mutex);
+    impl_->key.clear();
+    impl_->sourcePath.clear();
+    impl_->sourceSha256.clear();
+    impl_->coverage.reset();
+}
+
+Trigger::BatchRemovalPreprocessProvider MakeProjectBatchRemovalPreprocessProvider(
+    std::shared_ptr<const CodeCheckProjectSnapshot> snapshot,
+    std::shared_ptr<BatchRemovalPreprocessCache> sharedCache) {
+    if (snapshot) { auto audit = std::make_shared<CodeCheckProjectSnapshot>(*snapshot); audit->scriptAuditOnly = true; snapshot = std::move(audit); }
+    auto cache = std::make_shared<CodeCheckProjectCache>();
+    return [snapshot = std::move(snapshot), cache, sharedCache = std::move(sharedCache)](
+        const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
+        std::span<const Trigger::GraphRemove> targets) -> Result<Trigger::RemovalPreprocessCoverage> {
+        using Out = Result<Trigger::RemovalPreprocessCoverage>;
+        if (!snapshot || !snapshot->catalog || snapshot->catalog->Sha256() != catalog.Sha256())
+            return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "宿主没有当前目录与工具链的冻结来源。");
+        try {
+            std::string cacheKey;
+            if (sharedCache && sharedCache->impl_) {
+                const auto encoded = Trigger::WtgWctCodec{}.EncodeForIdentity(document);
+                if (encoded.Succeeded() && encoded.value) {
+                    const auto wtgSha = Sha256(encoded.value->wtg);
+                    const auto wctSha = Sha256(encoded.value->wct);
+                    if (wtgSha.Succeeded() && wctSha.Succeeded()) {
+                        cacheKey = snapshot->binding + ":" + std::to_string(snapshot->revision)
+                            + ":" + snapshot->sourceSha256 + ":" + catalog.Sha256()
+                            + ":" + *wtgSha.value + ":" + *wctSha.value;
+                        for (const auto& t : targets) {
+                            cacheKey += "|" + std::to_string(static_cast<unsigned>(t.target.kind))
+                                + ":" + std::to_string(t.target.id) + ":" + t.expectedName;
+                        }
+                        std::filesystem::path cachedPath;
+                        std::string cachedSha;
+                        std::optional<Trigger::RemovalPreprocessCoverage> cachedCoverage;
+                        {
+                            std::lock_guard cacheLock(sharedCache->impl_->mutex);
+                            if (sharedCache->impl_->coverage && !sharedCache->impl_->sourcePath.empty()
+                                && !sharedCache->impl_->sourceSha256.empty() && sharedCache->impl_->key == cacheKey) {
+                                cachedPath = sharedCache->impl_->sourcePath;
+                                cachedSha = sharedCache->impl_->sourceSha256;
+                                cachedCoverage = sharedCache->impl_->coverage;
+                            }
+                        }
+                        if (cachedCoverage) {
+                            const auto currentSha = Sha256File(cachedPath);
+                            if (!currentSha.Succeeded() || !currentSha.value || *currentSha.value != cachedSha)
+                                return Out::Failure("Trigger.RemoveAudit", "SOURCE_CHANGED", "源地图文件已变化，请重新审阅批量删除。");
+                            return Out::Success(std::move(*cachedCoverage));
+                        }
+                    }
+                }
+            }
+
+            std::lock_guard lock(cache->impl_->mutex);
+            auto& owned = *cache->impl_;
+            CodeCheckRequest request;
+            if (auto reason = PrepareContext(owned, snapshot, request, {}, Clock::now() + std::chrono::seconds(60)))
+                return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", *reason);
+            if (const auto status = owned.archive->VerifySourceUnchanged(); !status.Succeeded()) return {{}, status.diagnostics};
+
+            const auto inputs = ProjectMapScriptInputs(owned, snapshot, document);
+            auto identity = RemovalTemplateIdentity(owned, *snapshot);
+            if (!identity.Succeeded() || !identity.value) return {{}, identity.diagnostics};
+            Script::RemovalTemplateInputs templates;
+            templates.identitySha256 = *identity.value;
+            templates.context = Script::BuildTemplateContext(snapshot->toolRoot, owned.standard ? &*owned.standard : nullptr, owned.objects.abilities);
+            templates.context.importRoot.reset();
+            templates.context.wholeChunk = Script::MakeLuaWholeChunk(templates.context,
+                {snapshot->toolRoot, &*owned.archive, owned.templateEdits, owned.templateRemovals, snapshot->revision, {}}, owned.slk);
+            templates.identityAfterEvaluation = [&owned, &snapshot, baseline = *identity.value] {
+                return RemovalSlkIdentity(owned, *snapshot, baseline);
+            };
+            Result<Trigger::RemovalPreprocessCoverage> out;
+            if (owned.framework) out = Script::CaptureBatchRemovalPreprocessCoverage(inputs, *owned.framework, targets, "1.32.13", true, &templates);
+            else if (!owned.entry || !owned.injection)
+                return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "当前工具链没有可重放的预处理档案。");
+            else out = Script::CaptureBatchRemovalPreprocessCoverage(inputs, *owned.entry,
+                ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path()), *owned.injection, targets, "1.32.13", true, &templates);
+            if (out.Succeeded() && out.value && sharedCache && sharedCache->impl_ && !cacheKey.empty()) {
+                std::lock_guard cacheLock(sharedCache->impl_->mutex);
+                sharedCache->impl_->key = std::move(cacheKey);
+                sharedCache->impl_->sourcePath = owned.archive->SourcePath();
+                sharedCache->impl_->sourceSha256 = owned.archive->SourceSha256();
+                sharedCache->impl_->coverage = *out.value;
+            }
+            return out;
+        } catch (const std::exception&) {
+            return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "无法完整捕获批量预处理覆盖，未删除。");
         }
     };
 }

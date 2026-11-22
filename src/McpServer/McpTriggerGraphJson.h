@@ -37,4 +37,16 @@ using GraphNameResolver = std::function<Services::NameResolution(std::string_vie
     const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request,
     const GraphNameResolver& names = {}, const Trigger::TriggerGraphEditLimits& limits = {});
 
+struct BatchDeleteTriggerPlan {
+    Trigger::TriggerGraphEditBatch batch;
+    std::vector<StableId> triggerIds;
+    std::vector<std::string> triggerNames;
+    std::vector<StableId> categoryIds;
+    std::vector<std::string> categoryNames;
+};
+[[nodiscard]] QJsonObject TriggerBatchDeleteProperties();
+[[nodiscard]] Result<BatchDeleteTriggerPlan> BuildTriggerBatchDeletePlan(
+    const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
+    const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request);
+
 } // namespace War3Map::Mcp

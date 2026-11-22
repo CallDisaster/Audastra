@@ -71,8 +71,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <map>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -461,6 +463,7 @@ private:
             projectIdentity_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
             root_ = root; archive_ = archive; uiRoot_ = uiRoot; generation_ = generation;
             document_ = project_.triggerDocument_.get(); catalog_ = project_.uiCatalog_.get();
+            if (batchRemovalCache_) batchRemovalCache_->Clear();
             configSha_.clear();
             if (!uiRoot_.empty()) {
                 const auto sha = Sha256File(Trigger::UiCatalog::ResolveUiRoot(uiRoot_) / "config");
@@ -584,6 +587,9 @@ private:
         Trigger::TriggerGraphEditLimits limits;
         if (request.value("table") == QStringLiteral("remove_audit"))
             limits.removalPreprocessProvider = Services::MakeProjectRemovalPreprocessProvider(project_.CaptureCodeCheckSnapshot());
+        if (request.value("table") == QStringLiteral("batch_remove_audit"))
+            limits.batchRemovalPreprocessProvider = Services::MakeProjectBatchRemovalPreprocessProvider(
+                project_.CaptureCodeCheckSnapshot(), batchRemovalCache_);
         auto result = Mcp::QueryGraphDocument(*project_.triggerDocument_, *project_.uiCatalog_, objects, request,
             [this](std::string_view raw, std::string_view type) { return ResolveProjectName(project_, raw, type); }, limits);
         result.insert("project_identity", projectIdentity_);
@@ -597,7 +603,7 @@ private:
     // preview 非空时只在私有副本上应用并把结果交给调用方，不发布、不进撤销栈。
     Result<Trigger::TriggerGraphEditReceipt> ApplyGraphBatch(const Trigger::TriggerGraphEditBatch& batch,
         const Mcp::VariablePrepublishValidator& prepublish = {}, QJsonObject* changesResult = nullptr,
-        TriggerDocument* preview = nullptr) {
+        TriggerDocument* preview = nullptr, const QString& undoLabel = {}) {
         using Receipt = Trigger::TriggerGraphEditReceipt;
         if (!project_.triggerUndoStack_)
             return Result<Receipt>::Failure("QtApp.Live", "LIVE_EDITOR_UNDO_UNAVAILABLE", "当前工程没有共用触发器撤销栈。");
@@ -609,9 +615,10 @@ private:
             ? references.value->get() : nullptr;
         TriggerDocument before(*project_.triggerDocument_);
         TriggerDocument candidate(before);
-        // 删除声明与 remove_audit 查询用同一预处理覆盖，查询给出的确认才能在这里提交。
+        // 删除声明与 remove_audit / batch_remove_audit 查询用同一预处理覆盖，查询给出的确认才能在这里提交。
         Trigger::TriggerGraphEditLimits limits;
         limits.removalPreprocessProvider = QtProject::LazyRemovalPreprocessProvider(project_);
+        limits.batchRemovalPreprocessProvider = QtProject::LazyBatchRemovalPreprocessProvider(project_, batchRemovalCache_);
         auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, batch, limits, objects);
         if (!edited.Succeeded()) return edited;
         RecordChanges changes;
@@ -638,7 +645,8 @@ private:
         if (edited.value->before.currentWtgSha256 != edited.value->after.currentWtgSha256 ||
             edited.value->before.currentWctSha256 != edited.value->after.currentWctSha256) {
             auto command = std::make_unique<QtProject::TriggerGraphSnapshotUndoCommand>(
-                project_, std::move(before), std::move(candidate), QObject::tr("AI 编辑触发器"));
+                project_, std::move(before), std::move(candidate),
+                undoLabel.isEmpty() ? QObject::tr("AI 编辑触发器") : undoLabel);
             if (!command->Ready()) return Result<Receipt>::Failure("QtApp.Live", "TRIGGER_GRAPH_UNDO_SOURCE_STALE",
                 "来源通知、会话或函数目录已变化；未发布旧事务、未添加撤销命令。");
             const auto published = command->FirstPublication();
@@ -702,6 +710,54 @@ private:
             }
             result.insert("dry_run", true); result.insert("published", false);
             result.insert("change_summary", changes); result.insert("trigger_diffs", diffs);
+            return result;
+        });
+    }
+
+    QJsonObject BatchDeleteTriggers(const QJsonObject& arguments) {
+        return Write(arguments, true, [&] {
+            auto request = arguments;
+            request.remove("project_identity"); request.remove("expected_revision");
+            if (request.contains("dry_run") && !request.value("dry_run").isBool())
+                return Mcp::Failure("TRIGGER_REMOVE_BATCH_ARGUMENT", "dry_run 必须是布尔值。");
+            const bool dryRun = request.value("dry_run").toBool(false);
+            const auto references = project_.CaptureTriggerMapObjectReferences();
+            const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
+                ? references.value->get() : nullptr;
+            const auto plan = Mcp::BuildTriggerBatchDeletePlan(*project_.triggerDocument_, *project_.uiCatalog_, objects, request);
+            if (!plan.Succeeded()) return Mcp::Failure(plan);
+            QString undoLabel;
+            if (!plan.value->triggerIds.empty() && !plan.value->categoryIds.empty()) {
+                undoLabel = QObject::tr("AI 批量删除 %1 个触发器、%2 个分类")
+                    .arg(plan.value->triggerIds.size()).arg(plan.value->categoryIds.size());
+            } else if (!plan.value->triggerIds.empty()) {
+                undoLabel = QObject::tr("AI 批量删除 %1 个触发器").arg(plan.value->triggerIds.size());
+            } else {
+                undoLabel = QObject::tr("AI 批量删除 %1 个分类").arg(plan.value->categoryIds.size());
+            }
+            QJsonObject changes;
+            TriggerDocument preview;
+            const auto edited = ApplyGraphBatch(plan.value->batch, {}, &changes, dryRun ? &preview : nullptr, undoLabel);
+            if (!edited.Succeeded()) return Mcp::Failure(edited);
+            QJsonArray trigIds, trigNames, catIds, catNames;
+            for (const auto id : plan.value->triggerIds) trigIds.append(QString::number(id));
+            for (const auto& name : plan.value->triggerNames) trigNames.append(QString::fromStdString(name));
+            for (const auto id : plan.value->categoryIds) catIds.append(QString::number(id));
+            for (const auto& name : plan.value->categoryNames) catNames.append(QString::fromStdString(name));
+            const bool published = !dryRun && (edited.value->before.currentWtgSha256 != edited.value->after.currentWtgSha256
+                || edited.value->before.currentWctSha256 != edited.value->after.currentWctSha256);
+            QJsonObject result{{"ok", true}, {"scope", "gui-visible-document"}, {"project_identity", projectIdentity_},
+                {"revision", QString::number(project_.editRevision_.Revision())}, {"before", Binding(edited.value->before)},
+                {"binding", Binding(edited.value->after)}, {"applied_operations", QString::number(edited.value->appliedOperations)},
+                {"deleted_trigger_ids", trigIds}, {"deleted_trigger_names", trigNames},
+                {"deleted_trigger_count", static_cast<qint64>(plan.value->triggerIds.size())},
+                {"deleted_category_ids", catIds}, {"deleted_category_names", catNames},
+                {"deleted_category_count", static_cast<qint64>(plan.value->categoryIds.size())},
+                {"dry_run", dryRun}, {"published", published}, {"external_dependencies_verified", false},
+                {"saved", false}, {"runtime_verified", false},
+                {"diagnostics", Mcp::DiagnosticsJson(edited.diagnostics).value("diagnostics")}};
+            if (!dryRun) result.insert("changes", changes);
+            else result.insert("change_summary", changes);
             return result;
         });
     }
@@ -794,8 +850,10 @@ private:
                 };
                 return Result<Mcp::VariableToolContext>::Success(std::move(context));
             };
-            host.apply = [this](const Trigger::TriggerGraphEditBatch& batch, const Mcp::VariablePrepublishValidator& guard) {
-                return ApplyGraphBatch(batch, guard);
+            host.apply = [this, name](const Trigger::TriggerGraphEditBatch& batch, const Mcp::VariablePrepublishValidator& guard) {
+                const QString label = name == QStringLiteral("variables_batch_delete")
+                    ? QObject::tr("AI 批量删除变量") : QString{};
+                return ApplyGraphBatch(batch, guard, nullptr, nullptr, label);
             };
             return Mcp::InvokeVariableTool(name, arguments, host);
         };
@@ -1536,6 +1594,200 @@ private:
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", 1}, {"items", QJsonArray{item}}}}};
         }
+        if (name == "lua_files_delete") {
+            const bool allowReferenced = arguments.value("allow_referenced").toBool(false);
+            const bool dryRun = arguments.value("dry_run").toBool(false);
+            auto& folder = project_.LuaFolderSource();
+            const bool externalMode = folder.Linked() && !folder.Missing();
+            if (externalMode && !folder.Active())
+                return Mcp::Failure(War3Map::Status{folder.Diagnostics()});
+
+            QStringList resolvedPaths;
+            QSet<QString> requestedKeys;
+            std::vector<Services::LuaFolderFile> externalTargets;
+            QJsonArray deletedRows, items;
+
+            if (externalMode) {
+                const auto& files = folder.Snapshot()->files;
+                for (const auto& item : arguments.value("paths").toArray()) {
+                    const auto reqPath = item.toString();
+                    const auto key = QtProject::EditorProject::AssetKey(reqPath);
+                    if (requestedKeys.contains(key))
+                        return Mcp::Failure("LUA_FILES_DELETE_REJECTED", "同一 Lua 路径出现多次：" + reqPath.toStdString());
+                    requestedKeys.insert(key);
+                    const auto found = std::find_if(files.begin(), files.end(), [&](const Services::LuaFolderFile& f) {
+                        return QtProject::EditorProject::AssetKey(QString::fromStdString(f.path)) == key;
+                    });
+                    if (found == files.end())
+                        return Mcp::Failure("LUA_FILES_DELETE_REJECTED", "找不到外部 Lua 文件：" + reqPath.toStdString());
+                    const auto actual = QString::fromStdString(found->path);
+                    resolvedPaths << actual;
+                    externalTargets.push_back(*found);
+                    deletedRows.append(QJsonObject{{"path", actual}, {"sha256", QString::fromStdString(found->sha256)},
+                        {"source", "external-folder"}});
+                    if (items.size() < 64) {
+                        items.append(QJsonObject{{"kind", "lua"}, {"object_id", ""}, {"title", actual},
+                            {"target", actual}, {"before", QString::fromStdString(found->sha256)}, {"after", QJsonValue::Null}});
+                    }
+                }
+            } else {
+                const auto entries = project_.AssetEntries();
+                for (const auto& item : arguments.value("paths").toArray()) {
+                    const auto reqPath = item.toString();
+                    if (const auto problem = QtProject::EditorProject::CheckAssetPath(reqPath); !problem.isEmpty())
+                        return Mcp::Failure("LUA_FILES_DELETE_REJECTED", (reqPath + QStringLiteral("：") + problem).toStdString());
+                    const auto key = QtProject::EditorProject::AssetKey(reqPath);
+                    if (requestedKeys.contains(key))
+                        return Mcp::Failure("LUA_FILES_DELETE_REJECTED", "同一 Lua 路径出现多次：" + reqPath.toStdString());
+                    requestedKeys.insert(key);
+                    const auto entry = std::find_if(entries.begin(), entries.end(), [&](const QtProject::AssetEntry& value) {
+                        return QtProject::EditorProject::AssetKey(value.path) == key;
+                    });
+                    if (entry == entries.end())
+                        return Mcp::Failure("LUA_FILES_DELETE_REJECTED", "找不到地图 Lua 文件：" + reqPath.toStdString());
+                    if (entry->ambiguous)
+                        return Mcp::Failure("LUA_FILES_DELETE_REJECTED", "该 Lua 路径有多份来源，未删除：" + reqPath.toStdString());
+                    resolvedPaths << entry->path;
+                    deletedRows.append(QJsonObject{{"path", entry->path}, {"pending", entry->Pending()},
+                        {"in_source_map", !entry->originalPath.isEmpty()}, {"source", "map-asset"}});
+                    if (items.size() < 64) {
+                        items.append(QJsonObject{{"kind", "lua"}, {"object_id", ""}, {"title", entry->path},
+                            {"target", entry->path}, {"before", entry->path}, {"after", QJsonValue::Null}});
+                    }
+                }
+            }
+
+            // 引用扫描：路径提及（跳过同批待删文件自身）+ 存活 Lua 模块的 require 提及。
+            const auto scan = project_.FindAssetMentions(resolvedPaths);
+            const auto allLuaModules = QtProject::CaptureLuaModules(project_);
+            std::set<std::string, std::less<>> deletingModules;
+            std::vector<std::string> targetModuleNames(static_cast<std::size_t>(resolvedPaths.size()));
+            for (int i = 0; i < resolvedPaths.size(); ++i) {
+                auto mod = QtProject::LuaModuleName(resolvedPaths[i]);
+                std::transform(mod.begin(), mod.end(), mod.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                targetModuleNames[static_cast<std::size_t>(i)] = mod;
+                if (!mod.empty()) deletingModules.insert(mod);
+            }
+            const auto containsRequireMention = [](std::string_view text, std::string_view lowerMod) -> std::size_t {
+                if (lowerMod.empty()) return 0;
+                std::string slashMod(lowerMod);
+                std::replace(slashMod.begin(), slashMod.end(), '.', '/');
+                std::size_t count = 0;
+                const auto isIdent = [](unsigned char c) { return std::isalnum(c) || c == '_'; };
+                for (std::size_t pos = 0; pos + 7 < text.size(); ++pos) {
+                    if (pos > 0 && isIdent(static_cast<unsigned char>(text[pos - 1]))) continue;
+                    if (text.substr(pos, 7) != "require") continue;
+                    if (pos + 7 < text.size() && isIdent(static_cast<unsigned char>(text[pos + 7]))) continue;
+                    std::size_t cur = pos + 7;
+                    while (cur < text.size() && (text[cur] == ' ' || text[cur] == '\t' || text[cur] == '(')) ++cur;
+                    if (cur >= text.size() || (text[cur] != '\'' && text[cur] != '"')) continue;
+                    const char quote = text[cur++];
+                    const std::size_t end = text.find(quote, cur);
+                    if (end == std::string_view::npos || end - cur != lowerMod.size()) continue;
+                    bool match = true;
+                    for (std::size_t k = 0; k < lowerMod.size(); ++k) {
+                        const char c = static_cast<char>(std::tolower(static_cast<unsigned char>(text[cur + k])));
+                        const char norm = c == '\\' ? '/' : c;
+                        if (norm != lowerMod[k] && norm != slashMod[k]) { match = false; break; }
+                    }
+                    if (match) ++count;
+                }
+                return count;
+            };
+
+            QString foundText;
+            int listed = 0;
+            for (int index = 0; index < resolvedPaths.size(); ++index) {
+                QJsonArray mentions;
+                int totalForFile = 0;
+                for (const auto& mention : scan.mentions[static_cast<std::size_t>(index)]) {
+                    const auto member = QString::fromStdString(mention.member);
+                    if (requestedKeys.contains(QtProject::EditorProject::AssetKey(member))) continue;
+                    const auto kind = QString::fromStdString(mention.kind);
+                    ++totalForFile;
+                    if (mentions.size() < 16)
+                        mentions.append(QJsonObject{{"member", member}, {"kind", kind}, {"count", static_cast<qint64>(mention.count)}});
+                    if (listed++ < 16)
+                        foundText += QStringLiteral("\n  %1 ← %2（%3 ×%4）").arg(resolvedPaths[index], member, kind).arg(mention.count);
+                }
+                if (allLuaModules && !targetModuleNames[static_cast<std::size_t>(index)].empty()) {
+                    const auto& targetMod = targetModuleNames[static_cast<std::size_t>(index)];
+                    for (const auto& [modName, source] : *allLuaModules) {
+                        std::string lowerOther = modName;
+                        std::transform(lowerOther.begin(), lowerOther.end(), lowerOther.begin(),
+                            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                        if (deletingModules.contains(lowerOther)) continue;
+                        const auto hits = containsRequireMention(source, targetMod);
+                        if (hits == 0) continue;
+                        const auto member = QString::fromStdString(modName) + QStringLiteral(".lua");
+                        ++totalForFile;
+                        if (mentions.size() < 16)
+                            mentions.append(QJsonObject{{"member", member}, {"kind", "lua-require"}, {"count", static_cast<qint64>(hits)}});
+                        if (listed++ < 16)
+                            foundText += QStringLiteral("\n  %1 ← %2（lua-require ×%3）").arg(resolvedPaths[index], member).arg(hits);
+                    }
+                }
+                auto row = deletedRows[index].toObject();
+                row.insert("mentioned_in", mentions);
+                if (totalForFile > mentions.size()) row.insert("mention_count", totalForFile);
+                deletedRows[index] = row;
+            }
+            if (listed != 0 && !allowReferenced)
+                return Mcp::Failure("LUA_FILES_DELETE_REFERENCED", QStringLiteral("要删除的 Lua 文件仍出现在 %1 处，确认要删时加 "
+                    "allow_referenced=true：%2").arg(listed).arg(foundText).toStdString());
+
+            QJsonArray unread;
+            for (const auto& source : scan.unread) unread.append(source);
+            if (dryRun) {
+                return QJsonObject{{"ok", true}, {"dry_run", true}, {"deleted", deletedRows},
+                    {"deleted_count", deletedRows.size()}, {"referenced_count", listed},
+                    {"saved", false}, {"disk_written", false}, {"map_undo", !externalMode},
+                    {"references_checked", false}, {"unread_sources", unread},
+                    {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())}};
+            }
+
+            if (externalMode) {
+                const auto verified = Services::VerifyLuaFolder(*folder.Snapshot());
+                if (!verified.Succeeded()) return Mcp::Failure(verified);
+                int removedCount = 0;
+                for (const auto& target : externalTargets) {
+                    const auto removed = Services::RemoveLuaFolderFile(folder.Root(), target);
+                    if (!removed.Succeeded()) {
+                        folder.Refresh();
+                        SyncIdentity();
+                        emit owner_.Changed();
+                        auto failure = Mcp::Failure(removed);
+                        failure.insert("partially_deleted_count", removedCount);
+                        return failure;
+                    }
+                    ++removedCount;
+                }
+                folder.Refresh();
+                SyncIdentity();
+                emit owner_.Changed();
+                return QJsonObject{{"ok", true}, {"dry_run", false}, {"deleted", deletedRows},
+                    {"deleted_count", deletedRows.size()}, {"saved", false}, {"disk_written", true},
+                    {"map_undo", false}, {"references_checked", false}, {"unread_sources", unread},
+                    {"lua_source", QtProject::LuaFolderSourceInfo(project_)},
+                    {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
+                    {"changes", QJsonObject{{"files", deletedRows.size()}, {"items", items}}}};
+            }
+
+            const auto rejected = project_.RecordAssetEdit(QObject::tr("AI 批量删除 %1 个 Lua 文件").arg(resolvedPaths.size()),
+                [&](QtProject::AssetState& state) -> QString {
+                    for (const auto& target : resolvedPaths)
+                        if (const auto problem = project_.RemoveAsset(state, target); !problem.isEmpty()) return problem;
+                    return {};
+                });
+            if (!rejected.isEmpty()) return Mcp::Failure("LUA_FILES_DELETE_REJECTED", rejected.toStdString());
+            SyncIdentity();
+            emit owner_.Changed();
+            return QJsonObject{{"ok", true}, {"dry_run", false}, {"deleted", deletedRows},
+                {"deleted_count", deletedRows.size()}, {"saved", false}, {"disk_written", false},
+                {"map_undo", true}, {"references_checked", false}, {"unread_sources", unread},
+                {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
+                {"changes", QJsonObject{{"files", deletedRows.size()}, {"items", items}}}};
+        }
         if (name == "imports_add") {
             // 调用时读入内存：之后磁盘文件再变也不影响本次导入和撤销。
             constexpr qint64 kMaxFileBytes = Services::ImportPayloadPolicy::ownedFileBytes,
@@ -1594,22 +1846,29 @@ private:
                 paths << entry->path;
                 removed.append(QJsonObject{{"archive_path", entry->path}, {"pending", entry->Pending()},
                     {"in_source_map", !entry->originalPath.isEmpty()}});
-                items.append(QJsonObject{{"kind", "import"}, {"object_id", ""}, {"title", entry->path},
-                    {"target", entry->path}, {"before", entry->path}, {"after", QJsonValue::Null}});
+                if (items.size() < 64) {
+                    items.append(QJsonObject{{"kind", "import"}, {"object_id", ""}, {"title", entry->path},
+                        {"target", entry->path}, {"before", entry->path}, {"after", QJsonValue::Null}});
+                }
             }
-            // 与独立 MCP 的 archive_members_remove 同一查找规则，只是按当前（含未保存修改）内容查。
+            // 与独立 MCP 的 archive_members_remove 同一查找规则，只是按当前（含未保存修改）内容查；跳过同批待删文件自身提及。
             const auto scan = project_.FindAssetMentions(paths);
             QString found;
             int listed = 0;
             for (int index = 0; index < paths.size(); ++index) {
                 QJsonArray mentions;
+                int totalForFile = 0;
                 for (const auto& mention : scan.mentions[static_cast<std::size_t>(index)]) {
                     const auto member = QString::fromStdString(mention.member), kind = QString::fromStdString(mention.kind);
-                    mentions.append(QJsonObject{{"member", member}, {"kind", kind}, {"count", static_cast<qint64>(mention.count)}});
+                    if (requested.contains(QtProject::EditorProject::AssetKey(member))) continue;
+                    ++totalForFile;
+                    if (mentions.size() < 16)
+                        mentions.append(QJsonObject{{"member", member}, {"kind", kind}, {"count", static_cast<qint64>(mention.count)}});
                     if (listed++ < 16) found += QStringLiteral("\n  %1 ← %2（%3 ×%4）").arg(paths[index], member, kind).arg(mention.count);
                 }
                 auto row = removed[index].toObject();
                 row.insert("mentioned_in", mentions);
+                if (totalForFile > mentions.size()) row.insert("mention_count", totalForFile);
                 removed[index] = row;
             }
             if (listed != 0 && !arguments.value("allow_referenced").toBool(false))
@@ -1886,6 +2145,7 @@ private:
                     const Mcp::LuaFileToolHost host{[this](const QString& tool, const QJsonObject& arguments) { return LuaFile(tool, arguments); }};
                     // 写入走共同写门：先提交界面草稿，再核对工程身份与修订。
                     if (name == "lua_file_write" || name == "imports_add" || name == "imports_remove" || name == "lua_folder_unlink"
+                        || (name == "lua_files_delete" && !(args.value("dry_run").isBool() && args.value("dry_run").toBool()))
                         || (name == "lua_folder_link" && args.value("choice") != QJsonValue("cancel")))
                         return Write(args, false, [&] { return Mcp::InvokeLuaFileTool(name, args, host); });
                     if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
@@ -2109,6 +2369,7 @@ private:
             "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别导出为功能写法；"
             "presets 表（可配 type）列预设；function_examples 表配 functions 给出本图里的真实用法原句；"
             "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选；"
+            "batch_remove_audit 表配 trigger_ids/category_ids/variable_ids 一次对整批待删目标做删除审计（只预处理整图一次，同批互相引用不误报）；"
             "legacy_trigger_references 表（可配 trigger_id）列出旧版本编辑器写法的触发器引用，附带可直接交给 editor_edit_trigger_graph 的改正 operations", Mcp::ToolPermission::Query,
             Mcp::WithGraphQueryDefinitions(Schema(query, {"project_identity", "expected_revision", "table"})),
             [this](const QJsonObject& arguments) { return Query(arguments); });
@@ -2123,6 +2384,16 @@ private:
         AddTool("editor_edit_trigger_graph", "在共用撤销栈中整批编辑触发器（T）；insert_text / replace_trigger_text 可用紧凑 T 写法一次写入整段逻辑，apply_feature_text 一次写入一个功能的变量与多个触发器",
             Mcp::ToolPermission::Edit, edit,
             [this](const QJsonObject& arguments) { return Edit(arguments); });
+        {
+            auto batchDeleteProps = IdentityProperties();
+            const auto extra = Mcp::TriggerBatchDeleteProperties();
+            for (auto it = extra.begin(); it != extra.end(); ++it) batchDeleteProps.insert(it.key(), it.value());
+            AddTool("triggers_batch_delete",
+                "在共用撤销栈中一次原子批量删除触发器（最多512个）与分类（最多128个）；delete_category_triggers=true（默认）时自动连同分类内全部触发器一并删除。"
+                "先用 editor_query_trigger_graph 的 batch_remove_audit 一次取证，再用 code_audits 提交整批确认；同批内互相引用不误报，外部存活引用或证据缺口时整批拒绝。dry_run=true 只预检不发布",
+                Mcp::ToolPermission::Edit, Schema(batchDeleteProps, {"project_identity", "expected_revision"}),
+                [this](const QJsonObject& arguments) { return BatchDeleteTriggers(arguments); });
+        }
         {
             // 与 editor_edit_trigger_graph 相同的批次字段，另加检查任务字段；批次只用于私有候选，不发布。
             auto checkSchema = Mcp::GraphOperationSchema();
@@ -2180,6 +2451,8 @@ private:
     Trigger::UiCatalog* catalog_ = nullptr;
     std::string configSha_;
     Mcp::CodeCheckToolSession codeChecks_;
+    std::shared_ptr<Services::BatchRemovalPreprocessCache> batchRemovalCache_ =
+        std::make_shared<Services::BatchRemovalPreprocessCache>();
     bool waitingForCheck_ = false;
     std::unique_ptr<LiveObjectResourceTools> objectResources_;
 };

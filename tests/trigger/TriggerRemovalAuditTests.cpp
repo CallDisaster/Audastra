@@ -271,8 +271,103 @@ void LargeGroupedReview() {
     old.codeAudits = {c}; Good(CheckDeclarationRemovalAudit(legacy.doc, legacy.catalog, old), "legacy grouped list remains compatible");
     old.codeAudits.push_back(c); legacy.Fails(old, "TRIGGER_REMOVE_CODE_AUDIT_INVALID");
 }
+void BatchRemovalAuditAndApply() {
+    // 1) 250 variables deleted in ONE batch with single preprocess call & Aho-Corasick comment mention detection.
+    {
+        Fixture f;
+        f.doc.wct.customCode = RawText{"// BatchVar_042 only in comment\n#define BATCH_MACRO 1\n"};
+        std::vector<GraphRemove> varTargets;
+        for (int i = 0; i < 250; ++i) {
+            const std::string name = "BatchVar_" + std::string(i < 10 ? "00" : (i < 100 ? "0" : "")) + std::to_string(i);
+            Good(TriggerDocumentEditor::AddVariable(f.doc, name, "integer"), "add batch variable");
+            GraphRemove item;
+            item.target = {GraphRecordKind::Variable, f.doc.variables.back().id, {}};
+            item.expectedName = name;
+            varTargets.push_back(std::move(item));
+        }
+        int preprocessCalls = 0;
+        BatchRemovalPreprocessProvider provider = [&](const auto&, const auto&, std::span<const GraphRemove> targets) {
+            ++preprocessCalls;
+            Require(targets.size() == 250, "provider receives full batch once");
+            RemovalPreprocessCoverage c;
+            c.complete = true;
+            c.profileSha256 = std::string(64, 'a');
+            c.identitySha256 = std::string(64, 'b');
+            RemovalPreprocessBlock b;
+            b.kind = AtomicRenameCodeKind::GlobalCustomCode;
+            b.id = 0;
+            b.sourceSha256 = *Sha256Text(f.doc.wct.customCode.text).value;
+            b.text = "// BatchVar_042 only in comment\n";
+            b.origins.assign(4, {"batch-fixture.j", 1});
+            c.blocks.push_back(std::move(b));
+            return Result<RemovalPreprocessCoverage>::Success(std::move(c));
+        };
+        const auto review = QueryBatchDeclarationRemovalAudit(f.doc, f.catalog, varTargets, nullptr, &provider);
+        Good(review, "batch variable review");
+        Require(preprocessCalls == 1, "batch audit runs preprocess exactly once for 250 variables");
+        Require(review.value->complete && review.value->targets.size() == 250
+            && review.value->individualBlocks.size() == 1 && review.value->groupableCount == 2,
+            "Aho-Corasick flags comment mention individually while grouping zero-hit blocks");
+        GraphBatchRemove batchOp;
+        batchOp.targets = varTargets;
+        RemovalCodeConfirmation groupConfirm{review.value->reviewSha256, "no_reference", "reviewed zero-hit group", {}};
+        groupConfirm.group = RemovalCodeConfirmation::Group{review.value->groupableCount, review.value->groupableSha256};
+        batchOp.codeAudits.push_back(groupConfirm);
+        batchOp.codeAudits.push_back({review.value->reviewSha256, "no_reference", "reviewed BatchVar_042 comment",
+            {review.value->individualBlocks.front().identity}});
+        auto binding = CaptureTriggerGraphBinding(f.doc, f.catalog); Good(binding, "batch binding");
+        TriggerGraphEditLimits limits;
+        limits.batchRemovalPreprocessProvider = provider;
+        auto applied = ApplyTriggerGraphEditBatch(f.doc, f.catalog, {*binding.value, {batchOp}}, limits);
+        Good(applied, "batch remove 250 variables in one transaction");
+        Require(f.doc.variables.empty(), "all 250 variables deleted cleanly");
+    }
+    // 2) Cross-referencing triggers A <-> B + their category deleted together without false reference errors,
+    //    while a surviving trigger C referencing A rejects the entire batch atomically.
+    {
+        Fixture f;
+        f.doc.triggers.clear();
+        f.doc.wct.customCode = RawText{};
+        auto cat = TriggerDirectoryEditor::AddCategory(f.doc, "SpamFolder"); Good(cat, "spam category");
+        const StableId spamCatStableId = f.doc.categories.back().id;
+        const auto spamCatRawId = f.doc.categories.back().categoryId;
+        auto tA = TriggerDocumentEditor::AddTrigger(f.doc, spamCatRawId, "CrossA"); Good(tA, "CrossA");
+        auto tB = TriggerDocumentEditor::AddTrigger(f.doc, spamCatRawId, "CrossB"); Good(tB, "CrossB");
+        auto tC = TriggerDocumentEditor::AddTrigger(f.doc, f.doc.categories.front().categoryId, "SurvivorC"); Good(tC, "SurvivorC");
+        auto eA = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, *tA.value, UiDefinitionKind::Action, "Run"); Good(eA, "A->B");
+        auto& argA = f.doc.argumentNodes[TriggerDocumentEditor::FindEca(f.doc, eA.value->rootEcaId)->arguments.front()];
+        argA.type = 1; argA.value = RawText{"gg_trg_CrossB"};
+        auto eB = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, *tB.value, UiDefinitionKind::Action, "Run"); Good(eB, "B->A");
+        auto& argB = f.doc.argumentNodes[TriggerDocumentEditor::FindEca(f.doc, eB.value->rootEcaId)->arguments.front()];
+        argB.type = 1; argB.value = RawText{"gg_trg_CrossA"};
+        auto eC = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, *tC.value, UiDefinitionKind::Action, "Run"); Good(eC, "C->A");
+        auto& argC = f.doc.argumentNodes[TriggerDocumentEditor::FindEca(f.doc, eC.value->rootEcaId)->arguments.front()];
+        argC.type = 1; argC.value = RawText{"gg_trg_CrossA"};
+
+        GraphBatchRemove op;
+        op.targets = {
+            GraphRemove{{GraphRecordKind::Trigger, *tA.value, {}}, "CrossA", {}},
+            GraphRemove{{GraphRecordKind::Trigger, *tB.value, {}}, "CrossB", {}},
+        };
+        op.categoryIds = {spamCatStableId};
+        auto binding = CaptureTriggerGraphBinding(f.doc, f.catalog); Good(binding, "cross ref binding");
+        auto rejected = ApplyTriggerGraphEditBatch(f.doc, f.catalog, {*binding.value, {op}});
+        Require(Code(rejected, "TRIGGER_GRAPH_REMOVE_REFERENCED"), "surviving external trigger C blocks batch atomically");
+        Require(f.doc.triggers.size() == 3 && f.doc.categories.size() == 2, "failed batch leaves document untouched");
+
+        // Remove external reference from C, now A <-> B + SpamFolder delete cleanly together in one batch!
+        argC.value = RawText{"gg_trg_SurvivorC"};
+        binding = CaptureTriggerGraphBinding(f.doc, f.catalog); Good(binding, "cross ref clean binding");
+        auto review = QueryBatchDeclarationRemovalAudit(f.doc, f.catalog, op.targets); Good(review, "cross ref review");
+        Require(review.value->complete && review.value->typedArgumentIds.empty(), "mutual references inside batch are ignored");
+        auto applied = ApplyTriggerGraphEditBatch(f.doc, f.catalog, {*binding.value, {op}});
+        Good(applied, "cross-referencing triggers and folder deleted atomically");
+        Require(f.doc.triggers.size() == 1 && f.doc.triggers.front().id == *tC.value && f.doc.categories.size() == 1,
+            "only SurvivorC and original category remain");
+    }
+}
 int main(int argc, char** argv) { try {
     if (argc == 2 && std::string_view(argv[1]) == "--large") LargeGroupedReview();
-    else { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); ByteOpaqueCoverage(); DerivedLiteralClassification(); }
+    else { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); ByteOpaqueCoverage(); DerivedLiteralClassification(); BatchRemovalAuditAndApply(); }
     std::cout << "Removal audit transactions passed\n"; return 0;
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

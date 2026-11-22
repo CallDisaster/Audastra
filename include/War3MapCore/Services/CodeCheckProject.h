@@ -80,6 +80,22 @@ private:
     friend Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
         CodeCheckProjectCache&, std::shared_ptr<const Trigger::TriggerDocument>, std::stop_token);
     friend Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::shared_ptr<const CodeCheckProjectSnapshot>);
+    friend Trigger::BatchRemovalPreprocessProvider MakeProjectBatchRemovalPreprocessProvider(
+        std::shared_ptr<const CodeCheckProjectSnapshot>, std::shared_ptr<class BatchRemovalPreprocessCache>);
+};
+
+// 1 条已验证的批量删除预处理缓存：键绑定工程代际、修订、触发器文档 SHA、目录 SHA 与排序后的目标集；
+// 每次命中仍会实时核对原归档未变更（VerifySourceUnchanged），用于避免 batch_remove_audit -> batch_delete 重复整图预处理。
+class BatchRemovalPreprocessCache final {
+public:
+    BatchRemovalPreprocessCache();
+    ~BatchRemovalPreprocessCache();
+    void Clear() noexcept;
+    struct Impl;
+private:
+    std::unique_ptr<Impl> impl_;
+    friend Trigger::BatchRemovalPreprocessProvider MakeProjectBatchRemovalPreprocessProvider(
+        std::shared_ptr<const CodeCheckProjectSnapshot>, std::shared_ptr<BatchRemovalPreprocessCache>);
 };
 
 [[nodiscard]] std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLanguage language = CodeLanguage::Jass);
@@ -112,4 +128,7 @@ private:
 // UI/CLI/MCP共用宿主来源；闭包拥有缓存，只读且每次重新核对包含与档案身份。
 [[nodiscard]] Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(
     std::shared_ptr<const CodeCheckProjectSnapshot> snapshot);
+[[nodiscard]] Trigger::BatchRemovalPreprocessProvider MakeProjectBatchRemovalPreprocessProvider(
+    std::shared_ptr<const CodeCheckProjectSnapshot> snapshot,
+    std::shared_ptr<BatchRemovalPreprocessCache> sharedCache = {});
 } // namespace War3Map::Services

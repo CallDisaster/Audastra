@@ -135,12 +135,12 @@ void TestToolSurface() {
             "install_generated_warvk_module", "save_terrain_blight_candidate", "save_terrain_shadow_candidate",
             "get_terrain_edit_state", "query_terrain_points", "edit_terrain_stroke", "edit_terrain_texture_slot",
             "describe_map_data", "query_map_data_page", "save_map_edit_candidate", "query_map_trigger_text", "capture_model_animation", "project_search",
-            "query_map_archive_member_identities", "query_trigger_graph", "edit_trigger_graph",
-            "variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete",
+            "query_map_archive_member_identities", "query_trigger_graph", "edit_trigger_graph", "triggers_batch_delete",
+            "variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete", "variables_batch_delete",
             "entities_query", "entities_set_fields", "entities_copy", "entities_rotate", "entities_transform", "entities_create", "entities_delete",
             "feedback.draft", "feedback.list", "feedback.status", "update.status",
             "lua_test_hot_reload", "lua_test_reload_result",
-            "lua_files_list", "lua_file_read", "lua_file_write", "map_test_start",
+            "lua_files_list", "lua_file_read", "lua_file_write", "lua_files_delete", "map_test_start",
             "hlua_inspect", "hlua_ids", "hlua_build", "hlua_new", "hlua_test", "hlua_test_result", "hlua_test_stop", "hlua_test_continue",
             "object_resource_state", "object_resource_query", "object_resource_inspect", "query_map_runtime", "map_runtime_query", "map_runtime_set"}) {
         Expect(names.contains(required), "required safe MCP tool is missing");

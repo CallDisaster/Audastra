@@ -18,6 +18,8 @@ constexpr qsizetype kMaxLuaText = 2 * 1024 * 1024;
 constexpr int kMaxLuaPageIndex = 2147483647;
 constexpr int kMaxLuaPageLimit = 256;
 constexpr int kMaxImportFiles = 32;
+constexpr int kMaxImportRemoveFiles = 512;
+constexpr int kMaxLuaDeleteFiles = 256;
 bool ValidPageNumber(const QJsonValue& value, int minimum, int maximum) {
     if (!value.isDouble()) return false;
     const auto number = value.toDouble();
@@ -66,7 +68,8 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         tool.inputSchema = BasicSchema(properties, QJsonArray::fromStringList(required));
         tool.maxRequestIdBytes = 128;
         tool.maxResponseBytes = std::strcmp(name, "lua_file_read") == 0 ? 3 * 1024 * 1024
-            : std::strncmp(name, "lua_folder_", 11) == 0 ? 2 * 1024 * 1024 : 64 * 1024;
+            : std::strncmp(name, "lua_folder_", 11) == 0 ? 2 * 1024 * 1024
+            : (std::strcmp(name, "imports_remove") == 0 || std::strcmp(name, "lua_files_delete") == 0) ? 512 * 1024 : 64 * 1024;
         result.push_back(std::move(tool));
     };
     const QJsonObject path{{"type", "string"}, {"maxLength", 260}};
@@ -77,6 +80,12 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
     add("lua_file_write", "写当前来源的Lua；关联时直接写文件夹且不进地图撤销，否则作为地图资源事务。替换须给出读取时sha256", ToolPermission::Edit,
         {{"path", path}, {"text", QJsonObject{{"type", "string"}, {"maxLength", kMaxLuaText}}},
             {"expected_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}}}, {"path", "text"});
+    add("lua_files_delete", "批量删除地图里的 Lua 文件（未关联外部文件夹时整批进入资源撤销栈，保存地图时生效；关联外部文件夹时逐项核对 SHA 后删除）；一次1..256个。"
+        "删除前按当前内容查找引用（同批待删文件自身不计为存活引用），找到则拒绝（LUA_FILES_DELETE_REFERENCED），确认要删时传 allow_referenced=true；dry_run=true 只预检不删除",
+        ToolPermission::Edit,
+        {{"paths", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxLuaDeleteFiles}, {"items", path}}},
+            {"allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}}},
+            {"dry_run", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"paths"});
     const QJsonObject folderPath{{"type", "string"}, {"maxLength", 4096}};
     add("lua_folder_review", "审阅外部Lua文件夹与当前地图的差异，不改文件；返回文件夹SHA和三类路径，链接和点目录不导入", ToolPermission::Query,
         {{"folder_path", folderPath}}, {"folder_path"});
@@ -93,11 +102,11 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
                 {"archive_path", QJsonObject{{"type", "string"}, {"maxLength", 260},
                     {"description", "地图内路径，例如 war3mapImported\\hero.mdx"}}}}, {"disk_path", "archive_path"})}}},
             {"replace_existing", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"files"});
-    add("imports_remove", "删除地图里的导入文件或尚未保存的待导入文件，整批进入资源撤销栈，保存地图时生效；一次1..32个。"
+    add("imports_remove", "批量删除地图里的导入文件或尚未保存的待导入文件，整批进入资源撤销栈，保存地图时生效；一次1..512个。"
         "删除前按当前内容（含未保存修改）在脚本、触发器、物编、地图数据、模型和 UI 文本里按字符串查找路径，找到就拒绝"
         "（IMPORTS_REMOVE_REFERENCED，并列出位置），确认要删时传 allow_referenced=true；找不到不等于没有引用，"
-        "动态拼接的路径查不出，读不到的来源列在 unread_sources。地图数据文件和 Lua 文件不在本工具范围", ToolPermission::Edit,
-        {{"archive_paths", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxImportFiles},
+        "动态拼接的路径查不出，读不到的来源列在 unread_sources。地图数据文件和 Lua 文件不在本工具范围（Lua 批量删除请用 lua_files_delete）", ToolPermission::Edit,
+        {{"archive_paths", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxImportRemoveFiles},
             {"items", QJsonObject{{"type", "string"}, {"maxLength", 260}}}}},
             {"allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"archive_paths"});
     add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）。"
@@ -135,6 +144,7 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     else if (name == "lua_folder_unlink" || name == "lua_folder_reconnect") {}
     else if (name == "lua_file_read") allowed << "path";
     else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
+    else if (name == "lua_files_delete") allowed << "paths" << "allow_referenced" << "dry_run";
     else if (name == "imports_add") allowed << "files" << "replace_existing";
     else if (name == "imports_remove") allowed << "archive_paths" << "allow_referenced";
     else if (name == "map_test_eval") allowed << "actions" << "reads" << "wait_ms";
@@ -211,10 +221,22 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         if (args.contains("replace_existing") && !args.value("replace_existing").isBool())
             return Failure("IMPORTS_ADD_ARGUMENT_INVALID", "replace_existing 必须是 true 或 false。");
     }
+    if (name == "lua_files_delete") {
+        const auto paths = args.value("paths");
+        if (!paths.isArray() || paths.toArray().isEmpty() || paths.toArray().size() > kMaxLuaDeleteFiles)
+            return Failure("LUA_FILES_DELETE_ARGUMENT_INVALID", "paths 必须是1..256项的 .lua 路径数组。");
+        for (const auto& item : paths.toArray())
+            if (!ValidPath(item))
+                return Failure("LUA_FILES_DELETE_ARGUMENT_INVALID", "paths 每项必须是地图内的相对 .lua 路径。");
+        if (args.contains("allow_referenced") && !args.value("allow_referenced").isBool())
+            return Failure("LUA_FILES_DELETE_ARGUMENT_INVALID", "allow_referenced 必须是 true 或 false。");
+        if (args.contains("dry_run") && !args.value("dry_run").isBool())
+            return Failure("LUA_FILES_DELETE_ARGUMENT_INVALID", "dry_run 必须是 true 或 false。");
+    }
     if (name == "imports_remove") {
         const auto paths = args.value("archive_paths");
-        if (!paths.isArray() || paths.toArray().isEmpty() || paths.toArray().size() > kMaxImportFiles)
-            return Failure("IMPORTS_REMOVE_ARGUMENT_INVALID", "archive_paths 必须是1..32项的数组。");
+        if (!paths.isArray() || paths.toArray().isEmpty() || paths.toArray().size() > kMaxImportRemoveFiles)
+            return Failure("IMPORTS_REMOVE_ARGUMENT_INVALID", "archive_paths 必须是1..512项的数组。");
         for (const auto& item : paths.toArray())
             if (!ValidImportTarget(item))
                 return Failure("IMPORTS_REMOVE_ARGUMENT_INVALID", "每项必须是地图内相对路径，不能是 .lua。");

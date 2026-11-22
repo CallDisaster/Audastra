@@ -370,6 +370,7 @@ private slots:
     void ProjectSearchOwnerDeletionKeepsInvocationAlive();
     void ViewportToolsUseActualHostAndRejectStaleIdentity();
     void GameUiToolsUseHostAndValidateArguments();
+    void BatchDeleteTriggersVariablesAndLuaFiles();
 };
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
@@ -385,7 +386,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "game_ui_description_triggers", "game_ui_frame_event", "game_ui_frame_rect", "game_ui_frame_reparent", "game_ui_frames_arrange", "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_trigger_simulation",
         "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
-        "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
+        "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_delete", "lua_files_list",
         "lua_folder_link", "lua_folder_reconnect", "lua_folder_review", "lua_folder_unlink",
         "lua_test_hot_reload", "lua_test_reload_result",
         "map_custom_settings_edit", "map_custom_settings_get", "map_runtime_query", "map_runtime_set", "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
@@ -395,12 +396,13 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_minimap_preview", "query_terrain_points", "redo_campaign", "save_campaign",
         "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
+        "triggers_batch_delete",
         "undo_campaign", "update.status",
-        "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update",
+        "variables_batch_delete", "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update",
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{108});
+    QCOMPARE(expected.size(), qsizetype{111});
     const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
@@ -3012,6 +3014,181 @@ void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
     QVERIFY(!Names(f.tools->Tools()).contains("map_runtime_set")); QVERIFY(Names(f.tools->Tools()).contains("map_runtime_query"));
     const auto denied = f.tools->Invoke("map_runtime_set", make(f.tools->Invoke("editor_state", {}), "disabled"));
     QVERIFY(!denied.value("ok").toBool());
+}
+
+void LiveEditorToolsTests::BatchDeleteTriggersVariablesAndLuaFiles() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = std::filesystem::path(f.outputs.filePath("batch-delete-source.w3x").toStdWString());
+    const std::array<MapArchiveMember, 1> members{{{"war3mapImported\\seed.txt", {std::byte{0x41}}}}};
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    auto archive = MapArchiveSession::Open(source); QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.sourceArchivePath_ = source;
+    f.project.ResetEditTracking();
+    f.tools = std::make_unique<LiveEditorTools>(f.project);
+
+    const auto makeAudits = [](const QJsonObject& audit) {
+        QJsonArray result;
+        if (audit.value("groupable_count").toInt() > 0) {
+            result.append(QJsonObject{{"review_sha256", audit.value("review_sha256")},
+                {"decision", "no_reference"}, {"reason", "reviewed zero-hit batch group"},
+                {"groupable_count", audit.value("groupable_count")},
+                {"groupable_sha256", audit.value("groupable_sha256")}});
+        }
+        for (const auto& block : audit.value("individual_blocks").toArray()) {
+            const auto b = block.toObject();
+            result.append(QJsonObject{{"review_sha256", audit.value("review_sha256")},
+                {"decision", "no_reference"}, {"reason", "reviewed individual block"},
+                {"blocks", QJsonArray{QJsonObject{{"kind", b.value("kind")}, {"id", b.value("id")},
+                    {"encoding", b.value("encoding")}, {"source_sha256", b.value("source_sha256")},
+                    {"evidence_sha256", b.value("evidence_sha256")}}}}});
+        }
+        return result;
+    };
+
+    // 1) Batch delete 12 variables in ONE undo step via batch_remove_audit + variables_batch_delete
+    QJsonArray varIds;
+    for (int i = 0; i < 12; ++i) {
+        auto req = f.Context();
+        req.insert("name", QStringLiteral("BatchDelVar_%1").arg(i));
+        req.insert("type_name", QStringLiteral("integer"));
+        const auto created = f.tools->Invoke("variables_create", req);
+        QVERIFY2(created.value("ok").toBool(), qPrintable(Explain(created)));
+        varIds.append(created.value("id").toString());
+    }
+    const int undoBeforeVars = f.project.triggerUndoStack_->count();
+    auto varAuditReq = f.Context();
+    varAuditReq.insert("table", QStringLiteral("batch_remove_audit"));
+    varAuditReq.insert("variable_ids", varIds);
+    const auto varAudit = f.tools->Invoke("editor_query_trigger_graph", varAuditReq);
+    QVERIFY2(varAudit.value("ok").toBool(), qPrintable(Explain(varAudit)));
+    QCOMPARE(varAudit.value("target_count").toInt(), 12);
+    auto varDelReq = f.Context();
+    varDelReq.insert("ids", varIds);
+    if (varAudit.value("code_audit_required").toBool()) varDelReq.insert("code_audits", makeAudits(varAudit));
+    const auto varDeleted = f.tools->Invoke("variables_batch_delete", varDelReq);
+    QVERIFY2(varDeleted.value("ok").toBool(), qPrintable(Explain(varDeleted)));
+    QCOMPARE(varDeleted.value("deleted_count").toInt(), 12);
+    QCOMPARE(f.project.triggerUndoStack_->count(), undoBeforeVars + 1);
+    f.project.triggerUndoStack_->undo();
+    QVERIFY(f.project.triggerDocument_->variables.size() >= 12);
+    f.project.triggerUndoStack_->redo();
+
+    // 2) Create category + 2 triggers via graph edit, then batch-delete via triggers_batch_delete (dry_run + actual + single undo)
+    const auto bindingBefore = CaptureTriggerGraphBinding(*f.project.triggerDocument_, *f.project.uiCatalog_);
+    QVERIFY(bindingBefore.Succeeded());
+    QJsonArray existingCats;
+    for (const auto& c : f.project.triggerDocument_->categories)
+        existingCats.append(QJsonObject{{"kind", "category"}, {"id", QString::number(c.id)}});
+    auto createTrash = f.Context();
+    createTrash.insert("expected", BindingJson(*bindingBefore.value));
+    createTrash.insert("operations", QJsonArray{
+        QJsonObject{{"op", "create"}, {"client_key", "trash_cat"},
+            {"value", QJsonObject{{"kind", "category"}, {"name", "BatchTrashCat"}, {"comment", false}}},
+            {"parent", QJsonObject{{"kind", "categories"}, {"ordered_children", existingCats}}}},
+        QJsonObject{{"op", "create"}, {"client_key", "trash_a"},
+            {"value", QJsonObject{{"kind", "trigger"}, {"name", "TrashTrigA"}, {"description", ""}, {"enabled", true}, {"initially_on", true}, {"run_on_init", false}, {"comment", false}}},
+            {"parent", QJsonObject{{"kind", "category_triggers"}, {"owner", QJsonObject{{"kind", "category"}, {"client_key", "trash_cat"}}}, {"ordered_children", QJsonArray{}}}}},
+        QJsonObject{{"op", "create"}, {"client_key", "trash_b"},
+            {"value", QJsonObject{{"kind", "trigger"}, {"name", "TrashTrigB"}, {"description", ""}, {"enabled", true}, {"initially_on", true}, {"run_on_init", false}, {"comment", false}}},
+            {"parent", QJsonObject{{"kind", "category_triggers"}, {"owner", QJsonObject{{"kind", "category"}, {"client_key", "trash_cat"}}}, {"ordered_children", QJsonArray{QJsonObject{{"kind", "trigger"}, {"client_key", "trash_a"}}}}}}}
+    });
+    const auto trashCreated = f.tools->Invoke("editor_edit_trigger_graph", createTrash);
+    QVERIFY2(trashCreated.value("ok").toBool(), qPrintable(Explain(trashCreated)));
+    const QString trashCatId = trashCreated.value("created").toObject().value("trash_cat").toObject().value("id").toString();
+    QVERIFY(!trashCatId.isEmpty());
+
+    const int triggersBefore = static_cast<int>(f.project.triggerDocument_->triggers.size());
+    const int catsBefore = static_cast<int>(f.project.triggerDocument_->categories.size());
+    auto trigAuditReq = f.Context();
+    trigAuditReq.insert("table", QStringLiteral("batch_remove_audit"));
+    trigAuditReq.insert("category_ids", QJsonArray{trashCatId});
+    const auto trigAudit = f.tools->Invoke("editor_query_trigger_graph", trigAuditReq);
+    QVERIFY2(trigAudit.value("ok").toBool(), qPrintable(Explain(trigAudit)));
+    QCOMPARE(trigAudit.value("target_count").toInt(), 2);
+
+    auto trigDryReq = f.Context();
+    trigDryReq.insert("category_ids", QJsonArray{trashCatId});
+    trigDryReq.insert("dry_run", true);
+    if (trigAudit.value("code_audit_required").toBool()) trigDryReq.insert("code_audits", makeAudits(trigAudit));
+    const auto trigDry = f.tools->Invoke("triggers_batch_delete", trigDryReq);
+    QVERIFY2(trigDry.value("ok").toBool(), qPrintable(Explain(trigDry)));
+    QVERIFY(trigDry.value("dry_run").toBool() && !trigDry.value("published").toBool());
+    QCOMPARE(trigDry.value("deleted_trigger_count").toInt(), 2);
+    QCOMPARE(trigDry.value("deleted_category_count").toInt(), 1);
+    QCOMPARE(static_cast<int>(f.project.triggerDocument_->triggers.size()), triggersBefore);
+
+    const int undoBeforeTrigs = f.project.triggerUndoStack_->count();
+    auto trigDelReq = f.Context();
+    trigDelReq.insert("category_ids", QJsonArray{trashCatId});
+    if (trigAudit.value("code_audit_required").toBool()) trigDelReq.insert("code_audits", makeAudits(trigAudit));
+    const auto trigDel = f.tools->Invoke("triggers_batch_delete", trigDelReq);
+    QVERIFY2(trigDel.value("ok").toBool(), qPrintable(Explain(trigDel)));
+    QVERIFY(!trigDel.value("dry_run").toBool() && trigDel.value("published").toBool());
+    QCOMPARE(static_cast<int>(f.project.triggerDocument_->triggers.size()), triggersBefore - 2);
+    QCOMPARE(static_cast<int>(f.project.triggerDocument_->categories.size()), catsBefore - 1);
+    QCOMPARE(f.project.triggerUndoStack_->count(), undoBeforeTrigs + 1);
+    f.project.triggerUndoStack_->undo();
+    QCOMPARE(static_cast<int>(f.project.triggerDocument_->triggers.size()), triggersBefore);
+    QCOMPARE(static_cast<int>(f.project.triggerDocument_->categories.size()), catsBefore);
+
+    // 3) lua_files_delete: require() reference rejection, dry_run, same-batch deletion + single undo
+    auto writeLua = [&](const QString& path, const QString& text) {
+        auto req = f.Context();
+        req.insert("path", path);
+        req.insert("text", text);
+        const auto res = f.tools->Invoke("lua_file_write", req);
+        QVERIFY2(res.value("ok").toBool(), qPrintable(Explain(res)));
+    };
+    writeLua("scripts/sub/mod.lua", "return { x = 1 }\n");
+    writeLua("scripts/main_user.lua", "local m = require('scripts.sub.mod')\nreturn m\n");
+    auto luaDry = f.Context();
+    luaDry.insert("paths", QJsonArray{"scripts/sub/mod.lua"});
+    luaDry.insert("dry_run", true);
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_files_delete", luaDry)), QString("LUA_FILES_DELETE_REFERENCED"));
+
+    auto luaBothDry = f.Context();
+    luaBothDry.insert("paths", QJsonArray{"scripts/sub/mod.lua", "scripts/main_user.lua"});
+    luaBothDry.insert("dry_run", true);
+    const auto dryRes = f.tools->Invoke("lua_files_delete", luaBothDry);
+    QVERIFY2(dryRes.value("ok").toBool(), qPrintable(Explain(dryRes)));
+    QVERIFY(dryRes.value("dry_run").toBool() && dryRes.value("deleted_count").toInt() == 2);
+
+    const int assetUndoBeforeLua = f.project.AssetUndoStack()->count();
+    auto luaBothDel = f.Context();
+    luaBothDel.insert("paths", QJsonArray{"scripts/sub/mod.lua", "scripts/main_user.lua"});
+    const auto luaDeleted = f.tools->Invoke("lua_files_delete", luaBothDel);
+    QVERIFY2(luaDeleted.value("ok").toBool(), qPrintable(Explain(luaDeleted)));
+    QCOMPARE(luaDeleted.value("deleted_count").toInt(), 2);
+    QCOMPARE(f.project.AssetUndoStack()->count(), assetUndoBeforeLua + 1);
+    f.project.AssetUndoStack()->undo();
+    QVERIFY(QtProject::ReadLuaScript(f.project, "scripts/sub/mod.lua").Succeeded());
+    QVERIFY(QtProject::ReadLuaScript(f.project, "scripts/main_user.lua").Succeeded());
+
+    // 4) imports_remove supports > 32 files (40 pending files in one atomic undo step)
+    const auto sampleDisk = f.outputs.filePath("dummy_asset.txt");
+    QVERIFY(WriteFile(sampleDisk, "sample"));
+    QJsonArray fortyPaths;
+    for (int batchIdx = 0; batchIdx < 2; ++batchIdx) {
+        QJsonArray files;
+        for (int j = 0; j < 20; ++j) {
+            const auto p = QStringLiteral("war3mapImported\\bulk_%1.txt").arg(batchIdx * 20 + j);
+            files.append(QJsonObject{{"disk_path", QDir::toNativeSeparators(sampleDisk)}, {"archive_path", p}});
+            fortyPaths.append(p);
+        }
+        auto addReq = f.Context();
+        addReq.insert("files", files);
+        const auto added = f.tools->Invoke("imports_add", addReq);
+        QVERIFY2(added.value("ok").toBool(), qPrintable(Explain(added)));
+    }
+    const int assetUndoBeforeImp = f.project.AssetUndoStack()->count();
+    auto rmReq = f.Context();
+    rmReq.insert("archive_paths", fortyPaths);
+    const auto rmRes = f.tools->Invoke("imports_remove", rmReq);
+    QVERIFY2(rmRes.value("ok").toBool(), qPrintable(Explain(rmRes)));
+    QCOMPARE(rmRes.value("removed").toArray().size(), 40);
+    QCOMPARE(f.project.AssetUndoStack()->count(), assetUndoBeforeImp + 1);
+    f.project.AssetUndoStack()->undo();
 }
 
 QTEST_MAIN(LiveEditorToolsTests)

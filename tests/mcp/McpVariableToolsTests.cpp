@@ -111,7 +111,7 @@ void SameBytes(const Fixture& fixture, const EncodedTriggerDocument& before, int
 }
 
 void SchemasAndSuccessfulHosts() {
-    const auto definitions = VariableToolDefinitions(); Require(definitions.size() == 6, "one source defines exactly six variable tools");
+    const auto definitions = VariableToolDefinitions(); Require(definitions.size() == 7, "one source defines exactly seven variable tools");
     std::set<QString> names;
     for (const auto& definition : definitions) {
         names.insert(definition.name);
@@ -119,7 +119,7 @@ void SchemasAndSuccessfulHosts() {
             && definition.maxResponseBytes == 1024U * 1024U && definition.maxRequestIdBytes == 4096,
             "strict schemas and explicit body/transport limits");
     }
-    Require(names == std::set<QString>{"variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete"}, "six final public names");
+    Require(names == std::set<QString>{"variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete", "variables_batch_delete"}, "seven final public names");
     for (const bool independent : {false, true}) {
         Fixture f(independent); const auto id = f.Create();
         auto get = f.For(id); const auto row = InvokeVariableTool("variables_get", get, f.host);
@@ -320,12 +320,81 @@ void DispatcherPermissionsAndSharedRegistration() {
         {"params", QJsonObject{{"name", "variables_create"}, {"arguments", f.CreateRequest()}}}}).toJson(QJsonDocument::Compact));
     Require(response && response->error && f.attempts == 0 && f.publishes == 0, "read-only dispatcher rejects before invoking variable host");
 }
+void BatchDeleteVariables() {
+    Fixture f;
+    QJsonArray ids;
+    for (int i = 0; i < 30; ++i) {
+        const auto name = "BatchTmp_" + std::to_string(i);
+        const auto id = f.Create(name.c_str());
+        ids.append(QString::number(id));
+    }
+    f.document.wct.customCode.text = "call UnrelatedLegacy()\r\n";
+    f.Reparse();
+    ids = QJsonArray{};
+    for (const auto& v : f.document.variables) ids.append(QString::number(v.id));
+    const auto original = f.Bytes();
+    const auto count = f.publishes;
+
+    // Missing code_audits rejects atomically
+    QJsonObject batchReq = f.IdentityArguments();
+    batchReq.insert("ids", ids);
+    Require(Code(InvokeVariableTool("variables_batch_delete", batchReq, f.host)) == "TRIGGER_REMOVE_CODE_AUDIT_REQUIRED",
+        "batch variable delete with opaque code requires batch_remove_audit confirmation");
+    SameBytes(f, original, count);
+
+    // Duplicate IDs rejected atomically
+    QJsonObject dupReq = f.IdentityArguments();
+    dupReq.insert("ids", QJsonArray{ids.first(), ids.first()});
+    Require(Code(InvokeVariableTool("variables_batch_delete", dupReq, f.host)) == "VARIABLE_ARGUMENT_TYPE",
+        "duplicate ids rejected");
+
+    // Typed reference on one variable blocks entire batch atomically
+    const auto added = TriggerDocumentEditor::AppendRootEca(f.document, f.catalog, f.document.triggers.front().id, UiDefinitionKind::Action, "StoreInteger");
+    Require(added.Succeeded(), "add ref eca");
+    const auto argId = f.document.argumentNodes.front().id;
+    Require(TriggerDocumentEditor::SetScalarArgument(f.document, argId, 1, "BatchTmp_5").Succeeded(), "bind typed ref");
+    ++f.generation;
+    const auto refAudit = QueryGraphDocument(f.document, f.catalog, nullptr,
+        QJsonObject{{"table", "batch_remove_audit"}, {"variable_ids", ids}});
+    Require(refAudit.value("ok").toBool() && !refAudit.value("typed_argument_ids").toArray().isEmpty(),
+        "batch_remove_audit reports surviving typed ref");
+    batchReq = f.IdentityArguments();
+    batchReq.insert("ids", ids);
+    batchReq.insert("code_audits", QJsonArray{QJsonObject{{"review_sha256", refAudit.value("review_sha256")},
+        {"decision", "no_reference"}, {"reason", "reviewed"}, {"groupable_count", refAudit.value("groupable_count")},
+        {"groupable_sha256", refAudit.value("groupable_sha256")}}});
+    Require(Code(InvokeVariableTool("variables_batch_delete", batchReq, f.host)) == "TRIGGER_GRAPH_REMOVE_REFERENCED",
+        "surviving typed reference rejects whole variable batch");
+    Require(f.document.variables.size() == 30, "rejected batch leaves all 30 variables intact");
+
+    // Remove the typed reference -> single batch_remove_audit + variables_batch_delete clears all 30 atomically!
+    Require(TriggerDocumentEditor::SetScalarArgument(f.document, argId, 3, "0").Succeeded(), "clear ref");
+    ++f.generation;
+    const auto cleanAudit = QueryGraphDocument(f.document, f.catalog, nullptr,
+        QJsonObject{{"table", "batch_remove_audit"}, {"variable_ids", ids}});
+    Require(cleanAudit.value("ok").toBool() && cleanAudit.value("complete").toBool()
+        && cleanAudit.value("typed_argument_ids").toArray().isEmpty()
+        && cleanAudit.value("groupable_count").toInt() == 1, "clean batch_remove_audit succeeds");
+    batchReq = f.IdentityArguments();
+    batchReq.insert("ids", ids);
+    batchReq.insert("code_audits", QJsonArray{QJsonObject{{"review_sha256", cleanAudit.value("review_sha256")},
+        {"decision", "no_reference"}, {"reason", "reviewed batch zero-hit"},
+        {"groupable_count", cleanAudit.value("groupable_count")},
+        {"groupable_sha256", cleanAudit.value("groupable_sha256")}}});
+    const auto prevPub = f.publishes;
+    const auto deleted = InvokeVariableTool("variables_batch_delete", batchReq, f.host);
+    Require(deleted.value("ok").toBool() && deleted.value("deleted_count").toInt() == 30
+        && f.document.variables.empty() && f.publishes == prevPub + 1
+        && f.Bytes().wct == original.wct,
+        "all 30 variables deleted in one atomic publish while preserving WCT");
+}
 } // namespace
 
 int main() {
     try {
         SchemasAndSuccessfulHosts(); PaginationAndExactIds(); ValidationAndAtomicity();
         TypedReferencesAndOpaqueCode(); BeforePublicationBudgetAndHostRefusal(); DispatcherPermissionsAndSharedRegistration();
+        BatchDeleteVariables();
         std::cout << "MCP variable facade tests passed.\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
