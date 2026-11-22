@@ -1294,6 +1294,10 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     const auto selectionSources = *sources.value;
     const auto worldView=viewport_->AnimationViewSnapshot();
     const bool particles=viewport_->HasParticleSupport();
+    // 首帧与播放器后续帧用同一份特效预算。不显式给时首帧只按默认 6000 个锚样准入（约 666 个实例），
+    // 其余特效在播放器接手前全部显示为“预算省略”。
+    const auto effectBudget = animation_->EffectBudgetStatus();
+    const Render::AnimationParticleFrameBudget firstParticleBudget{effectBudget.instanceLimit, effectBudget.anchorSampleLimit};
     const auto presentationVersion = PlacementPresentationVersion();
     auto helperIdentity = WorldPathingHelperResourceIdentity(*sources.value, presentationVersion.catalogRevision);
     if (!helperIdentity.Succeeded()) {
@@ -1311,7 +1315,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     };
     auto work=std::make_shared<Work>();
     auto* worker=QThread::create([work,sources=std::move(*sources.value),placed,cliffs,revision,epoch,worldView,particles,registry,
-        presentationVersion, helperIdentity = std::move(*helperIdentity.value), helperCache, cliffLayer] {
+        firstParticleBudget, presentationVersion, helperIdentity = std::move(*helperIdentity.value), helperCache, cliffLayer] {
         try {
             auto reader=WorldResourceReader::Open(sources);
             if (!reader.Succeeded()) { work->diagnostics=std::move(reader.diagnostics); return; }
@@ -1363,6 +1367,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             }
             Render::AnimationAdvance first; first.worldView=worldView;
             first.worldCamera=Render::AnimationWorldCamera(worldView.camera);
+            first.previewParticleBudget=firstParticleBudget;
             const auto& scene=*work->service->Scene();
             for (std::size_t i=0;i<placed->requests.size();++i) {
                 const auto stand=Render::FindAnimationSequence(scene.sequences[i],"Stand",specs[i].model.animationProperties);
