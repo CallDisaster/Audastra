@@ -123,10 +123,23 @@ void Admission() {
     auto tightTextures=limits; tightTextures.geometry.maxTotalTextureBytes=fullTextureBytes-1;
     Check(topTextureBytes<=tightTextures.geometry.maxTotalTextureBytes,
         "source mip budget fixture would already exceed its old top-only bill");
-    const auto rejectedTextures=ModelAnimationService::Create({7,1,"budget-fixture"},std::span(specs.data(),1),read,tightTextures);
+    // 预览模式：粒子贴图副本放不进完整 mip 链预算时只省略这组粒子（记为预算省略），模型照常；严格模式仍整体拒绝。
+    const auto degradedTextures=Good(ModelAnimationService::Create({7,1,"budget-fixture"},std::span(specs.data(),1),read,tightTextures));
+    const auto degradedScene=degradedTextures->Scene();
+    Check(!degradedScene->geometry.textures.empty() && degradedScene->particleTextures.empty() &&
+        !degradedScene->particleCapabilities[0].available &&
+        degradedScene->particleCapabilities[0].rejectionCode=="ANIMATION_PARTICLE_INSTANCE_BUDGET",
+        "particle copy used the old top-only budget, or its overflow failed the whole preview scene");
+    auto degradedAdvance=AnimationAdvance{}; degradedAdvance.playAll=true;
+    degradedAdvance.worldCamera=War3RenderCore::LocalCamera{{0,0,100},{0,0,1}};
+    const auto degradedFrame=Good(degradedTextures->Prepare(nullptr,degradedAdvance));
+    Check(degradedFrame->instances.size()==1 && degradedFrame->budgetParticleInstances==1 && degradedFrame->particleVertices.empty(),
+        "over-budget particle texture hid the model or was not reported as a budget omission");
+    auto strictTextures=tightTextures; strictTextures.retainUnsupportedStatic=false;
+    const auto rejectedTextures=ModelAnimationService::Create({7,1,"budget-fixture"},std::span(specs.data(),1),read,strictTextures);
     Check(!rejectedTextures.Succeeded() && !rejectedTextures.diagnostics.empty() &&
         rejectedTextures.diagnostics.front().code=="ANIMATION_PARTICLE_TEXTURE_BUDGET",
-        "particle copy admitted a complete source chain using the old top-only budget");
+        "strict particle copy admitted a complete source chain using the old top-only budget");
     AnimationAdvance advance; advance.deltaMs = 33; advance.playAll = true;
     advance.worldCamera = War3RenderCore::LocalCamera{{0, 0, 100}, {0, 0, 1}};
     auto baseline = Good(service->Prepare(nullptr, advance));

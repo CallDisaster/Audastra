@@ -201,8 +201,11 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         if (!ChargeModelTextureRgba(residentTextures[i],textureBytes,64ull*1024*1024))
             return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET","常驻粒子完整mip链超过预算。");
     }
-    if (textures.size()>256 || textureBytes>64ull*1024*1024 ||
-        modelTextureBytes>limits.geometry.maxTotalTextureBytes || textureBytes>limits.geometry.maxTotalTextureBytes-modelTextureBytes)
+    // 预览模式下粒子贴图的数量或解码总量用满时，只停放不下的那些实例的粒子并记为预算省略，模型照常显示；
+    // 严格模式仍整体失败。已驻留的粒子贴图也不因模型贴图后来增多而让整个场景失败。
+    const bool degradeOverBudget = limits.retainUnsupportedStatic;
+    if (textures.size()>256 || textureBytes>64ull*1024*1024 || modelTextureBytes>limits.geometry.maxTotalTextureBytes ||
+        (!degradeOverBudget && textureBytes>limits.geometry.maxTotalTextureBytes-modelTextureBytes))
         return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "驻留模型和粒子解码贴图超过总预算。");
     std::uint32_t particleEmitters = 0, ribbonEmitters = 0, maxNodes = 1, maxGroups = 1, maxGeosets = 1;
     std::uint64_t bindingBytes=sizeof(AnimationParticleCheckpoint)+scene.specs.size()*sizeof(std::uint32_t);
@@ -298,15 +301,27 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
             const auto key = AnimationPathKey(path);
             auto found = textures.find(key);
             if (found == textures.end()) {
-                if (textures.size() >= 256) return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "粒子场景贴图超过 256。");
+                const auto overBudget = [&] {
+                    textureRejection = "ANIMATION_PARTICLE_INSTANCE_BUDGET";
+                    missingTextures.emplace(requestKey, textureRejection); textureMissing = true;
+                };
+                if (textures.size() >= 256) {
+                    if (!degradeOverBudget) return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "粒子场景贴图超过 256。");
+                    overBudget(); break;
+                }
                 ModelTextureRgba decoded;
                 const auto existing = std::find_if(geometry.textures.begin(), geometry.textures.end(),
                     [&](const auto& t) { return AnimationPathKey(t.path) == key; });
-                const auto remaining=std::min(64ull*1024*1024-textureBytes,
-                    limits.geometry.maxTotalTextureBytes-modelTextureBytes-textureBytes);
+                const auto combinedBytes=modelTextureBytes+textureBytes;
+                const auto remaining=std::min(64ull*1024*1024-textureBytes, combinedBytes<limits.geometry.maxTotalTextureBytes
+                    ? limits.geometry.maxTotalTextureBytes-combinedBytes : 0);
                 if (existing != geometry.textures.end()) {
-                    if (!ModelTextureValid(*existing,limits.geometry.maxTextureDimension) || ModelTextureRgbaBytes(*existing)>remaining)
+                    if (!ModelTextureValid(*existing,limits.geometry.maxTextureDimension))
                         return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET","复制模型完整mip链前粒子配额不足。");
+                    if (ModelTextureRgbaBytes(*existing)>remaining) {
+                        if (!degradeOverBudget) return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET","复制模型完整mip链前粒子配额不足。");
+                        overBudget(); break;
+                    }
                     decoded = *existing;
                 }
                 else {
@@ -325,6 +340,8 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                     if (!image.Succeeded()) {
                         // 近似预览：粒子贴图解不开时与缺失同样只停这组粒子并记原因，模型本体照常显示。
                         if (!limits.retainUnsupportedStatic) return {std::nullopt, std::move(image.diagnostics)};
+                        // 放不进剩余贴图预算和解不开分开记：前者是预算省略，后者才是资产问题。
+                        if (!image.diagnostics.empty() && image.diagnostics.front().code == "WORLD_MODEL_TEXTURE_BUDGET") { overBudget(); break; }
                         textureRejection = "PARTICLE_TEXTURE_UNDECODABLE";
                         missingTextures.emplace(requestKey, textureRejection); textureMissing = true; break;
                     }
