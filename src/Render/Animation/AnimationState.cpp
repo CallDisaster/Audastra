@@ -271,8 +271,12 @@ War3RenderCore::LocalCamera AnimationWorldCamera(const War3RenderCameraV2& c) {
     return {{c.targetX + horizontal * std::cos(c.yawRadians), c.targetY + horizontal * std::sin(c.yawRadians),
         c.targetZ + c.distance * std::sin(c.pitchRadians)}, {0, 0, 1}};
 }
+bool AnimationInstanceCameraFailure(std::string_view code) noexcept {
+    return code == "ANIMATION_CAMERA_SINGULAR" || code == "ANIMATION_CAMERA_INVALID" ||
+        code == War3RenderCore::CodeName(Code::PoseCameraInvalid);
+}
 Result<War3RenderCore::LocalCamera> ToAnimationLocalCamera(const War3RenderCore::LocalCamera& c,
-    const std::array<float, 12>& m) {
+    const std::array<float, 12>& m, bool boundedPreview) {
     // 通用 3x3 逆；非均匀缩放的相机方向由同一逆变换处理，不拿世界视点共用给所有实例。
     const double a=m[0], b=m[1], d=m[2], e=m[4], f=m[5], g=m[6], h=m[8], i=m[9], j=m[10];
     const double determinant=a*(f*j-g*i)-b*(e*j-g*h)+d*(e*i-f*h);
@@ -282,14 +286,24 @@ Result<War3RenderCore::LocalCamera> ToAnimationLocalCamera(const War3RenderCore:
     const double inv[9]{(f*j-g*i)/determinant,(d*i-b*j)/determinant,(b*g-d*f)/determinant,
         (g*h-e*j)/determinant,(a*j-d*h)/determinant,(d*e-a*g)/determinant,
         (e*i-f*h)/determinant,(b*h-a*i)/determinant,(a*f-b*e)/determinant};
+    double eye[3]{}, up[3]{};
+    for (std::size_t r=0;r<3;++r)
+        for (std::size_t k=0;k<3;++k) {
+            eye[r] += inv[r*3+k]*(static_cast<double>(c.eye[k])-m[k*4+3]);
+            up[r] += inv[r*3+k]*c.up[k];
+        }
+    if (boundedPreview) {
+        // 核心只接受局部视点坐标不超过 400000、向上分量不超过 10000。缩放很小的摆放（常见的“缩到看不见”）
+        // 会把世界视点放大到范围之外。朝向相机的节点只用到方向：向上向量单位化、视点沿原方向收回，结果不变。
+        constexpr double kMaxLocalEye = 399000.0;
+        const double upLength = std::hypot(up[0], up[1], up[2]);
+        if (std::isfinite(upLength) && upLength > 1e-12) for (auto& value : up) value /= upLength;
+        const double reach = std::max({std::abs(eye[0]), std::abs(eye[1]), std::abs(eye[2])});
+        if (std::isfinite(reach) && reach > kMaxLocalEye) for (auto& value : eye) value *= kMaxLocalEye / reach;
+    }
     War3RenderCore::LocalCamera out;
     for (std::size_t r=0;r<3;++r) {
-        double eye=0, up=0;
-        for (std::size_t k=0;k<3;++k) {
-            eye += inv[r*3+k]*(static_cast<double>(c.eye[k])-m[k*4+3]);
-            up += inv[r*3+k]*c.up[k];
-        }
-        out.eye[r]=static_cast<float>(eye); out.up[r]=static_cast<float>(up);
+        out.eye[r]=static_cast<float>(eye[r]); out.up[r]=static_cast<float>(up[r]);
         if (!std::isfinite(out.eye[r]) || !std::isfinite(out.up[r]))
             return Result<War3RenderCore::LocalCamera>::Failure("Render.Animation", "ANIMATION_CAMERA_INVALID", "局部相机数值无效。");
     }

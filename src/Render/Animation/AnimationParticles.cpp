@@ -330,9 +330,11 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             }
         }
         std::uint64_t sampledElapsed = current.elapsedMs, sampledGlobal = current.globalMs;
-        auto local = ToAnimationLocalCamera(*frame.worldCamera, current.transform);
-        if (!local.Succeeded()) return {std::move(local.diagnostics)};
+        auto local = ToAnimationLocalCamera(*frame.worldCamera, current.transform, host.retainUnsupportedStatic);
+        if (!local.Succeeded() && !host.retainUnsupportedStatic) return {std::move(local.diagnostics)};
         const auto sampler = [&](std::uint64_t elapsed, std::span<Particles::Anchor> anchors) -> Status {
+            // 交互预览：局部相机建不出来时只拒绝这个实例的粒子（由下面的 reject 处理），不拒绝整帧。
+            if (!local.Succeeded()) return Status{local.diagnostics};
             sampledElapsed = elapsed;
             const auto global = Particles::GlobalTimeAt(timeline, elapsed);
             if (!global.Succeeded()) return {global.diagnostics};
@@ -376,7 +378,8 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
                 ++frame.budgetParticleInstances;frame.budgetParticleEmitters+=asset.particles->emitters.size();return {};
             }
             if (!host.retainUnsupportedStatic || !std::all_of(diagnostics.begin(), diagnostics.end(), [](const auto& d) {
-                return d.severity != DiagnosticSeverity::Error || AnimationLocalDataFailure(d.code); })) return {diagnostics};
+                return d.severity != DiagnosticSeverity::Error || AnimationLocalDataFailure(d.code) ||
+                    AnimationInstanceCameraFailure(d.code); })) return {diagnostics};
             link.hidden = !world; link.partial |= world;
             link.rejectionCode = error->code; link.rejectionMessage = error->message;
             link.rejectedElapsedMs = sampledElapsed; link.rejectedGlobalMs = sampledGlobal;

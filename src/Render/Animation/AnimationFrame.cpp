@@ -494,7 +494,9 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             const auto& receipt=s.evaluator->Receipts()[k];
             link.asset=receipt.asset; link.evaluationEpoch=receipt.evaluationEpoch; link.poseVersion=receipt.poseVersion;
             if (receipt.error!=Code::Ok) {
-                if (!s.retainUnsupportedStatic || !AnimationLocalDataFailure(receipt.error)) {
+                // 局部相机被核心拒绝（越界或方向退化）同样只是这一个实例的问题：交互预览里本帧隐藏它。
+                if (!s.retainUnsupportedStatic ||
+                    (!AnimationLocalDataFailure(receipt.error) && receipt.error!=Code::PoseCameraInvalid)) {
                     if (scene.dynamicMaterialStates) {
                         const auto issues=s.evaluator->TextureIssues(k);
                         if (!issues.empty()) {
@@ -619,9 +621,10 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         request.assetIndex=asset->evaluatorIndex; request.sequenceIndex=current.sequenceIndex;
         request.sequenceElapsedMs=current.elapsedMs; request.globalElapsedMs=current.globalMs;
         if (frame->worldCamera) {
-            auto local=ToAnimationLocalCamera(*frame->worldCamera,current.transform);
-            if (!local.Succeeded()) return {std::nullopt,std::move(local.diagnostics)};
-            request.hasCamera=1; request.camera=*local.value;
+            auto local=ToAnimationLocalCamera(*frame->worldCamera,current.transform,s.retainUnsupportedStatic);
+            // 交互预览：变换不可逆的实例没有体积，按无相机求值；不让一个实例的变换拒绝整帧。
+            if (local.Succeeded()) { request.hasCamera=1; request.camera=*local.value; }
+            else if (!s.retainUnsupportedStatic) return {std::nullopt,std::move(local.diagnostics)};
         }
         s.requests[active]=request; s.renderedIndices[active]=i; ++active;
         if (active==s.batchWidth) if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};

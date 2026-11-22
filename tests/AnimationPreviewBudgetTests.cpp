@@ -177,6 +177,32 @@ void Admission() {
     auto retained = Good(hard->Prepare(nullptr, advance));
     Check(retained->budgetParticleInstances == 1 && retained->budgetParticleEmitters == 1 &&
         retained->timings.particleSimulationRequests == 0, "complete preview bypassed the node safety budget");
+    // 缩放很小的摆放（常见的“缩到看不见”）会把世界视点换算到核心有界范围之外。
+    // 预览按方向收回视点、模型照常求值；非预览仍如实拒绝，且不能连累同场景的其他实例。
+    std::vector<AnimationInstanceSpec> tinySpecs(specs.begin(), specs.begin() + 2);
+    for (auto& spec : tinySpecs) spec.identity.generation = 10;
+    tinySpecs[1].hostKey = "budget:tiny"; tinySpecs[1].model.scale = {0.0001f, 0.0001f, 0.0001f};
+    AnimationAdvance tinyAdvance; tinyAdvance.playAll = true;
+    tinyAdvance.worldCamera = War3RenderCore::LocalCamera{{0, 0, 100}, {0, 0, 1}};
+    const auto tiny = Good(ModelAnimationService::Create({10, 1, "tiny-fixture"}, tinySpecs, read, limits));
+    const auto tinyFrame = Good(tiny->Prepare(nullptr, tinyAdvance));
+    Check(tinyFrame->instances.size() == 2 && tinyFrame->hiddenInstances == 0 && tinyFrame->animatedInstances == 2 &&
+        std::none_of(tinyFrame->particleLinks.begin(), tinyFrame->particleLinks.end(), [](const auto& link) {
+            return link.rejectionCode == "MDX_POSE_CAMERA_INVALID"; }),
+        "a tiny-scale placement pushed the local camera out of range and hid a model or failed the preview frame");
+    auto exactCamera = limits; exactCamera.retainUnsupportedStatic = false;
+    for (auto& spec : tinySpecs) spec.identity.generation = 11;
+    const auto exact = Good(ModelAnimationService::Create({11, 1, "tiny-exact-fixture"}, tinySpecs, read, exactCamera));
+    const auto refused = exact->Prepare(nullptr, tinyAdvance);
+    Check(!refused.Succeeded() && !refused.diagnostics.empty() && refused.diagnostics.front().code == "MDX_POSE_CAMERA_INVALID",
+        "non-preview evaluation silently replaced an out-of-range local camera");
+    // 缩放为 0 的摆放没有体积、变换不可逆：预览里只是它自己不参与朝向相机，其余实例和整帧不受影响。
+    for (auto& spec : tinySpecs) spec.identity.generation = 12;
+    tinySpecs[1].model.scale = {0, 0, 0};
+    const auto flat = Good(ModelAnimationService::Create({12, 1, "flat-fixture"}, tinySpecs, read, limits));
+    const auto flatFrame = Good(flat->Prepare(nullptr, tinyAdvance));
+    Check(flatFrame->instances.size() == 2 && flatFrame->animatedInstances >= 1,
+        "a zero-scale placement failed the whole preview frame");
     std::cout << "admission: original anchor bottleneck, model retention, frozen checkpoint, full recovery and hard/strict gates\n";
 }
 } // namespace

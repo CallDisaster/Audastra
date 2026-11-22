@@ -192,8 +192,13 @@ struct ModelAnimationService::State {
     const AnimationAsset& asset, bool retainUnsupported, std::vector<Diagnostic>& warnings);
 [[nodiscard]] Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states,
     const AnimatedModelScene& scene, const AnimationAdvance& advance);
+// boundedPreview：交互预览把有限但超出核心有界范围的局部相机收回到范围内（方向不变）；
+// 严格回放保持原值，由核心如实拒绝。
 [[nodiscard]] Result<War3RenderCore::LocalCamera> ToAnimationLocalCamera(
-    const War3RenderCore::LocalCamera& camera, const std::array<float, 12>& transform);
+    const War3RenderCore::LocalCamera& camera, const std::array<float, 12>& transform, bool boundedPreview = false);
+// 单个实例自身的局部相机问题：变换不可逆、数值无效，或核心拒绝的越界与退化方向。
+// 交互预览里只影响这一个实例，不能让整个场景失败。
+[[nodiscard]] bool AnimationInstanceCameraFailure(std::string_view code) noexcept;
 [[nodiscard]] std::uint64_t AnimationBitsHash(const void* data, std::size_t bytes) noexcept;
 [[nodiscard]] Status FillAnimationLayerAlphas(const AnimatedModelScene& scene, std::uint32_t model,
     War3RenderCore::Range32 range, std::span<float> output, std::span<const float> evaluated = {});

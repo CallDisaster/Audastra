@@ -563,7 +563,7 @@ Status PrepareAnimationPrem(ModelAnimationService::State& state, AnimationFrame&
             auto worldCamera = advance.worldCamera;
             if (!worldCamera && advance.worldView) worldCamera = AnimationWorldCamera(advance.worldView->camera);
             if (worldCamera) {
-                auto local = ToAnimationLocalCamera(*worldCamera, request.parentTransform);
+                auto local = ToAnimationLocalCamera(*worldCamera, request.parentTransform, true);
                 if (!local.Succeeded()) return reject("PREM_BIRTH_CAMERA_INVALID");
                 pose.camera = *local.value;
             }
