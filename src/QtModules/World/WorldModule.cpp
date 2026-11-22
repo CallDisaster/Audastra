@@ -67,6 +67,12 @@ namespace {
 
 QString Count(std::size_t value) { return QLocale().toString(static_cast<qulonglong>(value)); }
 
+// 静态模型场景里按路径汇总的结论：哪些模型没显示、哪些贴图没上传、悬崖是否超预算。
+bool StaticModelSummaryCode(std::string_view code) {
+    return code == "WORLD_MODEL_UNAVAILABLE" || code == "WORLD_MODEL_BUDGET" || code == "WORLD_MODEL_TEXTURE_UNAVAILABLE"
+        || code == "WORLD_MODEL_TEXTURE_BUDGET" || code == "WORLD_BAKED_BUDGET";
+}
+
 WorldShadowContext ShadowContextFor(const QtProject::EditorProject& project, const MapData::TerrainGridSnapshot* source,
     WorldShadowRelationMemo& memo) {
     WorldShadowContext context;
@@ -750,6 +756,24 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
         WorldDiagnosticJson::Text(model, "text", modelStatus_->text());
         WorldDiagnosticJson::Text(model, "details", modelStatus_->toolTip());
     }
+    if (scene_ && modelLoadStage_ == QLatin1String("prepared-static")) {
+        // 静态回退场景的实际用量与未显示原因。状态提示可能被别的诊断覆盖，探针以这里为准。
+        // 先列按路径汇总的“未显示 / 超预算”结论，再列其余逐项提示；合计有界。
+        QJsonArray warnings;
+        for (const bool summary : {true, false})
+            for (const auto& warning : scene_->warnings) {
+                if (warnings.size() == 32) break;
+                if (StaticModelSummaryCode(warning.code) != summary) continue;
+                warnings.append(QString::fromUtf8(warning.code + "：" + warning.message).left(1500));
+            }
+        model.insert("static_scene", QJsonObject{{"vertices", number(scene_->vertices.size())},
+            {"indices", number(scene_->indices.size())}, {"meshes", number(scene_->meshes.size())},
+            {"layers", number(scene_->layers.size())}, {"models", number(scene_->models.size())},
+            {"textures", number(scene_->textures.size())}, {"instances", number(scene_->instances.size())},
+            {"requested_instances", number(scene_->requestedInstances)},
+            {"skipped_instances", number(scene_->skippedInstances)},
+            {"warnings_total", number(scene_->warnings.size())}, {"warnings", warnings}});
+    }
     QJsonObject loading{{"terrain_worker", worker_ != nullptr}, {"model_worker", modelWorker_ != nullptr},
         {"terrain_reload_queued", reloadQueued_}, {"needs_refresh", needsRefresh_},
         {"placements_dirty", placementsDirty_}, {"terrain_render_pending", pendingTerrainRender_.has_value()},
@@ -909,6 +933,15 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
         scene_ = scene; requests_ = std::move(placed->requests); placementIds_ = std::move(placed->ids);
         unresolvedPlacements_ = std::move(placed->unresolvedRows);
         RecordModelLoad("prepared-static");
+        // 用量和未显示原因写进运行日志：作者反馈“某些模型不显示”时可以直接从日志判断是哪一项上限或哪些模型。
+        War3Map::RunLog::Info("世界加载", "静态模型：实例 " + std::to_string(scene->instances.size()) + "，未显示 "
+            + std::to_string(scene->skippedInstances) + "，模型 " + std::to_string(scene->models.size()) + "，顶点 "
+            + std::to_string(scene->vertices.size()) + "，索引 " + std::to_string(scene->indices.size()) + "，网格 "
+            + std::to_string(scene->meshes.size()) + "，层 " + std::to_string(scene->layers.size()) + "，贴图 "
+            + std::to_string(scene->textures.size()));
+        for (const auto& warning : scene->warnings)
+            if (StaticModelSummaryCode(warning.code))
+                War3Map::RunLog::Info("世界加载", "静态模型 " + warning.code + "：" + warning.message);
         pathingHelperRequests_.assign(requests_.size(), 0);
         pathingHelperPresentation_.reset();
         if (*preparedHelpers) {
