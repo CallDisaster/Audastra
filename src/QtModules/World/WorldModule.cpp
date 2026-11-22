@@ -891,11 +891,13 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
             auto& resolver = source->Resolver();
             ResolveModelVariantFallbacks(*placed, resolver, *variants);
             (void)ApplyModelVariantFallbacks(*placed, *variants);
+            // 与动画显示一致：缺矩阵组的无控制器模型（常见于地图自带的雾、光效）按静态原位显示，不整种丢掉。
+            Render::WorldModelLimits limits; limits.allowRigidStaticPreview = true;
             *result = Render::BuildWorldModelScene(placed->requests, [&resolver](std::string_view path) {
                 auto read = resolver.Read(path);
                 if (!read.Succeeded()) return Result<std::vector<std::byte>>{std::nullopt, std::move(read.diagnostics)};
                 return Result<std::vector<std::byte>>::Success(std::move(read.value->bytes));
-            }, {}, cliffs ? std::span<const Render::BakedModelMesh>(cliffs->meshes) : std::span<const Render::BakedModelMesh>{});
+            }, limits, cliffs ? std::span<const Render::BakedModelMesh>(cliffs->meshes) : std::span<const Render::BakedModelMesh>{});
             const auto verified = source->VerifyCurrentSource();
             if (!verified.Succeeded()) *result = {std::nullopt, verified.diagnostics};
         } catch (const std::exception&) {
