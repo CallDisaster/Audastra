@@ -1341,8 +1341,12 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             limits.retainUnsupportedStatic=true; limits.enableParticles=particles;
             limits.enablePremPreview=true;
             // 整张世界共用一份帧预算：上万实例的姿势会占满默认 64 MiB，粒子几乎全被预算拒绝。
-            // 世界页放宽到 256 MiB（仍是有界活跃预算，独立预览/缩略图保持原默认）。
-            limits.maxFrameBytes=256ull*1024*1024;
+            // 世界页放宽到 512 MiB（仍是有界活跃预算，独立预览/缩略图保持原默认）。
+            limits.maxFrameBytes=512ull*1024*1024;
+            // 视野内全部特效共用的粒子池：默认 65536 个粒子在特效多的大图上只够一百多个实例，其余全被省略。
+            // 世界页放宽到 8 倍，顶点用到单帧硬上限；实际显示多少仍由帧预算和按帧耗时自适应的实例数控制。
+            limits.particles.maxParticles=524288; limits.particles.maxRibbonSegments=262144;
+            limits.particles.maxVertices=Render::kMaxParticleFrameVertices;
             // 整张世界的模型与贴图原始字节：大型地图光导入资源就有几百 MiB，默认 256 MiB 会让后读到的资源全部不可用。
             limits.maxAssetBytes=2048ull*1024*1024;
             // 贴图用满总量时仍给 sampler / 绑定留出位置：多出的贴图逐张降级，不让整个场景加载失败。

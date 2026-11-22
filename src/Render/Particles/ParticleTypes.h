@@ -1,5 +1,6 @@
 #pragma once
 #include "War3MapCore/Types.h"
+#include "War3MapCore/Render/ParticleFrameLimits.h"
 #include <array>
 #include <functional>
 #include <span>

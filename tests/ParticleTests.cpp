@@ -262,9 +262,9 @@ void ParticleMaterialInputContract() {
     input.base.structSize = sizeof(input);
     input.base.contentVersion = 12; reject(); input.base.contentVersion = 11;
     input.base.sceneVersion = 10; reject(); input.base.sceneVersion = 9;
-    input.base.drawCount = 65537; input.materialFlagsCount = 65537; reject();
+    input.base.drawCount = input.materialFlagsCount = War3Map::Render::kMaxParticleFrameDraws + 1; reject();
     input.base.drawCount = input.materialFlagsCount = 2;
-    input.base.vertexCount = 1048577; reject(); input.base.vertexCount = 6;
+    input.base.vertexCount = War3Map::Render::kMaxParticleFrameVertices + 1; reject(); input.base.vertexCount = 6;
     auto legacy = input.base; legacy.structSize = sizeof(legacy);
     Check(CopyParticleInput(legacy,1,output) && output.drawMaterialFlags.empty(),
         "legacy particle input retained old extended flags");

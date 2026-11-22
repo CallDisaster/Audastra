@@ -30,7 +30,7 @@ void Quad(Geometry& g,const std::array<Vec3,4>& p,const std::array<std::array<fl
 }
 Result<Geometry> Build(const Asset& a,const State& s,const Timeline& t,const Vec3& eye,const Vec3& up,std::uint32_t maxVertices,
     std::span<const Anchor> currentAnchors) try {
-    Require(s.emitters.size()==a.emitters.size()&&maxVertices<=1048576&&Finite(eye)&&Finite(up),"PARTICLE_GEOMETRY_INPUT","粒子绘制输入无效。");
+    Require(s.emitters.size()==a.emitters.size()&&maxVertices<=kMaxParticleFrameVertices&&Finite(eye)&&Finite(up),"PARTICLE_GEOMETRY_INPUT","粒子绘制输入无效。");
     Geometry g;const float remainder=static_cast<float>(s.timeMs-s.tickMs)*0.001f;
     std::uint64_t capacity=0;
     for(std::size_t i=0;i<s.emitters.size();++i) capacity+=s.emitters[i].particles.size()*(a.emitters[i].headOrTail==2?12ull:6ull)

@@ -26,7 +26,7 @@ HRESULT D3D11Scene::InitializeParticles() {
     return S_OK;
 }
 HRESULT D3D11Scene::PrepareParticleFrame(const ParticleFrameData& frame, ParticleGpuFrame& candidate) {
-    if (!frame.ValidMaterialFlags() || frame.PayloadBytes() > 64ull * 1024 * 1024) return E_INVALIDARG;
+    if (!frame.ValidMaterialFlags() || frame.PayloadBytes() > kMaxParticleFramePayloadBytes) return E_INVALIDARG;
     // 只写非活动槽。即使后续模型提交失败，上一对模型/粒子 GPU 资源仍完整可画。
     candidate.draws = frame.draws;
     candidate.drawMaterialFlags = frame.drawMaterialFlags;

@@ -22,7 +22,7 @@ Result<State> Create(const Asset& a,std::uint64_t id,std::uint64_t generation,st
         if(a.emitters[i].kind==Kind::Particle2){particles+=s.quota;s.particles.reserve(s.quota);}
         else{segments+=s.quota;s.segments.reserve(s.quota);}
     }
-    Require(particles<=limits.particles&&segments<=limits.ribbonSegments&&limits.particles<=65536&&limits.ribbonSegments<=32768,
+    Require(particles<=limits.particles&&segments<=limits.ribbonSegments&&limits.particles<=kMaxSceneParticles&&limits.ribbonSegments<=kMaxSceneRibbonSegments,
         "PARTICLE_SCENE_BUDGET","粒子或条带段场景配额超限。");
     return Result<State>::Success(std::move(state));
 }catch(const Error& e){return Result<State>::Failure("Render.Particles",e.code,e.what());}

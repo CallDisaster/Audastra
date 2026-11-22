@@ -113,12 +113,12 @@ std::optional<std::uint64_t> ParticleInputPayloadBytes(const War3RenderParticleU
             || material->materialFlagsCount != in.drawCount
             || (material->materialFlagsCount == 0) != (material->materialFlags == nullptr)) return std::nullopt;
     } else if (in.structSize != sizeof(in)) return std::nullopt;
-    if(in.reserved||!in.sceneVersion||!in.contentVersion||in.vertexCount>1048576
-        ||in.drawCount>65536||(in.vertexCount&&!in.vertices)||(in.drawCount&&!in.draws)) return std::nullopt;
+    if(in.reserved||!in.sceneVersion||!in.contentVersion||in.vertexCount>kMaxParticleFrameVertices
+        ||in.drawCount>kMaxParticleFrameDraws||(in.vertexCount&&!in.vertices)||(in.drawCount&&!in.draws)) return std::nullopt;
     const auto bytes = std::uint64_t(in.vertexCount) * sizeof(War3RenderParticleVertexV2)
         + std::uint64_t(in.drawCount) * sizeof(War3RenderParticleDrawV2)
         + (material ? std::uint64_t(material->materialFlagsCount) * sizeof(std::uint32_t) : 0);
-    return bytes > 64ull * 1024 * 1024 ? std::nullopt : std::optional<std::uint64_t>(bytes);
+    return bytes > kMaxParticleFramePayloadBytes ? std::nullopt : std::optional<std::uint64_t>(bytes);
 }
 bool CopyParticleInput(const War3RenderParticleUpdateV2& in,std::uint32_t textures,ParticleFrameData& out) {
     if (!ParticleInputPayloadBytes(in) || textures > 256 || !in.modelPose || !SupportedPoseHeader(*in.modelPose)

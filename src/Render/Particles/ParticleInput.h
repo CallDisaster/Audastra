@@ -1,5 +1,6 @@
 #pragma once
 #include "War3MapCore/RenderPluginParticleMaterial.h"
+#include "War3MapCore/Render/ParticleFrameLimits.h"
 #include "../Scene/ModelSceneData.h"
 #include <optional>
 

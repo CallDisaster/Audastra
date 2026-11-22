@@ -1,4 +1,5 @@
 #include "AnimationParticles.h"
+#include "War3MapCore/Render/ParticleFrameLimits.h"
 #include "War3MapCore/Resources/ClassicObjectTexture.h"
 #include <algorithm>
 #include <cctype>
@@ -177,9 +178,9 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
     using Out = Result<std::shared_ptr<AnimationParticleHost>>;
     const auto fail = [](const char* code, const char* message) { return Out::Failure("Render.Animation", code, message); };
     const auto& p = limits.particles;
-    if (p.maxParticles > 65536 || p.maxRibbonSegments > 32768 || p.maxPerEmitter > 4096 ||
+    if (p.maxParticles > kMaxSceneParticles || p.maxRibbonSegments > kMaxSceneRibbonSegments || p.maxPerEmitter > 4096 ||
         !p.maxAnchorSamples || p.maxAnchorSamples > 6000 || !p.maxAnchorNodeVisits || p.maxAnchorNodeVisits > 4194304 ||
-        p.maxVertices > 1048576 || p.maxDraws > 65536 || !p.maxWorldFrameSteps || p.maxWorldFrameSteps>128)
+        p.maxVertices > kMaxParticleFrameVertices || p.maxDraws > kMaxParticleFrameDraws || !p.maxWorldFrameSteps || p.maxWorldFrameSteps>128)
         return fail("ANIMATION_PARTICLE_BUDGET", "粒子预算超出场景硬上限。");
     auto host = std::make_shared<AnimationParticleHost>();
     host->limits = p; host->maxFrameBytes = limits.maxFrameBytes; host->fixedFrameBytes = fixedFrameBytes;

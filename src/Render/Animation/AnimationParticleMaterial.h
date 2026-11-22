@@ -1,5 +1,6 @@
 #pragma once
 #include "War3MapCore/Render/ModelAnimation.h"
+#include "War3MapCore/Render/ParticleFrameLimits.h"
 #include <algorithm>
 
 namespace War3Map::Render {
@@ -17,7 +18,7 @@ namespace War3Map::Render {
         && (capabilities.particleMaterialFlagsMask & WAR3_PARTICLE_UNFOGGED) != 0;
 }
 [[nodiscard]] inline Status CheckAnimationParticleMaterialFrame(const AnimationFrame& frame) {
-    if (frame.particleVertices.size()>1048576 || frame.particleDraws.size()>65536
+    if (frame.particleVertices.size()>kMaxParticleFrameVertices || frame.particleDraws.size()>kMaxParticleFrameDraws
         || frame.particleMaterialFlags.size() != frame.particleDraws.size()
         || std::any_of(frame.particleMaterialFlags.begin(), frame.particleMaterialFlags.end(), [](std::uint32_t flags) {
             return (flags & ~std::uint32_t(WAR3_PARTICLE_UNFOGGED)) != 0;

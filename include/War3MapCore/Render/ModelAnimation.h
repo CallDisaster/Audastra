@@ -1,5 +1,6 @@
 #pragma once
 #include "War3MapCore/Render/AnimationPreviewBudget.h"
+#include "War3MapCore/Render/ParticleFrameLimits.h"
 
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/RenderPluginModelColor.h"

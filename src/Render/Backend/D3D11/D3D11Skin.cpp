@@ -243,7 +243,7 @@ HRESULT D3D11Scene::PrepareInstanceRoster(std::shared_ptr<const SkinPose> ownedP
     if (candidate->particles) {
         const auto& frame = *candidate->particles;
         if (frame.sceneVersion != pose.sceneVersion || frame.contentVersion != pose.contentVersion
-            || frame.vertices.size() > 1048576 || frame.draws.size() > 65536) return E_INVALIDARG;
+            || frame.vertices.size() > kMaxParticleFrameVertices || frame.draws.size() > kMaxParticleFrameDraws) return E_INVALIDARG;
         for (const auto& draw : frame.draws) if (draw.texture >= particleTextures_.size()) return E_INVALIDARG;
         const auto result = PrepareParticleFrame(frame, candidate->particleFrame);
         if (FAILED(result)) return result;
@@ -293,7 +293,7 @@ HRESULT D3D11Scene::PrepareAssetRoster(std::shared_ptr<const ModelScene> models,
     if (candidate->particles) {
         const auto& frame = *candidate->particles;
         if (frame.sceneVersion != candidate->pose->sceneVersion || frame.contentVersion != candidate->pose->contentVersion
-            || frame.vertices.size() > 1048576 || frame.draws.size() > 65536) return E_INVALIDARG;
+            || frame.vertices.size() > kMaxParticleFrameVertices || frame.draws.size() > kMaxParticleFrameDraws) return E_INVALIDARG;
         for (const auto& draw : frame.draws) if (draw.texture >= candidate->assets->particleTextures.size()) return E_INVALIDARG;
         hr = PrepareParticleFrame(frame, candidate->particleFrame); if (FAILED(hr)) return hr;
 #ifdef WAR3_RENDER_TEST_FAULTS

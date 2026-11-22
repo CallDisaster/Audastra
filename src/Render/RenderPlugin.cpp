@@ -1050,7 +1050,7 @@ bool ValidateUnmaskedMaterialWork(const ModelScene& models, const SkinPose* pose
     const auto maskBytes = std::uint64_t(models.instances.size()) + (particles ? particles->draws.size() : 0);
     const auto bytes = PosePayloadBytes(*pose)
         + (particles ? particles->PayloadBytes() : 0) + maskBytes;
-    const auto limit = (particles ? 128ull : 64ull) * 1024 * 1024;
+    const auto limit = particles ? War3Map::Render::kMaxPoseAndParticlePayloadBytes : 64ull * 1024 * 1024;
     if (bytes > limit) {
         char message[192]{};
         std::snprintf(message, sizeof(message), "[Render.MaterialState] MATERIAL_STATE_UNMASKED_BUDGET required=%llu limit=%llu\n",
@@ -1443,7 +1443,7 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
         if (pose) { target.sceneVersion = pose->sceneVersion; target.contentVersion = pose->contentVersion; }
         target.particleDrawCount = particles ? static_cast<std::uint32_t>(particles->draws.size()) : 0;
         if (particles && (!pose || PosePayloadBytes(*pose) + particles->PayloadBytes()
-            + input->instanceCount + input->particleDrawCount > 128ull * 1024 * 1024)) return kInvalid;
+            + input->instanceCount + input->particleDrawCount > War3Map::Render::kMaxPoseAndParticlePayloadBytes)) return kInvalid;
         auto visibility = std::make_shared<EditorVisibility>();
         if (!War3Map::Render::CopyEditorVisibility(SkinLayout(frozen), particles.get(), target, *input, *visibility, pose.get())) return kInvalid;
         {
@@ -1510,7 +1510,7 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorInstanceRoster(War3RendererHandle hand
         const auto particleBytes = input->candidateParticles
             ? War3Map::Render::ParticleInputPayloadBytes(*input->candidateParticles) : std::optional<std::uint64_t>(0);
         if (!particleBytes) return kInvalid;
-        if (poseBytes + *particleBytes + mask.instanceCount + mask.particleDrawCount > 128ull * 1024 * 1024) return kInvalid;
+        if (poseBytes + *particleBytes + mask.instanceCount + mask.particleDrawCount > War3Map::Render::kMaxPoseAndParticlePayloadBytes) return kInvalid;
         auto roster = std::make_shared<RosterCandidate>();
         roster->assetIdentity = frozen.assetIdentity; roster->expected = input->expected;
         roster->candidateAssetIdentity = assets ? frozen.assetIdentity + 1 : frozen.assetIdentity;
