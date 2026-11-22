@@ -19,7 +19,8 @@ namespace {
 std::optional<WorldPlacementCapture> CaptureUnitTail(const QtProject::EditorProject& project,
     const MapDocument& document, const MapData::MapDataEditSession::EditReceipt& receipt,
     const Services::WorldInstanceRegistry& previous, std::span<const Render::ModelInstanceRequest> requests,
-    std::span<const MapData::PlacementId> ids, std::span<const WorldPlacementPresentationCandidate> presentations) {
+    std::span<const MapData::PlacementId> ids, std::span<const WorldPlacementPresentationCandidate> presentations,
+    const MapData::TerrainGridSnapshot* terrain) {
     const auto& units = document.Units();
     const auto lineage = receipt.PlacementLineage();
     if (!units || units->version != 8 || units->subversion != 11
@@ -53,7 +54,7 @@ std::optional<WorldPlacementCapture> CaptureUnitTail(const QtProject::EditorProj
     std::vector<MapData::PlacementId> added;
     for (std::uint32_t i = oldCount; i < newCount; ++i)
         added.push_back(MapData::MakePlacementId(MapData::PlacementFile::Units, i, units->units[i]));
-    auto captured = CapturePlacementRows(project, document, added);
+    auto captured = CapturePlacementRows(project, document, added, false, terrain);
     if (!captured.Succeeded()) return std::nullopt;
     WorldPlacementCapture merged;
     merged.requests.reserve(requests.size() + captured.value->requests.size());
@@ -156,9 +157,9 @@ bool WorldModule::StagePlacementInstances(const MapDocument& document, const Wor
         }
     }
     auto tail = changedFile == MapData::PlacementFile::Units
-        ? CaptureUnitTail(project_, document, receipt, *stagedInstanceRegistry_, stagedRequests_, stagedPlacementIds_, stagedPresentations_)
+        ? CaptureUnitTail(project_, document, receipt, *stagedInstanceRegistry_, stagedRequests_, stagedPlacementIds_, stagedPresentations_, terrain_.get())
         : std::nullopt;
-    auto capture = tail ? std::move(*tail) : CaptureWorldPlacements(project_, document, changedFile);
+    auto capture = tail ? std::move(*tail) : CaptureWorldPlacements(project_, document, changedFile, terrain_.get());
     (void)ApplyModelVariantFallbacks(capture, modelVariants_);
     if (changedFile && !tail) {
         WorldPlacementCapture merged;
@@ -374,11 +375,11 @@ void WorldModule::UpdateSelectionCircles() {
         if (index >= requests_.size() || !requests_[index].selection) continue;
         auto request = requests_[index];
         for (const auto& move : dragGroup_) if (move.id == id) {
-            request.position = WorldPlacementDisplayPosition(request, move.position);
+            request.position = WorldPlacementDisplayPosition(request, move.position, terrain_.get());
             if (move.rotation) request.angle = *move.rotation;
         }
         if (selection_ && id == *selection_) {
-            if (dragPosition_) request.position = WorldPlacementDisplayPosition(request, *dragPosition_);
+            if (dragPosition_) request.position = WorldPlacementDisplayPosition(request, *dragPosition_, terrain_.get());
             if (dragRotation_) request.angle = *dragRotation_;
         }
         requests.push_back(std::move(request)); ids.push_back(id);

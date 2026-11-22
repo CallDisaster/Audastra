@@ -19,6 +19,7 @@
 #include <vector>
 
 namespace War3Map { class MapDocument; }
+namespace War3Map::MapData { struct TerrainGridSnapshot; }
 namespace War3Map::QtProject { class EditorProject; }
 namespace War3Map::Modules {
 
@@ -57,6 +58,8 @@ struct WorldPlacementCapture {
 // document 为当前地图文档（含未保存的摆放编辑）；物编字段取自 project。
 // file非空时只捕获该成员，计数也只覆盖该成员。复用另一个成员的宿主仍须通过
 // 同来源/物编修订与WorldInstanceRegistry::Prepare的完整成员SHA、谱系检查。
+// terrain 是当前显示的地形：单位和物品按它的地面高度显示（见 WorldPlacementDisplayPosition）。
+// 为空时退回摆放文件里存的 Z，只用于没有地形的调用方。
 // 变体模型路径 → 判定结果：无编号模型路径，或空串表示保留变体路径。
 // 只在“变体文件确实不存在、无编号文件存在”时改用；其他读取错误保持原路径与原错误。
 using ModelVariantFallbacks = std::map<std::string, std::string, std::less<>>;
@@ -66,7 +69,7 @@ void ResolveModelVariantFallbacks(const WorldPlacementCapture& capture, const Re
 // 按已判定的表替换请求路径（主线程增量捕获复用后台判定）。返回替换数。
 std::size_t ApplyModelVariantFallbacks(WorldPlacementCapture& capture, const ModelVariantFallbacks& fallbacks);
 [[nodiscard]] WorldPlacementCapture CaptureWorldPlacements(const QtProject::EditorProject& project, const MapDocument& document,
-    std::optional<MapData::PlacementFile> file = std::nullopt);
+    std::optional<MapData::PlacementFile> file = std::nullopt, const MapData::TerrainGridSnapshot* terrain = nullptr);
 // 独立于模型可用性的有效建筑贴画输入。继承规则仍由ObjectNames解析；目录字段
 // 来源是实际sourceFiles集合，不伪造逐字段唯一文件/偏移。身份绑定owned有效值与来源。
 struct WorldBuildingSplatCapture {
@@ -90,16 +93,20 @@ struct WorldBuildingSplatCapture {
 // 有界指定行查询，复用全场景相同字段规则，不扫描其它摆放。retainUnresolved仅为
 // 正式创建占位保留真实落点，空modelPath明确表示未知模型/占地，不进入主模型提交。
 [[nodiscard]] Result<WorldPlacementCapture> CapturePlacementRows(const QtProject::EditorProject& project,
-    const MapDocument& document, std::span<const MapData::PlacementId> rows, bool retainUnresolved = false);
+    const MapDocument& document, std::span<const MapData::PlacementId> rows, bool retainUnresolved = false,
+    const MapData::TerrainGridSnapshot* terrain = nullptr);
 // 与正式摆放读取同一物编父链；仅生成模型请求，不创建地图行。
 [[nodiscard]] std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(
     const QtProject::EditorProject& project, ObjectData::ObjectType type,
     const MapData::PlacementTransform& placement, std::int32_t owner,
-    WorldPlacementPresentationCandidate* presentation = nullptr);
+    WorldPlacementPresentationCandidate* presentation = nullptr, const MapData::TerrainGridSnapshot* terrain = nullptr);
 // 已有/新放置/拖动预览共享：rawPosition属于地图事务，返回值只用于渲染。
-// 不重复加地形，不把selZ当模型高度；仅显式fly的有效moveHeight作为预览偏移。
+// 单位和物品（standsOnGround）在有地形且该点有地面时取地面高度，不看 rawPosition 的 Z：
+// 游戏只按 (x, y) 创建它们，摆放文件里的 Z 常为 0，照它画会把单位埋到地面以下。
+// 其余摆放保持原 Z。不把selZ当模型高度；仅显式fly的有效moveHeight作为预览偏移。
 [[nodiscard]] std::array<float, 3> WorldPlacementDisplayPosition(
-    const Render::ModelInstanceRequest& request, const std::array<float, 3>& rawPosition);
+    const Render::ModelInstanceRequest& request, const std::array<float, 3>& rawPosition,
+    const MapData::TerrainGridSnapshot* terrain = nullptr);
 
 // 单位的移动类型（umvt/movetp，例如 foot、horse、fly、hover、float、amph）；rawcode 不是单位时为空。
 [[nodiscard]] std::optional<std::string> WorldUnitMovementType(const QtProject::EditorProject& project, const std::string& rawcode);

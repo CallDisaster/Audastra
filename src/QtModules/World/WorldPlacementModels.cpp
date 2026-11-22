@@ -5,6 +5,7 @@
 #include "ObjectNames.h"
 #include "War3MapCore/Services/PlacementCreation.h"
 #include "War3MapCore/MapDocument.h"
+#include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
@@ -364,7 +365,6 @@ void UnitPresentation(const ObjectFields& fields, Render::ModelInstanceRequest& 
         }
     }
     request.selection = display;
-    request.position = WorldPlacementDisplayPosition(request, request.position);
 }
 
 std::uint32_t Variation(std::int32_t variation, double count) {
@@ -381,8 +381,11 @@ std::optional<std::string> WorldUnitMovementType(const QtProject::EditorProject&
 }
 
 std::array<float, 3> WorldPlacementDisplayPosition(const Render::ModelInstanceRequest& request,
-    const std::array<float, 3>& rawPosition) {
+    const std::array<float, 3>& rawPosition, const MapData::TerrainGridSnapshot* terrain) {
     auto result = rawPosition;
+    if (request.standsOnGround && terrain)
+        if (const auto ground = MapData::SampleGroundHeight(*terrain, rawPosition[0], rawPosition[1]); ground && std::isfinite(*ground))
+            result[2] = *ground; // 地图外或没有地面的点保持原 Z。
     if (request.selection && request.selection->heightPreviewApproximate)
         result[2] += request.selection->flyHeightOffset;
     return result;
@@ -391,7 +394,7 @@ std::array<float, 3> WorldPlacementDisplayPosition(const Render::ModelInstanceRe
 namespace {
 std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields& fields, ObjectType type,
     const MapData::PlacementTransform& placement, std::int32_t owner, std::int32_t teamColor, std::int32_t variationIndex,
-    std::string* variantFallback = nullptr) {
+    const MapData::TerrainGridSnapshot* terrain, std::string* variantFallback = nullptr) {
     const bool doodad = type == ObjectType::Doodad;
     const bool destructable = type == ObjectType::Destructable;
     const bool unit = type == ObjectType::Unit;
@@ -426,11 +429,15 @@ std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields
         request.teamColor = static_cast<std::uint32_t>(std::clamp(teamColor >= 0 ? teamColor : owner, 0, 15));
         request.tint = unit ? fields.Tint({"red", "uclr"}, {"green", "uclg"}, {"blue", "uclb"})
             : fields.Tint({"colorr", "iclr"}, {"colorg", "iclg"}, {"colorb", "iclb"});
+        // 单位和物品站在地面上；原 Z 仍留在 selection->rawPlacementZ 和地图里。
+        request.standsOnGround = true;
+        request.position = WorldPlacementDisplayPosition(request, request.position, terrain);
     }
     return request;
 }
 void CaptureRow(const QtProject::EditorProject& project, ObjectFields& fields, const MapDocument& document,
-    const MapData::PlacementId& id, WorldPlacementCapture& capture, bool retainUnresolved) {
+    const MapData::PlacementId& id, WorldPlacementCapture& capture, bool retainUnresolved,
+    const MapData::TerrainGridSnapshot* terrain) {
     (void)project; // fields持有同一project父链查询，不重复构造目录。
     const MapData::PlacementTransform* placement = nullptr;
     std::optional<ObjectType> type;
@@ -446,7 +453,7 @@ void CaptureRow(const QtProject::EditorProject& project, ObjectFields& fields, c
         else if (fields.Find(ObjectType::Item, id.rawcode)) type = ObjectType::Item;
     }
     std::string fallback;
-    auto request = type ? RequestFromFields(fields, *type, *placement, owner, teamColor, variation, &fallback) : std::nullopt;
+    auto request = type ? RequestFromFields(fields, *type, *placement, owner, teamColor, variation, terrain, &fallback) : std::nullopt;
     if (!request) {
         WorldUnresolvedPlacement row; row.owner = id; row.position = placement->position; row.objectType = type;
         if (!type) { row.reasonCode = "WORLD_OBJECT_DEFINITION_MISSING"; row.reason = "摆放rawcode在当前地图/原版目录中没有可解析物体定义。"; }
@@ -507,17 +514,17 @@ std::size_t ApplyModelVariantFallbacks(WorldPlacementCapture& capture, const Mod
 }
 
 WorldPlacementCapture CaptureWorldPlacements(const QtProject::EditorProject& project, const MapDocument& document,
-    std::optional<MapData::PlacementFile> file) {
+    std::optional<MapData::PlacementFile> file, const MapData::TerrainGridSnapshot* terrain) {
     WorldPlacementCapture capture; ObjectFields fields(project);
     if (!file || *file == MapData::PlacementFile::Doodads) {
         if (const auto& doodads = document.Doodads())
             for (std::uint32_t i = 0; i < doodads->doodads.size(); ++i)
-                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Doodads, i, doodads->doodads[i]), capture, false);
+                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Doodads, i, doodads->doodads[i]), capture, false, terrain);
     }
     if (!file || *file == MapData::PlacementFile::Units) {
         if (const auto& units = document.Units())
             for (std::uint32_t i = 0; i < units->units.size(); ++i)
-                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Units, i, units->units[i]), capture, false);
+                CaptureRow(project, fields, document, MapData::MakePlacementId(MapData::PlacementFile::Units, i, units->units[i]), capture, false, terrain);
     }
     return capture;
 }
@@ -577,7 +584,7 @@ Result<WorldBuildingSplatCapture> CaptureWorldBuildingSplats(const QtProject::Ed
     return Result<WorldBuildingSplatCapture>::Success(std::move(capture));
 }
 Result<WorldPlacementCapture> CapturePlacementRows(const QtProject::EditorProject& project, const MapDocument& document,
-    std::span<const MapData::PlacementId> rows, bool retainUnresolved) {
+    std::span<const MapData::PlacementId> rows, bool retainUnresolved, const MapData::TerrainGridSnapshot* terrain) {
     WorldPlacementCapture capture; ObjectFields fields(project);
     constexpr std::size_t budget = 64ull * 1024 * 1024;
     if (rows.size() > budget / (sizeof(Render::ModelInstanceRequest) + sizeof(MapData::PlacementId)))
@@ -585,15 +592,16 @@ Result<WorldPlacementCapture> CapturePlacementRows(const QtProject::EditorProjec
     for (const auto& id : rows) {
         auto source = MapData::FindPlacement(document, id);
         if (!source.Succeeded()) return {std::nullopt, std::move(source.diagnostics)};
-        CaptureRow(project, fields, document, id, capture, retainUnresolved);
+        CaptureRow(project, fields, document, id, capture, retainUnresolved, terrain);
     }
     return Result<WorldPlacementCapture>::Success(std::move(capture));
 }
 std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(const QtProject::EditorProject& project, ObjectType type,
-    const MapData::PlacementTransform& placement, std::int32_t owner, WorldPlacementPresentationCandidate* presentation) {
+    const MapData::PlacementTransform& placement, std::int32_t owner, WorldPlacementPresentationCandidate* presentation,
+    const MapData::TerrainGridSnapshot* terrain) {
     ObjectFields fields(project);
     if (!fields.Find(type, placement.rawcode)) return std::nullopt;
-    auto request = RequestFromFields(fields, type, placement, type == ObjectType::Item ? 15 : owner, -1, 0);
+    auto request = RequestFromFields(fields, type, placement, type == ObjectType::Item ? 15 : owner, -1, 0, terrain);
     if (request) {
         request->previewGhost = true;
         if (presentation && type == ObjectType::Destructable)

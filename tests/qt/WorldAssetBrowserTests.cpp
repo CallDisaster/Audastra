@@ -9,6 +9,7 @@
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Workspace.h"
 
 #include <QApplication>
@@ -48,6 +49,20 @@ bool InstallObjects(QtProject::EditorProject& project) {
     project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     return project.objectDocuments_[0] != nullptr;
 }
+// 以原点为中心的一格平地（±64），地面在给定高度。
+MapData::TerrainGridSnapshot FlatGround(float height) {
+    MapData::TerrainGridSnapshot grid;
+    grid.header.width = 2; grid.header.height = 2; grid.header.offset = {-64, -64};
+    grid.minimum = {-64, -64, height}; grid.maximum = {64, 64, height};
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 0; x < 2; ++x) {
+        MapData::TerrainVertex vertex;
+        vertex.position = {-64.0f + 128.0f * x, -64.0f + 128.0f * y, height};
+        vertex.groundHeightRaw = 8192; vertex.cliffAndLayerRaw = 2;
+        grid.vertices.push_back(vertex);
+    }
+    grid.tiles.push_back({{0, 1, 2, 3}});
+    return grid;
+}
 }
 class WorldAssetBrowserTests final : public QObject {
     Q_OBJECT
@@ -55,6 +70,7 @@ private slots:
     void PagesKeepMapOverridesAndParentPresentation();
     void CapturedAnimationProperties();
     void CapturedFlightHeightAndCircleFieldsKeepRawPlacements();
+    void UnitsStandOnTheDisplayedGroundWhateverHeightIsStored();
     void SelectionCircleBatchCachesNativeTextureAndKeepsDisplayHeightSeparate();
     void SelectionOutlineUsesRendererEdges();
     void EffectiveClassificationsFollowStandardParentAndMapOverrides();
@@ -180,6 +196,41 @@ void WorldAssetBrowserTests::CapturedFlightHeightAndCircleFieldsKeepRawPlacement
     project.objectDocuments_[0].reset(); project.nativeObjectDocuments_[0] = std::make_unique<ObjectData::NativeObjectDocument>(std::move(*native.value));
     const auto nativePreview = CapturePlacementPreview(project, ObjectData::ObjectType::Unit, units.units.front(), 0);
     QVERIFY(nativePreview); QCOMPARE(nativePreview->position[2], 500.0f); QCOMPARE(document.Units()->units.front().position[2],25.0f);
+}
+void WorldAssetBrowserTests::UnitsStandOnTheDisplayedGroundWhateverHeightIsStored() {
+    // 游戏只按 (x, y) 创建单位，摆放文件里的 Z 常常全是 0；地面在高处时照存的 Z 画会把单位埋到地下。
+    QtProject::EditorProject project; QVERIFY(InstallObjects(project));
+    const std::string lni = "[hfoo]\numdl=\"Synthetic/Foot.mdl\"\n[U001]\n_parent=\"hfoo\"\numvt=\"fly\"\numvh=200\n";
+    auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
+    QVERIFY(parsed.Succeeded()); project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
+    MapData::UnitPlacements units;
+    units.units.push_back(std::get<MapData::UnitPlacement>(MakeNewPlacement(ObjectData::ObjectType::Unit, "hfoo", 0, {10, 20, 0})));
+    units.units.push_back(std::get<MapData::UnitPlacement>(MakeNewPlacement(ObjectData::ObjectType::Unit, "U001", 0, {30, 40, 0})));
+    units.units.push_back(std::get<MapData::UnitPlacement>(MakeNewPlacement(ObjectData::ObjectType::Unit, "hfoo", 0, {5000, 5000, 7})));
+    const auto encoded = units.Serialize(); QVERIFY(encoded.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", *encoded.value}};
+    const auto document = MapDocument::FromMembers(members);
+    const auto terrain = FlatGround(364);
+    const auto captured = CaptureWorldPlacements(project, document, std::nullopt, &terrain);
+    QCOMPARE(captured.requests.size(), std::size_t{3});
+    const auto& foot = captured.requests[0]; const auto& flyer = captured.requests[1]; const auto& outside = captured.requests[2];
+    QVERIFY(foot.standsOnGround); QCOMPARE(foot.position, (std::array<float, 3>{10, 20, 364}));
+    QVERIFY(foot.selection); QCOMPARE(foot.selection->rawPlacementZ, 0.0f); // 原 Z 仍可查。
+    QCOMPARE(flyer.position[2], 564.0f); // 地面 + 飞行高度。
+    QCOMPARE(outside.position[2], 7.0f); // 地形外没有地面：保持存的 Z。
+    // 没有地形的调用方保持存的 Z。
+    const auto raw = CaptureWorldPlacements(project, document);
+    QCOMPARE(raw.requests[0].position[2], 0.0f); QCOMPARE(raw.requests[1].position[2], 200.0f);
+    // 指定行查询、放置预览、拖动预览与整表读取同一规则。
+    const auto row = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, units.units[0]);
+    const auto rows = CapturePlacementRows(project, document, std::span(&row, 1), false, &terrain);
+    QVERIFY(rows.Succeeded()); QCOMPARE(rows.value->requests.front().position, foot.position);
+    const auto preview = CapturePlacementPreview(project, ObjectData::ObjectType::Unit, units.units[1], 0, nullptr, &terrain);
+    QVERIFY(preview); QCOMPARE(preview->position, flyer.position);
+    QCOMPARE(WorldPlacementDisplayPosition(flyer, {-30, -40, -999}, &terrain), (std::array<float, 3>{-30, -40, 564}));
+    QCOMPARE(WorldPlacementDisplayPosition(flyer, {9000, 0, 12}, &terrain)[2], 212.0f);
+    // 只是显示：地图里的摆放一个字节也不变。
+    QCOMPARE(document.Units()->units[0].position[2], 0.0f); QCOMPARE(*units.Serialize().value, *encoded.value);
 }
 void WorldAssetBrowserTests::SelectionCircleBatchCachesNativeTextureAndKeepsDisplayHeightSeparate() {
     Image::DecodedImage image{2,2, std::vector<std::byte>(16, std::byte{255})}; image.rgba[3] = std::byte{0};

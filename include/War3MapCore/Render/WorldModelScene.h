@@ -42,6 +42,9 @@ struct ModelInstanceRequest {
     bool previewGhost = false;      // 编辑器临时实例：独立材质变体，使用半透明混合；不写地图。
     std::string animationProperties; // 继承物编uani/animProps；按完整词选择动作，不改变静态资产身份。
     std::optional<ModelSelectionDescription> selection; // 宿主显示描述，不影响资源身份或精确拾取。
+    // 单位和物品：游戏按 (x, y) 创建并让它站在地面上，摆放文件里存的 Z 不参与（常见全为 0）。
+    // 宿主有地形时按地面高度显示；只是显示描述，不影响资源身份，也不写回地图。
+    bool standsOnGround = false;
     // 编辑器原创辅助几何，独立typed资产身份；modelPath仍是原实际资源描述，不送入伪MDX读取器。
     std::shared_ptr<const OwnedStaticModelAsset> ownedStaticAsset;
 };

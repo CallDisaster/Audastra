@@ -660,7 +660,7 @@ std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
         }
     }
     // 缺模型的行从未进入scene；单独复用同一个只读捕获，不伪造requestIndex。
-    const auto unresolved = CaptureWorldPlacements(project_, *document);
+    const auto unresolved = CaptureWorldPlacements(project_, *document, std::nullopt, terrain_.get());
     for (const auto& missing : unresolved.unresolvedRows) {
         WorldModelDiagnosticRow row;
         row.modelPath = QString::fromStdString(missing.modelPath); row.owners = {missing.owner}; row.records = 1;
@@ -866,7 +866,7 @@ QJsonObject WorldModule::ModelDiagnosticSnapshot() const {
     result["binding"] = QJsonObject{{"documentId", QString::fromStdString(version.document.documentId)},
         {"sourceSha256", QString::fromStdString(version.document.sourceSha256)}, {"generation", QString::number(version.document.generation)},
         {"revision", QString::number(version.document.revision)}, {"catalogRevision", QString::number(version.catalogRevision)}};
-    const auto captured = CaptureWorldPlacements(project_, *document);
+    const auto captured = CaptureWorldPlacements(project_, *document, std::nullopt, terrain_.get());
     QJsonArray unresolved;
     for (const auto& missing : captured.unresolvedRows) {
         auto row = PlacementDiagnosticIdentity(missing.owner);
@@ -1260,7 +1260,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     }
     CaptureAuxiliary(*document); RefreshOutliner();
     RefreshBuildingSplats(false, &*document); // 先捕获typed uubs，不由模型可用性决定贴画来源。
-    auto placed=std::make_shared<WorldPlacementCapture>(CaptureWorldPlacements(project_,*document));
+    auto placed=std::make_shared<WorldPlacementCapture>(CaptureWorldPlacements(project_,*document,std::nullopt,terrain_.get()));
     (void)ApplyModelVariantFallbacks(*placed, modelVariants_);
     placementsDirty_=false; // 此次捕获已包含先前修改；仅启动后新增的修改要求再加载。
     const auto cliffs=cliffs_;
