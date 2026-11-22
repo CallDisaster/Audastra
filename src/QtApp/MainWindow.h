@@ -176,7 +176,8 @@ public:
     bool ProbeWorldInteraction(int seconds, QStringList& log, bool passive = false, int readyTimeoutSeconds = 180,
         const std::filesystem::path& captureOutput = {}, bool frameOnly = false, bool modelListOnly = false,
         const QString& focusHostKey = {}, std::optional<std::uint32_t> sequenceIndex = {},
-        std::optional<std::uint64_t> elapsedMs = {}, std::optional<std::uint64_t> globalMs = {});
+        std::optional<std::uint64_t> elapsedMs = {}, std::optional<std::uint64_t> globalMs = {},
+        std::optional<std::array<double, 4>> cameraTarget = {});
     // 作者主动开启的可见被动测量；后台参数只用于隔离诊断，不构成可见验收。
     bool EnableWorldMeasurement(const QString& newOutputDirectory, int backgroundSeconds = 0, bool cameraTour = false);
 

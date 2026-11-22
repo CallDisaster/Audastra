@@ -26,6 +26,8 @@
 #include "AudastraVersion.generated.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -144,6 +146,22 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
             || worldFocusOption + 1 >= arguments.size()) return 1;
         worldFocusHostKey = arguments[worldFocusOption + 1];
         if (worldFocusHostKey.isEmpty() || worldFocusHostKey.size() > 512 || worldFocusHostKey.startsWith(QStringLiteral("--"))) return 1;
+    }
+    // 指定镜头：目标点 x,y,z 与距离（世界单位），用于在已知位置核对显示结果；不写入用户设置。
+    std::optional<std::array<double, 4>> worldCamera;
+    if (const auto at = arguments.indexOf(QStringLiteral("--probe-world-camera")); at >= 0) {
+        if (arguments.count(QStringLiteral("--probe-world-camera")) != 1 || !headlessProbe || !frameOnlyWorldProbe
+            || worldOption < 0 || worldFocusOption >= 0 || modelListOnlyWorldProbe || at + 1 >= arguments.size()) return 1;
+        const auto parts = arguments[at + 1].split(QLatin1Char(','));
+        if (parts.size() != 4) return 1;
+        std::array<double, 4> value{};
+        for (qsizetype i = 0; i < 4; ++i) {
+            bool valid = false;
+            value[static_cast<std::size_t>(i)] = parts[i].toDouble(&valid);
+            if (!valid || !(std::abs(value[static_cast<std::size_t>(i)]) <= 1000000.0)) return 1;
+        }
+        if (!(value[3] >= 100.0)) return 1;
+        worldCamera = value;
     }
     std::optional<std::uint64_t> worldSequence, worldElapsed, worldGlobal;
     const auto probeClockOption = [&](const QString& option, const char* environment,
@@ -321,7 +339,7 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
             QStringList log;
             const bool probed = probeWindow.ProbeWorldInteraction(worldSeconds, log, passiveWorldProbe, worldTimeoutSeconds,
                 pathOption(u"--probe-world-output"), frameOnlyWorldProbe, modelListOnlyWorldProbe, worldFocusHostKey,
-                worldSequenceIndex, worldElapsed, worldGlobal);
+                worldSequenceIndex, worldElapsed, worldGlobal, worldCamera);
             QTextStream out(stdout);
             out.setEncoding(QStringConverter::Utf8);
             for (const QString& line : log) out << line << '\n';

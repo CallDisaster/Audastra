@@ -57,7 +57,8 @@ void MainWindow::SetWorldStaticModelsOnly(bool enabled) {
 
 bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passive, int readyTimeoutSeconds,
     const std::filesystem::path& captureOutput, bool frameOnly, bool modelListOnly, const QString& focusHostKey,
-    std::optional<std::uint32_t> sequenceIndex, std::optional<std::uint64_t> elapsedMs, std::optional<std::uint64_t> globalMs) {
+    std::optional<std::uint32_t> sequenceIndex, std::optional<std::uint64_t> elapsedMs, std::optional<std::uint64_t> globalMs,
+    std::optional<std::array<double, 4>> cameraTarget) {
     log << QStringLiteral("world-probe-actual-qt-platform=%1").arg(QApplication::platformName());
     if (frameOnly && (passive || captureOutput.empty() || seconds != 0)) {
         log << QStringLiteral("world-probe-frame-only=refused-conflicting-or-missing-output");
@@ -261,6 +262,20 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
             log << QStringLiteral("world-clock=accepted; sequence=%1; elapsed=%2; global=%3")
                 .arg(*sequenceIndex).arg(*elapsedMs).arg(*globalMs);
         }
+    }
+    if (cameraTarget) {
+        // 显示问题常与镜头位置有关：按给定目标点和距离取景，再等新视野的那一帧被接受。
+        auto camera = viewport->SaveCamera();
+        camera["x"] = (*cameraTarget)[0]; camera["y"] = (*cameraTarget)[1];
+        camera["z"] = (*cameraTarget)[2]; camera["distance"] = (*cameraTarget)[3];
+        if (!viewport->RestoreCamera(camera)) { log << QStringLiteral("world-camera=refused"); return false; }
+        Pump(1500);
+        const auto* player = worldModule_->AnimationPlayer();
+        QElapsedTimer settle; settle.start();
+        while (settle.elapsed() < 10000 && player && (player->Busy() || player->InstancesBusy())) Pump(50);
+        log << QStringLiteral("world-camera=%1,%2,%3,%4").arg((*cameraTarget)[0]).arg((*cameraTarget)[1])
+            .arg((*cameraTarget)[2]).arg((*cameraTarget)[3]);
+        snapshot(QStringLiteral("camera-set"));
     }
 
     if (modelListOnly) {
