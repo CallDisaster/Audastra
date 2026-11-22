@@ -49,7 +49,9 @@ constexpr std::uint64_t kMaxMipChainBytes = 24ull * 1024 * 1024;
 // 模型场景预算（见 RenderPluginV2.h）。
 constexpr std::uint32_t kMaxModelVertices = 2097152, kMaxModelIndices = 6291456, kMaxModelLayers = 131072,
     kMaxModelMeshes = 65536, kMaxModels = 16384, kMaxModelTextures = 4096;
-constexpr std::uint64_t kMaxModelTextureTotal = 192ull * 1024 * 1024, kMaxModelBytes = 320ull * 1024 * 1024;
+// 贴图总量随宿主的 WorldModelLimits::maxTotalTextureBytes（2 GiB）放宽，并留出与原先相同比例的余量；
+// 场景总字节 = 贴图 + 几何等其余载荷。
+constexpr std::uint64_t kMaxModelTextureTotal = 2304ull * 1024 * 1024, kMaxModelBytes = 2560ull * 1024 * 1024;
 constexpr std::int32_t kInvalid = 1, kTimeout = 2;
 std::uint64_t CpuNanoseconds(std::chrono::steady_clock::duration duration) noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());

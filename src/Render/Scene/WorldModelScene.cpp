@@ -312,7 +312,10 @@ private:
             budgetExceeded = true;
         } else if (bytes.Succeeded()) {
             // 解码的分配门只扣实际RGBA；联合来源/采样元数据由MaterialStorageFits归因。
-            const auto remaining = limits_.maxTotalTextureBytes - std::min(limits_.maxTotalTextureBytes, textureBytes_);
+            // 设有元数据预留时贴图只用到“总量 − 预留”，超出的贴图逐张降级。
+            const auto textureCeiling = limits_.maxTotalTextureBytes
+                - std::min(limits_.maxTotalTextureBytes, limits_.textureMetadataReserveBytes);
+            const auto remaining = textureCeiling - std::min(textureCeiling, textureBytes_);
             const auto cached = decoded_ ? decoded_(path, *bytes.value, limits_.maxTextureDimension) : nullptr;
             const bool usable = cached && cached->ownedIdentity.empty() && PathKey(cached->path) == PathKey(path)
                 && cached->mipPolicyVersion == ModelTextureMipPolicyVersion
@@ -323,7 +326,7 @@ private:
                 auto decoded = std::move(*image.value);
                 const auto rgbaBytes = ModelTextureRgbaBytes(decoded);
                 const bool rgbaFits = ModelTextureValid(decoded, limits_.maxTextureDimension)
-                    && rgbaBytes <= limits_.maxTotalTextureBytes && textureBytes_ <= limits_.maxTotalTextureBytes - rgbaBytes;
+                    && rgbaBytes <= textureCeiling && textureBytes_ <= textureCeiling - rgbaBytes;
                 if (rgbaFits && MaterialStorageFits(textureBytes_ + rgbaBytes, textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
                     textureBytes_ += rgbaBytes;
                     // 场景保有界摘要，完整来源/截止诊断仍由纹理owned字段保存。
@@ -334,7 +337,9 @@ private:
                 } else {
                     budgetExceeded = true;
                     // 仅纯RGBA本可容纳时将超额归因于来源元数据；纯纹理超限保留原预算诊断。
-                    samplerBudgetExceeded_ |= rgbaFits && (samplerActive_ || textureBindingBytes_ != 0);
+                    // 设有元数据预留时这只是又一张超预算贴图，不升级为整场景失败。
+                    samplerBudgetExceeded_ |= !limits_.textureMetadataReserveBytes
+                        && rgbaFits && (samplerActive_ || textureBindingBytes_ != 0);
                 }
             } else {
                 for (const auto& diagnostic : image.diagnostics) {

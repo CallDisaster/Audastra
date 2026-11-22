@@ -764,6 +764,36 @@ void TestStaticSamplerMetadataBudget() {
         "替换时旧快照和新候选 sampler 的实际容量必须一起计入原预算");
 }
 
+void TestTextureMetadataReserveDegradesPerTexture() {
+    // 大型地图的贴图会把总量用满：设有元数据预留时，多出的贴图逐张按未上传处理，
+    // sampler 仍放得下，整个场景不因几 KB 的来源元数据而失败。
+    Files files;
+    std::vector<BakedModelMesh> baked;
+    for (std::uint32_t i = 0; i < 6; ++i) {
+        const auto path = "Original\\Tile" + std::to_string(i) + ".blp";
+        files.files[Key(path)] = Blp(2, 2, static_cast<std::uint8_t>(20 + i * 30));
+        baked.push_back(Triangle(static_cast<float>(i * 20), path, i % 4));
+    }
+    const auto probe = BuildWorldModelScene({}, files.Reader(), {}, baked);
+    Require(probe.Succeeded() && probe.value->textures.size() == 6, "夹具须有六张互不相同的真实贴图");
+    const auto textureBytes = ModelTextureRgbaBytes(probe.value->textures[0]);
+    const auto samplerBytes = probe.value->layerSamplerFlags.capacity() * sizeof(std::uint32_t)
+        + sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
+    WorldModelLimits limits;
+    limits.textureMetadataReserveBytes = samplerBytes + 64;
+    limits.maxTotalTextureBytes = textureBytes * 3 + limits.textureMetadataReserveBytes;
+    const auto degraded = BuildWorldModelScene({}, files.Reader(), limits, baked);
+    Require(degraded.Succeeded() && degraded.value->textures.size() == 3 && degraded.value->untexturedLayers == 3
+        && HasWarning(*degraded.value, "WORLD_MODEL_TEXTURE_BUDGET")
+        && EffectiveSamplerFlags(*degraded.value) == std::vector<std::uint32_t>{0, 1, 2, 3, 0, 1},
+        "贴图用满总量后应逐张降级并保留全部几何与 sampler，不能让整个场景失败");
+    // 贴图即使小到能挤进预留里，也不能占用预留，更不能因此被归因成 sampler 超预算而整体失败。
+    limits.maxTotalTextureBytes = textureBytes * 3 + limits.textureMetadataReserveBytes + textureBytes - 1;
+    const auto window = BuildWorldModelScene({}, files.Reader(), limits, baked);
+    Require(window.Succeeded() && window.value->textures.size() == 3 && window.value->untexturedLayers == 3,
+        "剩余空间不足一张贴图时仍按贴图预算逐张降级");
+}
+
 void TestPreciseAnimatedPicking() {
     // 原创单三角形、同资产两实例；只测完成帧输入的 CPU 数学，不声称 GPU 或游戏已完成。
     AnimatedModelScene scene;
@@ -1033,6 +1063,7 @@ int main() {
         TestReplaceBaked();
         TestBakedSamplerFlagsAndSnapshotRefresh();
         TestStaticSamplerMetadataBudget();
+        TestTextureMetadataReserveDegradesPerTexture();
         TestRigidPoseScene();
         TestNoControllerStaticPreview();
         std::cout << "world model scene: variants, dedupe, transforms, textures, budgets passed\n";

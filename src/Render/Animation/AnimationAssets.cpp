@@ -434,7 +434,8 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
         const auto key = ModelAssetKey(input.model);
         auto found = cached.find(key);
         if (found == cached.end()) {
-            if (state->assets.size() >= 4096) return fail("ANIMATION_ASSET_BUDGET", "模型资产数超过 4096。");
+            // 与场景和渲染插件的模型数上限（16384）一致；大型地图的不同模型可以超过原来的 4096。
+            if (state->assets.size() >= 16384) return fail("ANIMATION_ASSET_BUDGET", "模型资产数超过 16384。");
             AnimationAsset asset;
             if (input.model.ownedStaticAsset) {
                 const auto bytes = input.model.ownedStaticAsset->OwnedBytes();

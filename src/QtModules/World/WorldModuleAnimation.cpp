@@ -1343,6 +1343,10 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             // 整张世界共用一份帧预算：上万实例的姿势会占满默认 64 MiB，粒子几乎全被预算拒绝。
             // 世界页放宽到 256 MiB（仍是有界活跃预算，独立预览/缩略图保持原默认）。
             limits.maxFrameBytes=256ull*1024*1024;
+            // 整张世界的模型与贴图原始字节：大型地图光导入资源就有几百 MiB，默认 256 MiB 会让后读到的资源全部不可用。
+            limits.maxAssetBytes=2048ull*1024*1024;
+            // 贴图用满总量时仍给 sampler / 绑定留出位置：多出的贴图逐张降级，不让整个场景加载失败。
+            limits.geometry.textureMetadataReserveBytes=16ull*1024*1024;
             const auto read=[&](auto path,auto maximum){return work->source->ReadAnimationResource(path,maximum);};
             auto service=Render::ModelAnimationService::Create({epoch,revision,sources.archiveSha},specs,read,limits,
                 cliffs&&!cliffLayer?std::span<const Render::BakedModelMesh>(cliffs->meshes):std::span<const Render::BakedModelMesh>{});

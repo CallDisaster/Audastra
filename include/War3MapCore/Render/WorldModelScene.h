@@ -59,7 +59,11 @@ struct WorldModelLimits {
     std::size_t maxModelBytes = 16 * 1024 * 1024;
     std::size_t maxTextureBytes = 16 * 1024 * 1024; // 单个 BLP 文件
     std::uint32_t maxTextureDimension = 512;         // 更大的贴图按 2 倍逐级缩小
-    std::uint64_t maxTotalTextureBytes = 160ull * 1024 * 1024;
+    // 全部模型贴图解码后的总量上限。大型地图有上千张自定义贴图，64 位程序不需要卡在几百 MiB。
+    std::uint64_t maxTotalTextureBytes = 2048ull * 1024 * 1024;
+    // 从上面的总量里为 sampler / 绑定等小型来源元数据预留的字节数。非 0 时贴图只用到“总量 − 预留”，
+    // 贴图用满后元数据仍放得下：超出的贴图逐张按未上传处理，不再让整个场景失败。0 保留逐字节严格核算。
+    std::uint64_t textureMetadataReserveBytes = 0;
     std::uint32_t maxVertices = 2097152, maxIndices = 6291456, maxLayers = 131072, maxMeshes = 65536;
     std::uint32_t maxModels = 16384, maxInstances = 0, maxTextures = 4096; // 0：没有场景总数门禁。
     std::uint64_t maxInstanceBytes = 64ull * 1024 * 1024; // 实例与来源索引的实际显示内存预算。
