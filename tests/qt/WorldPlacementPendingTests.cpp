@@ -1,5 +1,6 @@
 #include "WorldPlacementPending.h"
 #include "WorldPlacementModels.h"
+#include "WorldTerrainAssets.h"
 #include "EditorProject.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "../../src/Render/Animation/AnimationParticles.h"
@@ -7,7 +8,9 @@
 
 #include <QApplication>
 
+#include <cctype>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
@@ -157,10 +160,39 @@ void TargetedRowsShareFullCaptureRules() {
     auto stale = row; ++stale.creationId;
     Require(!CapturePlacementRows(project, document, std::span(&stale,1)).Succeeded(), "query rejects stale typed row");
 }
+// 两栖单位浮水用的深水阈值：取 UI/MiscData.txt [Water] DeepLevelPathing 的第一个值，读不到或无效时为空。
+void DeepWaterLevelComesFromTheGameConfiguration() {
+    const auto level = [](std::optional<std::string> text) {
+        Resources::ResourceResolver resolver;
+        Resources::ResourceSource source;
+        source.id = "fixture"; source.layer = Resources::ResourceLayer::MapImport; source.priority = Resources::ResourcePriority::MapArchive;
+        const auto isMiscData = [](std::string_view path) {
+            std::string normalized(path);
+            for (auto& c : normalized) c = c == '/' ? '\\' : static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            return normalized == "UI\\MISCDATA.TXT";
+        };
+        source.probe = [text, isMiscData](std::string_view path) -> Result<Resources::ResourceProbe> {
+            return Result<Resources::ResourceProbe>::Success(text && isMiscData(path)
+                ? Resources::ResourceProbe{Resources::ResourceProbeState::Found, std::string(path)} : Resources::ResourceProbe{});
+        };
+        source.read = [text](std::string_view) {
+            const auto bytes = std::as_bytes(std::span(text->data(), text->size()));
+            return Result<std::vector<std::byte>>::Success({bytes.begin(), bytes.end()});
+        };
+        Require(resolver.AddSource(std::move(source)).Succeeded(), "deep water fixture source");
+        return LoadWorldDeepWaterLevel(resolver);
+    };
+    Require(level("[Water]\r\nDeepLevel=64\r\n// DeepLevelPathing=1\r\nDeepLevelPathing=52\r\n") == 52.0f, "deep level from MiscData");
+    Require(level("\xEF\xBB\xBF[water]\ndeeplevelpathing = 40\nDeepLevelPathing=99\n") == 40.0f, "first value wins, case folded");
+    Require(!level("[Water]\nDeepLevel=64\n[Other]\nDeepLevelPathing=52\n"), "key outside [Water] ignored");
+    Require(!level("[Water]\nDeepLevelPathing=-3\n") && !level("[Water]\nDeepLevelPathing=deep\n"), "invalid value means unknown");
+    Require(!level(std::nullopt), "missing file means unknown");
+}
 }
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen"); QApplication application(argc, argv);
     try { VariantFallbackOnlyForActuallyMissingFiles(); CreationRemapsAndUndoDoesNotLeaveAGhost(); CachedPreviewOnlyTranslatesOwnedPose(); TargetedRowsShareFullCaptureRules();
+        DeepWaterLevelComesFromTheGameConfiguration();
         std::cout << "placement pending checks passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
