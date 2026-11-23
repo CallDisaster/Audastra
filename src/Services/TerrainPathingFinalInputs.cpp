@@ -100,10 +100,16 @@ public:
         : reader_(sourceReader), overlay_(overlay), gameRoot_(gameRoot), maximum_(maximum), used_(used) {}
 
     void Capture(std::span<const std::string> names) {
+        // 读取请求只能收紧读取层自己的硬上限；探测的解析工作额度可以比它大。
+        const ArchiveExactMemberLimits hard;
         ArchiveExactMemberLimits limits;
-        limits.memberCount = names.size(); limits.memberBytes = limits.totalBytes = Remaining();
+        const auto narrow = [&] {
+            limits.memberBytes = std::min(Remaining(), hard.memberBytes);
+            limits.totalBytes = std::min(Remaining(), hard.totalBytes);
+        };
+        limits.memberCount = names.size(); narrow();
         Charge(used_, names.size(), maximum_, sizeof(ArchiveExactMember) + 256);
-        limits.memberBytes = limits.totalBytes = Remaining();
+        narrow();
         auto members = Take(reader_(names, limits));
         if (members.size() != names.size()) Fail("TERRAIN_FINAL_INPUT_READ", "来源没有返回完整唯一成员集合。");
         for (std::size_t i = 0; i < members.size(); ++i) {
@@ -131,7 +137,8 @@ public:
         const auto key = Key(name);
         const auto* entry = final ? overlay_.Find(key) : nullptr;
         ArchiveExactMember result{std::string(name), false, {}};
-        const auto maximum = table ? std::min(kTableBytes, Remaining()) : Remaining();
+        const auto maximum = std::min(table ? std::min(kTableBytes, Remaining()) : Remaining(),
+            ArchiveExactMemberLimits{}.memberBytes);
         if (entry) {
             if (entry->bytes) {
                 if (entry->bytes->size() > maximum) Fail("TERRAIN_FINAL_INPUT_BUDGET", "最终依赖正文超过剩余或逐项预算。");
