@@ -329,6 +329,29 @@ void LargePlacementListDoesNotBlockAnUnrelatedImport() {
     SaveUnchangedDependencies(f, output);
 }
 
+// 旧图常见：标准父被改过通行贴图、摆放的是它的自定义子类型，继承优先级尚无法证明。
+// 换一个名字在对象表里从未出现的导入（插件DLL）仍可保存；同主干的贴图则照旧走完整推导并拒绝。
+void UnprovenInheritanceDoesNotBlockAnUnmentionedImport() {
+    Fixture f;
+    auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+    Check(document.AddOriginalObject("Doo0"));
+    Check(document.AddModification({ObjectType::Doodad, "Doo0"}, {"dpt0"}, NativeValueType::String,
+        std::string("PathTextures/owned-parent-override.tga")));
+    Check(document.AddCustomObject("Doo1", "Doo0"));
+    f.members.push_back({"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document))});
+    auto placed = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    placed.doodads.front().rawcode = "Doo1";
+    f.Member("war3map.doo") = Take(placed.Serialize());
+    f.Open();
+    std::vector<MemberReplacement> output{{"scripts\\owned-plugin.dll", Text("owned plugin bytes; not a footprint")}};
+    SaveUnchangedDependencies(f, output);
+
+    output = {{"PathTextures/owned-parent-override.blp", Texture(8, true)}};
+    const auto related = TerrainPathingSave::PrepareFinalForSave(*f.archive, f.edits.get(), f.gameRoot, {}, output);
+    Require(!related.Succeeded() && HasCode(related, "TERRAIN_NATIVE_DEPENDENCY_INHERITANCE"),
+        "an import sharing the parent override's file stem still needs the full inheritance proof");
+}
+
 void FinalDependencyCases() {
     PureAssetsRebuildStaticPathingWithoutTerrainChanges();
     PureNativePathChangePreservesAuthorBlp();
@@ -344,4 +367,5 @@ void FinalDependencyCases() {
     SequentialDependencyParserPeaksDoNotConsumeLaterStages();
     DirectoryFinalDependenciesUseTheSameFactory();
     LargePlacementListDoesNotBlockAnUnrelatedImport();
+    UnprovenInheritanceDoesNotBlockAnUnmentionedImport();
 }

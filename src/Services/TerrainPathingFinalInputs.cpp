@@ -263,6 +263,34 @@ bool AssetDiffer(const FootprintNames& names, Inputs& inputs, const FinalMemberO
     // 同名同字节的map/game切换不改变占地；写前仍从真实两侧重新读取。
     return !Same(before, after) || Key(before.name) != Key(after.name);
 }
+// 占地候选名都与某个pathTex取值同一文件主干（原样或.tga/.blp互换），而pathTex取值只来自
+// 对象来源（w3b/w3d与两张数据SLK，含被改过的标准父）的字节。资源的文件主干在这些字节里一次也不以
+// 完整名字出现（后一个字符不是字母、数字或下划线）时，它不可能是任何已摆放对象的占地，
+// 不必推导继承优先级。目录部分不参与比较，只会多判“可能相关”。
+bool MayNameFootprint(std::string_view key, std::span<const ArchiveExactMember> sources) {
+    const auto slash = key.find_last_of('\\');
+    auto stem = slash == std::string_view::npos ? key : key.substr(slash + 1);
+    if (const auto dot = stem.find_last_of('.'); dot != std::string_view::npos) stem = stem.substr(0, dot);
+    if (stem.empty()) return true;
+    const auto nameCharacter = [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+    };
+    for (const auto& source : sources) {
+        const auto& bytes = source.bytes;
+        for (std::size_t at = 0; at + stem.size() <= bytes.size(); ++at) {
+            std::size_t k = 0;
+            for (; k < stem.size(); ++k) {
+                auto c = std::to_integer<unsigned char>(bytes[at + k]);
+                if (c >= 'a' && c <= 'z') c = static_cast<unsigned char>(c - 'a' + 'A');
+                if (c == '/') c = '\\';
+                if (c != static_cast<unsigned char>(stem[k])) break;
+            }
+            if (k == stem.size() && (at + k == bytes.size() || !nameCharacter(std::to_integer<unsigned char>(bytes[at + k]))))
+                return true;
+        }
+    }
+    return false;
+}
 struct Probe { bool changed = false; std::size_t used = 0; };
 // 只读相关性探测是独立的短暂峰值：大图的摆放表（数 MB）按 32 倍、对象表按 64 倍估算解析工作，
 // 64 MiB 的保存计划帽装不下。探测额度取计划额度的 16 倍（默认 1 GiB），随调用方收紧同比收紧；
@@ -349,6 +377,21 @@ Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRo
     Charge(result.used, objectInputs.capacity(), budget, sizeof(ArchiveExactMember) + 256);
     for (std::size_t i = 0; i < kObjectInputs.size(); ++i)
         objectInputs.push_back(inputs.Resolve(kObjectInputs[i], false, i < 2, true));
+    // 对象表都没变、只换了别的资源（如插件DLL）时，先用名字证明它们不可能是占地，
+    // 避免为无关资源推导全部摆放对象的继承关系（这一步在复杂旧图上可能无法证明而拒绝保存）。
+    const bool tablesTouched = std::any_of(overlay.Entries().begin(), overlay.Entries().end(),
+        [&](const auto& entry) { return objectInput(entry.name) && rawChanged(entry); });
+    if (!tablesTouched) {
+        std::size_t scanned = 0;
+        for (const auto& input : objectInputs) scanned += input.bytes.size();
+        bool mayMatter = false;
+        for (const auto& entry : overlay.Entries()) {
+            if (Independent(entry.name) || FixedInput(entry.name) || !rawChanged(entry)) continue;
+            Charge(result.used, scanned, budget);
+            if (MayNameFootprint(entry.name, objectInputs)) { mayMatter = true; break; }
+        }
+        if (!mayMatter) return result;
+    }
     auto before = Describe(ordinary, special, objectInputs, result.used, budget);
     bool changedTables = false;
     for (std::size_t i = 0; i < kObjectInputs.size(); ++i) if (overlay.Find(Key(kObjectInputs[i]))) {
