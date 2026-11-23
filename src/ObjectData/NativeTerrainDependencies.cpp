@@ -166,8 +166,10 @@ Result<NativeTerrainDependencyDescription> InspectNativeTerrainDependencies(
     try {
         constexpr std::array<std::string_view, 6> paths{"war3map.w3b", "war3map.w3d", "units/destructabledata.slk",
             "doodads/doodads.slk", "units/destructablemetadata.slk", "doodads/doodadmetadata.slk"};
-        if (sources.size() != paths.size() || !maximumWorkingBytes || maximumWorkingBytes > 64u * 1024u * 1024u)
-            Fail("TERRAIN_NATIVE_DEPENDENCY_SOURCE", "通行依赖需要明确六项来源和不超过64MiB的剩余预算。");
+        // 上限与保存前相关性探测的额度一致（1 GiB）；额度本身由调用方按实际输入预收。
+        constexpr std::size_t kMaximumWorkingBytes = std::size_t{1024} * 1024 * 1024;
+        if (sources.size() != paths.size() || !maximumWorkingBytes || maximumWorkingBytes > kMaximumWorkingBytes)
+            Fail("TERRAIN_NATIVE_DEPENDENCY_SOURCE", "通行依赖需要明确六项来源和不超过1GiB的剩余预算。");
         DependencyInputs inputs; inputs.maximum = maximumWorkingBytes;
         for (const auto& source : sources) {
             const auto name = Text::LowerAscii(source.name);

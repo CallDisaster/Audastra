@@ -314,6 +314,21 @@ void DirectoryFinalDependenciesUseTheSameFactory() {
     Check(workspace.VerifyUnchanged());
 }
 
+// 大图常有数 MB 的摆放表：换一个与通行无关的导入（例如地图插件）不能因相关性探测额度不足而拒绝保存。
+void LargePlacementListDoesNotBlockAnUnrelatedImport() {
+    Fixture f;
+    auto placed = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    const auto first = placed.doodads.front();
+    for (std::int32_t id = 2; placed.doodads.size() < 60000; ++id) {
+        auto copy = first; copy.creationId = id; placed.doodads.push_back(std::move(copy));
+    }
+    f.Member("war3map.doo") = Take(placed.Serialize());
+    Require(f.Member("war3map.doo").size() > 2u * 1024u * 1024u, "fixture placement list is larger than 2 MiB like a big original map");
+    f.Open();
+    std::vector<MemberReplacement> output{{"scripts\\owned-plugin.dll", Text("owned plugin bytes; not a footprint")}};
+    SaveUnchangedDependencies(f, output);
+}
+
 void FinalDependencyCases() {
     PureAssetsRebuildStaticPathingWithoutTerrainChanges();
     PureNativePathChangePreservesAuthorBlp();
@@ -328,4 +343,5 @@ void FinalDependencyCases() {
     UnknownSpecialImportsCannotGuessMissingDependencySources();
     SequentialDependencyParserPeaksDoNotConsumeLaterStages();
     DirectoryFinalDependenciesUseTheSameFactory();
+    LargePlacementListDoesNotBlockAnUnrelatedImport();
 }

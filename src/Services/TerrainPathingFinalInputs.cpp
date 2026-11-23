@@ -257,12 +257,21 @@ bool AssetDiffer(const FootprintNames& names, Inputs& inputs, const FinalMemberO
     return !Same(before, after) || Key(before.name) != Key(after.name);
 }
 struct Probe { bool changed = false; std::size_t used = 0; };
+// 只读相关性探测是独立的短暂峰值：大图的摆放表（数 MB）按 32 倍、对象表按 64 倍估算解析工作，
+// 64 MiB 的保存计划帽装不下。探测额度取计划额度的 16 倍（默认 1 GiB），随调用方收紧同比收紧；
+// 正式 G0/G1 捕获仍用调用方的计划额度。
+constexpr std::size_t kProbeScale = 16;
+std::size_t ProbeBudget(const MapData::TerrainSavePlanLimits& limits) {
+    return limits.maximumBytes > std::numeric_limits<std::size_t>::max() / kProbeScale
+        ? std::numeric_limits<std::size_t>::max() : limits.maximumBytes * kProbeScale;
+}
 
 Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRoot,
     const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
     std::span<const std::string> removals) {
     Validate(limits);
     const auto overlay = Take(FinalMemberOverlay::Prepare(finalMembers, removals, limits.maximumBytes));
+    const auto budget = ProbeBudget(limits);
     Probe result{false, overlay.MetadataBytes()};
     if (std::all_of(overlay.Entries().begin(), overlay.Entries().end(),
         [](const auto& entry) { return Independent(entry.name); })) return result;
@@ -273,8 +282,8 @@ Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRo
     std::vector<std::string> names{"war3map.w3e"};
     for (const auto& entry : overlay.Entries()) if ((FixedInput(entry.name) || objectInput(entry.name))
         && std::none_of(names.begin(), names.end(), [&](const auto& name) { return Key(name) == entry.name; })) names.push_back(entry.name);
-    Charge(result.used, names.capacity(), limits.maximumBytes, sizeof(std::string) + 256);
-    Inputs inputs(sourceReader, overlay, gameRoot, limits.maximumBytes, result.used); inputs.Capture(names);
+    Charge(result.used, names.capacity(), budget, sizeof(std::string) + 256);
+    Inputs inputs(sourceReader, overlay, gameRoot, budget, result.used); inputs.Capture(names);
     // 编译模板可能原字重现W3B/W3D等成员。实际字节未变时应在解析对象前剔除，
     // 避免单位生命值之类无关保存因原图不受本生成器支持而新增拒绝。
     const auto rawChanged = [&](const auto& entry) {
@@ -288,7 +297,7 @@ Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRo
     for (const auto& entry : overlay.Entries()) if (FixedInput(entry.name) && MapOnly(entry.name) && rawChanged(entry)) {
         auto before = inputs.Resolve(entry.name, false, true);
         auto after = inputs.Resolve(entry.name, true, true);
-        const bool differs = entry.name == "WAR3MAP.W3I" ? SettingsDiffer(before, after, result.used, limits.maximumBytes) : !Same(before, after);
+        const bool differs = entry.name == "WAR3MAP.W3I" ? SettingsDiffer(before, after, result.used, budget) : !Same(before, after);
         if (differs) { result.changed = true; return result; }
     }
     const bool describeObjects = std::any_of(overlay.Entries().begin(), overlay.Entries().end(), [&](const auto& entry) {
@@ -314,33 +323,33 @@ Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRo
 
     std::vector<std::string> objectSources{"war3map.doo"};
     for (const auto path : kObjectInputs) objectSources.emplace_back(path);
-    Charge(result.used, objectSources.capacity(), limits.maximumBytes, sizeof(std::string) + 256);
+    Charge(result.used, objectSources.capacity(), budget, sizeof(std::string) + 256);
     inputs.EnsureCaptured(objectSources);
     const auto& doo = inputs.Source("war3map.doo");
     if (!doo.present) return result;
-    Charge(result.used, doo.bytes.size(), limits.maximumBytes, 32);
+    Charge(result.used, doo.bytes.size(), budget, 32);
     MapData::PlacementReadLimits placementLimits; placementLimits.maxBytes = doo.bytes.size();
     const auto placements = Take(MapData::ParseDoodadPlacements(doo.bytes, placementLimits));
     if (placements.doodads.empty() && placements.specialDoodads.empty()) return result;
     std::vector<std::string_view> ordinary, special;
-    Charge(result.used, placements.doodads.size() + placements.specialDoodads.size(), limits.maximumBytes, sizeof(std::string_view) * 2);
+    Charge(result.used, placements.doodads.size() + placements.specialDoodads.size(), budget, sizeof(std::string_view) * 2);
     ordinary.reserve(placements.doodads.size()); special.reserve(placements.specialDoodads.size());
     for (const auto& object : placements.doodads) ordinary.push_back(object.rawcode);
     for (const auto& object : placements.specialDoodads) special.push_back(object.rawcode);
     const auto unique = [](auto& values) { std::sort(values.begin(), values.end()); values.erase(std::unique(values.begin(), values.end()), values.end()); };
     unique(ordinary); unique(special);
     std::vector<ArchiveExactMember> objectInputs; objectInputs.reserve(kObjectInputs.size());
-    Charge(result.used, objectInputs.capacity(), limits.maximumBytes, sizeof(ArchiveExactMember) + 256);
+    Charge(result.used, objectInputs.capacity(), budget, sizeof(ArchiveExactMember) + 256);
     for (std::size_t i = 0; i < kObjectInputs.size(); ++i)
         objectInputs.push_back(inputs.Resolve(kObjectInputs[i], false, i < 2, true));
-    auto before = Describe(ordinary, special, objectInputs, result.used, limits.maximumBytes);
+    auto before = Describe(ordinary, special, objectInputs, result.used, budget);
     bool changedTables = false;
     for (std::size_t i = 0; i < kObjectInputs.size(); ++i) if (overlay.Find(Key(kObjectInputs[i]))) {
         auto next = inputs.Resolve(kObjectInputs[i], true, i < 2, true);
         changedTables |= !Same(objectInputs[i], next); objectInputs[i] = std::move(next);
     }
     if (changedTables) {
-        auto after = Describe(ordinary, special, objectInputs, result.used, limits.maximumBytes);
+        auto after = Describe(ordinary, special, objectInputs, result.used, budget);
         if (UnknownChanged(before, after))
             Fail("TERRAIN_FINAL_UNKNOWN_FIELD_CHANGED", "已放置静态对象的未知字段发生变化，不能把未理解的覆盖当作无关。");
         if (!SameContributions(before, after)) { result.changed = true; return result; }
@@ -358,7 +367,7 @@ Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRo
         })) continue;
         Charge(result.used, sizeof(FootprintNames) + footprint.first.capacity() + 1
             + (footprint.fallback ? footprint.fallback->capacity() + 1 : 0)
-            + (footprint.unsupportedRaw ? footprint.unsupportedRaw->capacity() + 1 : 0), limits.maximumBytes, 2);
+            + (footprint.unsupportedRaw ? footprint.unsupportedRaw->capacity() + 1 : 0), budget, 2);
         checked.push_back(footprint);
         if (AssetDiffer(footprint, inputs, overlay)) { result.changed = true; return result; }
     }
