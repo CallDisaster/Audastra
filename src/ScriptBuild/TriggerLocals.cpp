@@ -63,9 +63,11 @@ std::string ClosurePage(const std::string& handle) {
     return handle.starts_with("0x") ? handle : HandlePage(handle);
 }
 
-std::string_view SaveLoadType(std::string_view type) {
-    if (type == "StringExt" || type == "imagefile") return "string";
-    return type;
+// 读写是否落在同一存取槽：real/degree/radian 都按实数存，string/modelfile/imagefile 都按字符串存，
+// 混用读到的仍是同一个值，不算冲突。表里没有的类型按名称比较。
+std::string SaveLoadSlot(std::string_view type) {
+    const auto natives = StorageFor(type, false);
+    return natives.known ? natives.load : std::string(type);
 }
 
 } // namespace
@@ -290,10 +292,9 @@ void TriggerEmitter::LocalEnd(bool isTimer, bool isEnd) {
 }
 
 void TriggerEmitter::CheckSaveLoad(const std::string& varName, const std::string& typeName) {
-    const std::string type(SaveLoadType(typeName));
-    const auto [found, inserted] = saveLoadTypes_.emplace(varName, type);
-    if (!inserted && found->second != type) {
-        Warn("local-type-conflict", "局部变量“" + varName + "”先后以 " + found->second + " 和 " + type + " 类型使用。");
+    const auto [found, inserted] = saveLoadTypes_.emplace(varName, typeName);
+    if (!inserted && SaveLoadSlot(found->second) != SaveLoadSlot(typeName)) {
+        Warn("local-type-conflict", "局部变量“" + varName + "”先后以 " + found->second + " 和 " + typeName + " 类型使用。");
     }
 }
 

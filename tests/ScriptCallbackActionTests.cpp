@@ -87,8 +87,8 @@ Fixture MakeFixture(const std::filesystem::path& root) {
     WriteText(result.ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"
         "typename=1,0,0,Type,string\nstring=0,1,1,String,string\nscriptcode=1,0,0,Code,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
         "frame=0,1,1,Frame,integer\nprobegroup=0,1,1,Group,handle\nplayer=0,1,1,Player,player\nboolean=0,1,1,Boolean,boolean\n"
-        "unit=0,1,1,Unit,unit\n"
-        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\nProbeNoCheck=0,boolean,false,No check\n"
+        "unit=0,1,1,Unit,unit\nreal=0,1,1,Real,real\ndegree=0,1,1,Degree,real\n"
+        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename02_real=0,typename,2,Real\ntypename38_degree=0,typename,38,Degree\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\nProbeNoCheck=0,boolean,false,No check\n"
         "typename03_boolean=0,typename,3,Boolean\ntypename04_string=0,typename,4,String\ntypename07_unit=0,typename,7,Unit\n");
     WriteText(result.ui / "probe/call.txt",
         "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n"
@@ -686,6 +686,16 @@ void Run(const std::filesystem::path& root) {
         && group.text.find("call YDTRIGGER_probegroup(SET)(") != std::string::npos
         && group.text.find("YDTRIGGER_handle") == std::string::npos,
         "library handle types keep their own header macro:\n" + group.text);
+    // 实数与角度存进同一个实数槽，混用读到的是同一个值，不报类型冲突；实数与字符串混用仍然要报。
+    const auto conflicts = [&](const char* first, const char* second) {
+        auto document = MakeDocument(*catalog.value, {
+            Action("YDWESetAnyTypeLocalVariable", {Scalar(0, first), Scalar(3, "slot"), Scalar(3, "1.0")}),
+            Action("YDWESetAnyTypeLocalVariable", {Scalar(0, second), Scalar(3, "slot"), Scalar(3, "2.0")})});
+        MapScriptInputs inputs; inputs.catalog = &*catalog.value; inputs.triggers = &document;
+        return HasCode(GenerateMapScript(inputs).diagnostics, "local-type-conflict");
+    };
+    Require(!conflicts("typename02_real", "typename38_degree"), "real and degree share one stored slot");
+    Require(conflicts("typename02_real", "typename04_string"), "real then string still reports the slot conflict");
     // 定义里键名带空格（“ProbeTop =…”）时，触发器存的预设名也带空格，仍按预设值输出。
     auto spaced = MakeDocument(*catalog.value, {Action("RecordInteger", {Scalar(0, "ProbeTop ")})});
     MapScriptInputs spacedInputs; spacedInputs.catalog = &*catalog.value; spacedInputs.triggers = &spaced;
