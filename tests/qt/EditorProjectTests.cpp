@@ -391,7 +391,8 @@ std::vector<std::byte> NativeDoodadQtTable(const std::vector<std::string>& colum
     return Tests::WaterText(text + "E\n");
 }
 
-std::vector<MapArchiveMember> TerrainShadowQtMembers(bool ridge, bool caster, bool authoredMinimap = true) {
+std::vector<MapArchiveMember> TerrainShadowQtMembers(bool ridge, bool caster, bool authoredMinimap = true,
+    bool namesProvenance = false) {
     auto members = TerrainSaveMembers();
     if (members.empty()) return {};
     MapData::MapSettings settings;
@@ -414,9 +415,11 @@ std::vector<MapArchiveMember> TerrainShadowQtMembers(bool ridge, bool caster, bo
         placed.rawcode = "Sh01"; placed.position = {256, 256, 0}; placed.scale = {1, 1, 1};
         placements.doodads.push_back(placed);
         members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable({"destructableID"}, {{"Dst0"}})});
-        members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
-            {"doodID", "shadow", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats", "numVar", "file"},
-            {{"Sh01", "1", "1", "0", "0", "-1", "0", "1", "Fixture/ShadowCaster"}})});
+        std::vector<std::string> columns{"doodID", "shadow", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats", "numVar", "file"};
+        std::vector<std::string> row{"Sh01", "1", "1", "0", "0", "-1", "0", "1", "Fixture/ShadowCaster"};
+        // 对象来源里出现小地图来源登记文件的名字时，不能凭名字排除它是占地，仍需完整推导。
+        if (namesProvenance) { columns.push_back("comment"); row.push_back("audastra/minimap-markers"); }
+        members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(columns, {row})});
         // 捕获owner冻结真实成员原字；本例在非空caster缺高度边界时、模型解析前拒绝，不能当模型oracle。
         members.push_back({"Fixture/ShadowCaster.mdx", Tests::WaterText("original bounded caster bytes")});
     }
@@ -3665,17 +3668,18 @@ void EditorProjectTests::TerrainShadowWorkerExplicitRequest() {
 }
 
 void EditorProjectTests::TerrainShadowWorkerOrdinarySavePreserves_data() {
-    QTest::addColumn<bool>("caster"); QTest::addColumn<bool>("automatic");
-    QTest::newRow("plain-preserve-no-direction") << false << false;
-    QTest::newRow("plain-automatic-no-direction") << false << true;
-    QTest::newRow("caster-preserve-no-direction") << true << false;
-    QTest::newRow("caster-automatic-no-direction") << true << true;
+    QTest::addColumn<bool>("caster"); QTest::addColumn<bool>("automatic"); QTest::addColumn<bool>("named");
+    QTest::newRow("plain-preserve-no-direction") << false << false << false;
+    QTest::newRow("plain-automatic-no-direction") << false << true << false;
+    QTest::newRow("caster-preserve-no-direction") << true << false << false;
+    QTest::newRow("caster-automatic-no-direction") << true << true << false;
+    QTest::newRow("caster-named-provenance") << true << true << true;
 }
 
 void EditorProjectTests::TerrainShadowWorkerOrdinarySavePreserves() {
-    QFETCH(bool, caster); QFETCH(bool, automatic);
+    QFETCH(bool, caster); QFETCH(bool, automatic); QFETCH(bool, named);
     QTemporaryDir root; QVERIFY(root.isValid());
-    const auto members = TerrainShadowQtMembers(false, caster); QVERIFY(!members.empty());
+    const auto members = TerrainShadowQtMembers(false, caster, true, named); QVERIFY(!members.empty());
     const auto source = std::filesystem::path(root.filePath("ordinary-shadow.w3x").toStdWString());
     const auto target = std::filesystem::path(root.filePath("ordinary-copy.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
@@ -3690,9 +3694,15 @@ void EditorProjectTests::TerrainShadowWorkerOrdinarySavePreserves() {
     QVERIFY(std::none_of(job->replacements.begin(), job->replacements.end(),
         [](const auto& member) { return member.name == "war3map.shd"; }));
     auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
-    if (caster) {
+    if (named) {
+        // 旧对象说不清通行依赖、而它的来源又提到了登记文件名：首次登记推迟，只重建图标。
         QVERIFY(HasReadDiagnostic(*job, "TERRAIN_MMP_PROVENANCE_DEFERRED"));
         QVERIFY(!saved.value->ReadMember("audastra/minimap-markers.bin").value);
+        QVERIFY(saved.value->ReadMember("war3map.mmp").value);
+    } else if (caster) {
+        // 登记文件名在所有对象来源里都没出现，不可能是占地；不必推导旧对象依赖，照常登记。
+        QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_MMP_PROVENANCE_DEFERRED"));
+        QVERIFY(saved.value->ReadMember("audastra/minimap-markers.bin").value);
         QVERIFY(saved.value->ReadMember("war3map.mmp").value);
     }
     for (const auto& member : members) if (member.name != "war3map.mmp")
