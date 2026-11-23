@@ -630,6 +630,7 @@ TriggerGraphSnapshotUndoCommand::TriggerGraphSnapshotUndoCommand(EditorProject& 
     // before 副本在命令内不再改动，它的整图身份推迟到第一次需要时捕获（见 BeforeBinding）；
     // after 身份现在捕获，保证发布后的撤销能核对当前图。
     const auto afterIdentity = Trigger::CaptureTriggerGraphReplayIdentity(storage.after, *catalog_);
+    storage.afterCaptureFailed = !afterIdentity.Succeeded();
     if (afterIdentity.Succeeded()
         && storage.before.SourceWtgSha256() == storage.after.SourceWtgSha256()
         && storage.before.SourceWctSha256() == storage.after.SourceWctSha256()
@@ -873,6 +874,9 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PREPARE_FAILED", "无法准备完整触发器事务；当前文档未改动。");
     }
     if (graphUnchanged && !command->HasAssetChanges()) return edited;
+    if (command->IdentityCaptureFailed())
+        return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_REPLAY_CAPTURE_FAILED",
+            "无法为修改后的触发器生成撤销用的整图身份（不能序列化或超出身份预算）；未发布。");
     if (!command->Ready())
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_UNDO_SOURCE_STALE", "来源、会话或函数目录已变化；未发布。");
     const auto published = command->FirstPublication();

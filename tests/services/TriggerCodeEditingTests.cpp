@@ -315,7 +315,13 @@ void GraphStreamBudgetAndMetadata(const UiCatalog& catalog) {
     Require(exact.BytesCharged() == cap && exact.ScratchBytes() < Sha256Stream::kBufferBytes + 16384, "64MiB exact 不拥有完整身份流。");
     LegacyGraphEquivalence(document, catalog);
     category.origin.fingerprint.push_back('q');
-    Require(!CaptureTriggerGraphReplayIdentity(document, catalog).Succeeded(), "64MiB+1 必须拒绝完整身份。");
+    // 大图的身份流会超过 64 MiB（十几万动作节点的地图约一百多 MiB）；超过后仍须能捕获，且仍是流式、不拥有整段身份。
+    const auto beyond = Take(CaptureTriggerGraphReplayIdentity(document, catalog));
+    Require(beyond.BytesCharged() == cap + 1 && beyond.ScratchBytes() < Sha256Stream::kBufferBytes + 16384, "超过 64MiB 的整图身份仍可流式捕获。");
+    Require(VerifyTriggerGraphReplayIdentity(document, catalog, beyond).Succeeded(), "超过 64MiB 的整图身份可核对。");
+    category.origin.offset += 1;
+    Require(!VerifyTriggerGraphReplayIdentity(document, catalog, beyond).Succeeded(), "超过 64MiB 时元信息变化仍被拒绝。");
+    category.origin.offset -= 1;
 }
 void BatchedMetadataLegacyLayoutBoundaries(const UiCatalog& catalog) {
     auto document = Empty(catalog);

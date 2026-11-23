@@ -647,6 +647,8 @@ private:
             auto command = std::make_unique<QtProject::TriggerGraphSnapshotUndoCommand>(
                 project_, std::move(before), std::move(candidate),
                 undoLabel.isEmpty() ? QObject::tr("AI 编辑触发器") : undoLabel);
+            if (command->IdentityCaptureFailed()) return Result<Receipt>::Failure("QtApp.Live", "TRIGGER_GRAPH_REPLAY_CAPTURE_FAILED",
+                "无法为修改后的触发器生成撤销用的整图身份（不能序列化或超出身份预算）；未发布、未添加撤销命令。");
             if (!command->Ready()) return Result<Receipt>::Failure("QtApp.Live", "TRIGGER_GRAPH_UNDO_SOURCE_STALE",
                 "来源通知、会话或函数目录已变化；未发布旧事务、未添加撤销命令。");
             const auto published = command->FirstPublication();

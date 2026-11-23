@@ -42,7 +42,9 @@ struct CodeEditState {
 }
 namespace {
 using State = detail::CodeEditState;
-constexpr std::size_t kBindingBudget = 64 * 1024 * 1024;
+// 整图身份是流式摘要，不按这个数分配内存；上限只防算术溢出。十几万动作节点的大图身份流就超过 64 MiB，
+// 原先的 64 MiB 上限让这类地图的任何触发器修改都无法进入撤销栈。
+constexpr std::size_t kBindingBudget = std::size_t{4} * 1024 * 1024 * 1024;
 static_assert(std::is_nothrow_swappable_v<RawText>);
 static_assert(std::is_nothrow_swappable_v<TriggerDocument>);
 
@@ -126,7 +128,7 @@ private:
         const auto status = stream_.Update(bytes);
         if (!status.Succeeded()) {
             closed_ = true;
-            throw std::runtime_error("代码图身份摘要或 64 MiB 预算检查失败。");
+            throw std::runtime_error("代码图身份摘要或身份预算检查失败。");
         }
     }
     void Flush() {
@@ -137,7 +139,7 @@ private:
     void Append(std::span<const std::byte> bytes) {
         if (closed_ || bytes.size() > kBindingBudget - accepted_) {
             closed_ = true;
-            throw std::runtime_error("代码图身份摘要或 64 MiB 预算检查失败。");
+            throw std::runtime_error("代码图身份摘要或身份预算检查失败。");
         }
         accepted_ += bytes.size();
         while (!bytes.empty()) {

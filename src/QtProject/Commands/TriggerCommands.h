@@ -317,6 +317,8 @@ public:
         Trigger::TriggerGraphScalarEditReceipt receipt,
         QString label, QUndoCommand* parent = nullptr);
     [[nodiscard]] bool Ready() const;
+    // 修改后的整图身份没能捕获（不能序列化或超出身份预算）；与“来源已变化”是两回事，发布方据此给出准确原因。
+    [[nodiscard]] bool IdentityCaptureFailed() const noexcept { return snapshot_ && snapshot_->afterCaptureFailed; }
     // 发布方刚从当前文档复制 before、复制之后没有回调或资源准备能改动工程时登记复制时的栈位置与修订；
     // 首次 Ready() 两者未变即不再整图核对 before。
     void TrustFreshBefore(int stackIndex, std::uint64_t revision);
@@ -340,6 +342,7 @@ private:
         mutable std::optional<Trigger::TriggerGraphReplayIdentity> beforeBinding;
         mutable bool beforeCaptureFailed = false;
         std::optional<Trigger::TriggerGraphReplayIdentity> afterBinding;
+        bool afterCaptureFailed = false;
         std::optional<Trigger::TriggerDocument> preparedFirst;
         std::vector<Trigger::GuiConversionSnapshots::PreparedSnapshot> changedSnapshots;
     };
