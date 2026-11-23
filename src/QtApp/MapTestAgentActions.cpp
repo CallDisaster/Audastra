@@ -6,6 +6,7 @@
 #include "War3MapCore/Services/MapTestScenario.h"
 #include "../QtCommon/ApplicationPaths.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -158,7 +159,7 @@ QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& argu
         return result;
     }
     if (name == QLatin1String("map_test_result")) return MapTestScenarioResult(arguments);
-    if (name == QLatin1String("map_test_capture")) return MapTestCapture();
+    if (name == QLatin1String("map_test_capture")) return MapTestCapture(arguments);
     if (name == QLatin1String("map_test_stop")) {
         if (!mapTestLease_ || !mapTestLease_->IsActive())
             return {{"ok", true}, {"stopped", false}, {"message", tr("没有正在运行的测试游戏。")}};
@@ -235,15 +236,24 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
     return result;
 }
 
-QJsonObject MainWindow::MapTestCapture() {
+QJsonObject MainWindow::MapTestCapture(const QJsonObject& arguments) {
     if (!mapTestLease_ || !mapTestLease_->IsActive()) return Failure("MAP_TEST_NOT_RUNNING", tr("没有正在运行的测试游戏。"));
+    const int frames = arguments.value("frames").toInt(1);
+    const int interval = arguments.value("interval_ms").toInt(100);
+    if (frames < 1 || frames > 16 || interval < 20 || interval > 2000)
+        return Failure("MAP_TEST_CAPTURE_ARGUMENT", tr("frames 须为 1..16，interval_ms 须为 20..2000。"));
+    if (frames > 1) return MapTestCaptureBurst(frames, interval);
     QImage image;
     QString method;
     QStringList problems;
     // 先让 1.27a 游戏自己截图：取自游戏后台缓冲，窗口被遮挡或不在前台也能截。
     // 看不见的桌面上原版 D3D9/OpenGL 建不起设备、一帧都不画，那里不请求。
     const bool hidden = mapTestLease_->HiddenDesktop() != nullptr;
-    const auto shot = hidden ? War3Map::Result<std::filesystem::path>{} : mapTestLease_->RequestGameScreenshot(4000);
+    // 游戏截图刚失败过（游戏还在载入、或这张图里截图键不出图）时 30 秒内不再请求，连续截图不会每张都等满超时。
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    const bool askGame = !hidden && now >= mapTestGameShotRetryAt_;
+    const auto shot = askGame ? mapTestLease_->RequestGameScreenshot(4000) : War3Map::Result<std::filesystem::path>{};
+    if (askGame && !(shot.Succeeded() && shot.value)) mapTestGameShotRetryAt_ = QDateTime::currentMSecsSinceEpoch() + 30000;
     if (shot.Succeeded() && shot.value) {
         image = QImage(QString::fromStdWString(shot.value->wstring()), "TGA").convertToFormat(QImage::Format_RGB888);
         // 这张 TGA 是本次请求让游戏新写的，读完即删，不留在游戏目录。
@@ -271,8 +281,51 @@ QJsonObject MainWindow::MapTestCapture() {
     if (!QDir().mkpath(root.absolutePath())) return Failure("MAP_TEST_CAPTURE_FAILED", tr("无法创建截图目录。"));
     const auto path = root.filePath(QStringLiteral("capture-%1.png").arg(++mapTestCaptures_, 3, 10, QLatin1Char('0')));
     if (!image.save(path, "PNG")) return Failure("MAP_TEST_CAPTURE_FAILED", tr("截图没有写出。"));
-    return {{"ok", true}, {"path", QDir::toNativeSeparators(path)}, {"width", image.width()}, {"height", image.height()},
+    QJsonObject result{{"ok", true}, {"path", QDir::toNativeSeparators(path)}, {"width", image.width()}, {"height", image.height()},
         {"method", method}};
+    // 用了后备方式时说明前面的方式为什么没取到，调用方不必猜。
+    if (!problems.isEmpty()) result.insert("skipped", QJsonArray::fromStringList(problems));
+    return result;
+}
+
+// 连拍：一次捕获里按间隔连取多帧，看飞行中的投射物和播放中的特效。只走窗口图形捕获——
+// 游戏自己的截图一次一张、间隔不可控。取帧和写文件都在工作线程，界面照常处理事件。
+QJsonObject MainWindow::MapTestCaptureBurst(int frames, int interval) {
+    const auto window = static_cast<HWND>(mapTestLease_->GameWindow());
+    if (!window) return Failure("MAP_TEST_CAPTURE_WINDOW",
+        tr("游戏画面没有取到：没有找到本次测试游戏的可见窗口（可能仍在启动或已最小化）。"));
+    const QDir root(QDir(War3Map::QtCommon::InstallationRoot()).filePath(QStringLiteral("test-captures/") + mapTestRunName_));
+    if (!QDir().mkpath(root.absolutePath())) return Failure("MAP_TEST_CAPTURE_FAILED", tr("无法创建截图目录。"));
+    const int firstNumber = mapTestCaptures_ + 1;
+    struct Outcome { QJsonArray rows; int width = 0, height = 0; bool blank = false; QString unsaved; std::string stopped; };
+    auto pending = std::async(std::launch::async, [window, frames, interval, root, firstNumber] {
+        Outcome outcome;
+        const auto captured = War3Map::QtApp::CaptureWindowFrames(window, frames, interval, 3000, outcome.stopped);
+        for (std::size_t index = 0; index < captured.size(); ++index) {
+            const auto& frame = captured[index];
+            const auto image = QImage(frame.bgra.data(), frame.width, frame.height, frame.width * 4, QImage::Format_RGB32)
+                .convertToFormat(QImage::Format_RGB888);
+            if (index == 0 && Uniform(image)) { outcome.blank = true; break; }
+            const auto path = root.filePath(QStringLiteral("capture-%1.png").arg(firstNumber + static_cast<int>(index), 3, 10, QLatin1Char('0')));
+            if (!image.save(path, "PNG", 70)) { outcome.unsaved = path; break; }
+            outcome.rows.append(QJsonObject{{"path", QDir::toNativeSeparators(path)}, {"elapsed_ms", frame.elapsedMilliseconds}});
+            outcome.width = frame.width; outcome.height = frame.height;
+        }
+        return outcome;
+    });
+    while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) Pause(15);
+    const auto outcome = pending.get();
+    mapTestCaptures_ += static_cast<int>(outcome.rows.size());
+    if (outcome.blank) return Failure("MAP_TEST_CAPTURE_FAILED",
+        tr("游戏画面没有取到：画面是单一颜色，游戏可能还没绘制（显示器关闭或锁屏时游戏不绘制）。"));
+    if (!outcome.unsaved.isEmpty()) return Failure("MAP_TEST_CAPTURE_FAILED", tr("截图没有写出。"));
+    if (outcome.rows.isEmpty()) return Failure("MAP_TEST_CAPTURE_FAILED",
+        tr("游戏画面没有取到：%1。").arg(QString::fromStdString(outcome.stopped)));
+    QJsonObject result{{"ok", true}, {"frames", outcome.rows}, {"width", outcome.width}, {"height", outcome.height},
+        {"method", QStringLiteral("graphics_capture")}};
+    // 中途取不到新画面时交回已取到的帧，并说明在哪里停下。
+    if (outcome.rows.size() < frames) result.insert("stopped_early", QString::fromStdString(outcome.stopped));
+    return result;
 }
 
 QJsonObject MainWindow::MapTestSteps(const QJsonObject& arguments) {

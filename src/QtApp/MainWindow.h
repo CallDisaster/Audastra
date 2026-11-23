@@ -257,7 +257,8 @@ private:
     QJsonObject MapTestTool(const QString& name, const QJsonObject& arguments);
     QJsonObject MapTestSteps(const QJsonObject& arguments);
     QJsonObject MapTestScenarioResult(const QJsonObject& arguments);
-    QJsonObject MapTestCapture();
+    QJsonObject MapTestCapture(const QJsonObject& arguments);
+    QJsonObject MapTestCaptureBurst(int frames, int interval);
     // 热重载与测试步骤共用：在后台对测试副本任务做脚本预检并生成 Lua 测试单元；thenInWorker 在同一后台线程接着执行。
     War3Map::Status RunLuaTestPreflight(War3Map::QtProject::MapSaveJob& task, const QString& label,
         const std::function<void()>& thenInWorker = {});
@@ -368,6 +369,8 @@ private:
     std::optional<MapTestScenarioRun> mapTestScenario_;
     QString mapTestRunName_;
     int mapTestCaptures_ = 0;
+    // 游戏自己的截图没取到时，本局接下来一段时间直接用窗口捕获，不让每张截图都等满超时。
+    qint64 mapTestGameShotRetryAt_ = 0;
     QAction* luaReloadAction_ = nullptr;
     QAction* luaAutoReloadAction_ = nullptr;
     std::optional<War3Map::Script::LuaTriggerUnit> luaTestGenerated_;

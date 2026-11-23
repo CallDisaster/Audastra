@@ -125,8 +125,11 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         "未执行完时在 wait_ms 内等待。另返回本次运行库只读证据（会话/地图/进程/VM身份、载入、握手、超时或身份拒绝及时间）；没有场景时也可查询运行库证据", ToolPermission::External,
         {{"wait_ms", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"default", 30000}}}}, {});
     add("map_test_capture", "截取本次测试游戏的当前画面，存为 PNG 并返回路径与截取方式。1.27a 由游戏自己截图（看不见的测试也能截）；"
-        "其他版本截窗口，只对 visible 测试有效（窗口被遮挡也可，不能最小化；游戏没绘制出画面时失败并给原因）",
-        ToolPermission::External, {}, {});
+        "其他版本截窗口，只对 visible 测试有效（窗口被遮挡也可，不能最小化；游戏没绘制出画面时失败并给原因）。"
+        "frames 大于 1 时连拍：按 interval_ms 间隔连取多帧窗口画面，返回每帧路径和相对第一帧的毫秒数，用来看飞行中的投射物和播放中的特效",
+        ToolPermission::External,
+        {{"frames", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 16}, {"default", 1}}},
+            {"interval_ms", QJsonObject{{"type", "integer"}, {"minimum", 20}, {"maximum", 2000}, {"default", 100}}}}, {});
     add("map_test_stop", "结束本次由编辑器启动的测试游戏（只结束这次启动的进程）", ToolPermission::External, {}, {});
     add("map_test_eval", "在运行中的测试游戏里执行一段紧凑 T 动作并读回全局变量（仅 Lua 地图且开热重载）；不改地图",
         ToolPermission::External,
@@ -150,7 +153,8 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     else if (name == "map_test_eval") allowed << "actions" << "reads" << "wait_ms";
     else if (name == "map_test_start") allowed << "scenario" << "reads" << "start_seconds" << "visible" << "lua_delete_sha256";
     else if (name == "map_test_result") allowed << "wait_ms";
-    else if (name != "lua_files_list" && name != "map_test_stop" && name != "map_test_capture")
+    else if (name == "map_test_capture") allowed << "frames" << "interval_ms";
+    else if (name != "lua_files_list" && name != "map_test_stop")
         return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
         if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());

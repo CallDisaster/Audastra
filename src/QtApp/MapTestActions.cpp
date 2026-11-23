@@ -295,7 +295,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
-    mapTestRunName_ = runName; mapTestCaptures_ = 0;
+    mapTestRunName_ = runName; mapTestCaptures_ = 0; mapTestGameShotRetryAt_ = 0;
     War3Map::RunLog::Info("测试", "已启动：启动器进程 " + std::to_string(launched.value->launcherProcessId)
         + "，测试地图 " + War3Map::IO::PathUtf8(artifact.value->testMap));
     if (scenarioPlan) mapTestScenario_ = MapTestScenarioRun{std::move(*scenarioPlan), scenarioResult};
