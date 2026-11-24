@@ -29,6 +29,8 @@ struct WorldAnimationTiming {
     std::uint64_t budgetStaticInstances = 0, budgetParticleInstances = 0;
     std::uint64_t offscreenInstances = 0, offscreenPoseInstances = 0, offscreenParticleInstances = 0;
     std::uint64_t visibilityUnknownInstances = 0, frozenParticleInstances = 0;
+    // 每次更新整份复制的数据量：实例、组矩阵、粒子顶点与整帧占用字节。
+    std::uint64_t frameInstances = 0, frameGroups = 0, frameParticleVertices = 0, frameRetainedBytes = 0;
     WorldAnimationTimingOutcome outcome = WorldAnimationTimingOutcome::Cancelled;
     WorldAnimationSourceCheck sourceBefore = WorldAnimationSourceCheck::NotRun;
     WorldAnimationSourceCheck sourceAfter = WorldAnimationSourceCheck::NotRun;

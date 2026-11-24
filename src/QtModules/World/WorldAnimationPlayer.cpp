@@ -23,6 +23,9 @@ void FrameTiming(WorldAnimationTiming& timing, const Render::AnimationFrame& fra
     timing.offscreenInstances=frame.offscreenInstances; timing.offscreenPoseInstances=frame.offscreenPoseInstances;
     timing.offscreenParticleInstances=frame.offscreenParticleInstances; timing.visibilityUnknownInstances=frame.visibilityUnknownInstances;
     timing.frozenParticleInstances=std::count_if(frame.particleLinks.begin(),frame.particleLinks.end(),[](const auto& p) { return p.frozen; });
+    timing.frameInstances=frame.instances.size(); timing.frameGroups=frame.groups.size();
+    timing.frameParticleVertices=frame.particleVertices.size();
+    timing.frameRetainedBytes=Render::AnimationFrameRetainedBytes(frame);
 }
 std::string DiagnosticCode(const std::vector<Diagnostic>& diagnostics) {
     const auto first=std::find_if(diagnostics.begin(),diagnostics.end(),[](const auto& d) { return d.severity==DiagnosticSeverity::Error; });

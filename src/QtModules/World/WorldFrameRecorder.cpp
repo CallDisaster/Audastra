@@ -122,6 +122,8 @@ QJsonObject AttemptJson(const WorldAnimationTiming& t) {
         {"offscreen_instances", Number(t.offscreenInstances)}, {"offscreen_pose_instances", Number(t.offscreenPoseInstances)},
         {"offscreen_particle_instances", Number(t.offscreenParticleInstances)}, {"visibility_unknown_instances", Number(t.visibilityUnknownInstances)},
         {"frozen_particle_instances", Number(t.frozenParticleInstances)},
+        {"frame_instances", Number(t.frameInstances)}, {"frame_groups", Number(t.frameGroups)},
+        {"frame_particle_vertices", Number(t.frameParticleVertices)}, {"frame_retained_bytes", Number(t.frameRetainedBytes)},
         {"diagnostic_code", Text(t.diagnosticCode)}, {"frame_timings", TimingJson(t.frame)}};
 }
 QJsonObject InstanceDetailJson(const Render::AnimationInstanceDeltaTimings& t) {
