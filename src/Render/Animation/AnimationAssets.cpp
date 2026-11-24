@@ -951,7 +951,8 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
     std::vector<CompiledMaterialTextures> textureAssets;
     std::uint32_t maxNodes=1,maxGroups=1,maxGeosets=1,maxMaterialLayers=1;
     state.maxGeosetIssues=state.maxCollisionMatrices=state.maxMaterialIssues=0;
-    state.sharedPoseRanges=false; state.evaluator.reset(); state.particles.reset(); state.visibility.reset();
+    state.sharedPoseRanges=false; state.evaluator.reset(); state.poseHelpers.clear(); state.particles.reset(); state.visibility.reset();
+    state.requests.clear(); state.renderedIndices.clear();
     state.standFrame.reset(); state.standPoses.clear(); state.standPoseIndices.clear();
     state.modelStandPoses.clear(); state.activeSlots.clear(); state.modelSlots.clear();
     state.sharedGroupCount=state.sharedAlphaCount=state.sharedLayerAlphaCount=0;
@@ -1007,19 +1008,22 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
     if (!compiled.empty()) {
         // 至多64实例，按最大单模型预热；过大时减小批宽，不增加64MiB求值器上限。
         std::uint32_t width=64;
-        for (;;) {
+        const auto create=[&](std::uint32_t batchWidth) {
             BatchLimits batch;
-            batch.maxInstances=width; batch.maxNodes=maxNodes*width; batch.maxGroups=maxGroups*width;
-            batch.maxGeosets=maxGeosets*width; batch.outputMode=state.collisionNodesRequired ? PoseOutputMode::FullNodes : PoseOutputMode::GroupsAndAlphas;
+            batch.maxInstances=batchWidth; batch.maxNodes=maxNodes*batchWidth; batch.maxGroups=maxGroups*batchWidth;
+            batch.maxGeosets=maxGeosets*batchWidth; batch.outputMode=state.collisionNodesRequired ? PoseOutputMode::FullNodes : PoseOutputMode::GroupsAndAlphas;
             const auto policy=limits.retainUnsupportedStatic ? GeosetFailurePolicy::PreviewHideInvalidGeosets : GeosetFailurePolicy::Strict;
             const auto nodePolicy=AnimationNodeKeyPolicy(limits);
             const auto materialPolicy=scene.dynamicMaterialAlphas ? AnimationMaterialAlphaKeyPolicy(limits)
                 : MaterialAlphaKeySamplingPolicy::Strict;
-            auto evaluator=scene.dynamicMaterialStates ? PoseBatchEvaluator::Create(compiled,state.epoch,batch,policy,
-                MaterialChannelOptions{1,maxMaterialLayers*width},TextureChannelOptions{1,maxMaterialLayers*width},textureAssets,nodePolicy,materialPolicy) :
+            return scene.dynamicMaterialStates ? PoseBatchEvaluator::Create(compiled,state.epoch,batch,policy,
+                MaterialChannelOptions{1,maxMaterialLayers*batchWidth},TextureChannelOptions{1,maxMaterialLayers*batchWidth},textureAssets,nodePolicy,materialPolicy) :
                 scene.dynamicMaterialAlphas ? PoseBatchEvaluator::Create(compiled,state.epoch,batch,policy,
-                MaterialChannelOptions{1,maxMaterialLayers*width},{},{},nodePolicy,materialPolicy) :
+                MaterialChannelOptions{1,maxMaterialLayers*batchWidth},{},{},nodePolicy,materialPolicy) :
                 PoseBatchEvaluator::Create(compiled,state.epoch,batch,policy,{},{},{},nodePolicy,materialPolicy);
+        };
+        for (;;) {
+            auto evaluator=create(width);
             const bool ownsWorkspace=state.collisionNodesRequired || state.sharedPoseRanges || scene.dynamicMaterialAlphas;
             if (evaluator.Succeeded() && (!ownsWorkspace || evaluator.value->StorageBytes()<=limits.maxFrameBytes-state.frameBytes)) {
                 if (ownsWorkspace) state.frameBytes+=evaluator.value->StorageBytes();
@@ -1032,6 +1036,21 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
             }
             width/=2;
         }
+        // 并行批次：同参数辅助求值器只是暂存工作区，批次划分与单线程相同，结果逐位一致。
+        // 不占 owned 帧预算（不改变既有降级判定），另有总量上限；建不起来就少用几个线程。
+        const auto parallelism=limits.poseWorkers ? limits.poseWorkers : AnimationTaskParallelism();
+        const auto batches=(scene.animatedInstances+state.batchWidth-1)/state.batchWidth;
+        const auto wanted=static_cast<std::uint32_t>(std::min<std::uint64_t>(parallelism,std::max<std::uint64_t>(batches,1))-1);
+        std::uint64_t helperBytes=0;
+        for (std::uint32_t k=0;k<wanted;++k) {
+            if (state.evaluator->StorageBytes()>kAnimationPoseHelperBytes-helperBytes) break;
+            auto helper=create(state.batchWidth);
+            if (!helper.Succeeded()) break;
+            helperBytes+=helper.value->StorageBytes();
+            state.poseHelpers.push_back(std::move(*helper.value));
+        }
+        const auto waveWidth=std::size_t(state.batchWidth)*(state.poseHelpers.size()+1);
+        state.requests.assign(waveWidth,PoseRequest{}); state.renderedIndices.assign(waveWidth,0);
     }
     record(&AnimationInstanceDeltaTimings::storageEvaluatorNs);
     if (state.sharedPoseRanges) {

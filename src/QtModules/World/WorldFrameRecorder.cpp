@@ -98,7 +98,7 @@ QJsonObject TimingJson(const AnimationFrameTimings& t) {
         {"eligible_pose_instances", Number(t.eligiblePoseInstances)}, {"pose_evaluation_requests", Number(t.poseEvaluationRequests)},
         {"particle_simulation_requests", Number(t.particleSimulationRequests)},
         {"particle_anchor_requests", Number(t.particleAnchorRequests)}, {"particle_anchor_node_visits", Number(t.particleAnchorNodeVisits)},
-        {"particle_anchor_reuses", Number(t.particleAnchorReuses)},
+        {"particle_anchor_reuses", Number(t.particleAnchorReuses)}, {"pose_workers", Number(t.poseWorkers)},
         {"particle_skipped_timeline_ms", Number(t.particleSkippedTimelineMs)},
         {"whole_scene_motion_hash_diagnostic", Number(t.outputMotionHash)},
         {"whole_scene_particle_state_hash_diagnostic", Number(t.particleStateHash)},

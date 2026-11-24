@@ -79,6 +79,7 @@ add_library(War3MapRenderSupport STATIC
     Animation/AnimationState.cpp
     Animation/AnimationVisibility.cpp
     Animation/AnimationFrame.cpp
+    Animation/AnimationWorkers.cpp
     Animation/AnimationPreviewBudget.cpp
     Animation/PremPreview.cpp
     Animation/AnimationPrem.cpp

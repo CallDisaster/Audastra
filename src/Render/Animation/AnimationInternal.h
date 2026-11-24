@@ -3,6 +3,7 @@
 #include "War3RenderCore/PoseBatch.h"
 #include "War3RenderCore/MaterialTextures.h"
 #include "../Particles/ParticleTypes.h"
+#include "AnimationWorkers.h"
 #include <unordered_map>
 
 namespace War3Map::Render {
@@ -171,9 +172,14 @@ struct ModelAnimationService::State {
     std::uint64_t epoch = 0;
     std::uint32_t batchWidth = 64;
     bool retainUnsupportedStatic = false;
-    std::array<War3RenderCore::PoseRequest, 64> requests;
-    std::array<std::uint32_t, 64> renderedIndices{};
+    // 一轮并行的请求缓冲：主求值器加辅助求值器各一批，每批 batchWidth 个，批次划分与单线程相同。
+    std::vector<War3RenderCore::PoseRequest> requests;
+    std::vector<std::uint32_t> renderedIndices;
+    std::vector<War3RenderCore::PoseBatchEvaluator> poseHelpers;
+    std::uint64_t poseVersion = 0; // 宿主按实例顺序统一编号，与求值线程数无关。
 };
+// 辅助求值器（纯暂存）总量上限；超过就少开线程，不影响结果。
+inline constexpr std::uint64_t kAnimationPoseHelperBytes = 128ull * 1024 * 1024;
 [[nodiscard]] Status AnimationFailure(std::string code, std::string message);
 [[nodiscard]] Result<std::shared_ptr<const AnimationCatalogIdentityIndex>> EnsureAnimationCatalogIdentityIndex(
     const AnimatedModelScene& scene, std::shared_ptr<const AnimationCatalogIdentityIndex> previous,

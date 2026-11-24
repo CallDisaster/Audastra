@@ -80,6 +80,44 @@ void LargeScene() {
         "camera scheduling changed static assets or pool capacity");
     std::cout << "large_scene_instances=" << count << " retained_stand=" << nearLast->budgetStaticInstances << '\n';
 }
+void ParallelPoses() {
+    // 多批实例：单线程与并行求值逐位相同（含宿主统一编号的姿势版本），并行数只影响快慢。
+    Input in;
+    constexpr std::size_t count=300;
+    std::vector<AnimationInstanceSpec> specs(count,in.specs[0]);
+    for (std::size_t i=0;i<count;++i) {
+        specs[i].identity.value=i+1; specs[i].hostKey="parallel:"+std::to_string(i);
+        specs[i].sequenceIndex=static_cast<std::uint32_t>(i%2); specs[i].elapsedMs=37*i;
+        specs[i].model.position={static_cast<float>(i%20)*150,static_cast<float>(i/20)*150,0};
+    }
+    const auto run=[&](std::uint32_t workers) {
+        AnimationLimits limits; limits.poseWorkers=workers;
+        auto service=Good(ModelAnimationService::Create({7,33,"parallel-synthetic"},specs,
+            [&](auto p,auto n){return in.Read(p,n);},limits));
+        auto first=Good(service->Prepare(nullptr));
+        AnimationAdvance advance; advance.playAll=true; advance.deltaMs=33;
+        auto second=Good(service->Prepare(first.get(),advance));
+        return std::pair{first,second};
+    };
+    const auto same=[](const AnimationFrame& a,const AnimationFrame& b) {
+        if (a.poses.size()!=b.poses.size() || a.groups.size()!=b.groups.size() || a.colors.size()!=b.colors.size() || a.alphas!=b.alphas)
+            return false;
+        if (std::memcmp(a.groups.data(),b.groups.data(),a.groups.size()*sizeof(a.groups[0]))!=0 ||
+            std::memcmp(a.colors.data(),b.colors.data(),a.colors.size()*sizeof(a.colors[0]))!=0) return false;
+        for (std::size_t i=0;i<a.poses.size();++i) {
+            const auto& x=a.poses[i]; const auto& y=b.poses[i];
+            if (x.poseVersion!=y.poseVersion || x.matrixHash!=y.matrixHash || x.alphaHash!=y.alphaHash ||
+                x.animated!=y.animated || x.hidden!=y.hidden) return false;
+        }
+        return a.timings.outputMotionHash==b.timings.outputMotionHash && a.timings.poseEvaluationRequests==b.timings.poseEvaluationRequests;
+    };
+    const auto serial=run(1), parallel=run(4);
+    Require(serial.second->timings.outputMotionHash!=serial.first->timings.outputMotionHash,"parallel test frames did not advance");
+    Require(same(*serial.first,*parallel.first) && same(*serial.second,*parallel.second),"parallel pose evaluation changed output");
+    Require(serial.first->timings.poseWorkers==1 && parallel.first->timings.poseWorkers==4 &&
+        parallel.first->timings.poseEvaluationRequests==count,"parallel pose evaluators not used");
+    std::cout<<"parallel_pose_instances="<<count<<" workers="<<parallel.first->timings.poseWorkers<<" identical=1\n";
+}
 void Instances() {
     Input in; auto service=in.Build(); auto first=Good(service->Prepare(nullptr));
     Require(first->poses.size()==2 && first->poses[0].matrixHash!=first->poses[1].matrixHash,"instances mixed");
@@ -974,7 +1012,7 @@ void Submission() {
 }
 int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
-    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
+    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
     else if(which=="submission") Submission();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();

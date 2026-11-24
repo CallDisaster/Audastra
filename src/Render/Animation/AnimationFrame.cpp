@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <map>
 #include <tuple>
 #include <stdexcept>
@@ -178,7 +179,8 @@ Status ModelAnimationService::PrepareStandStorage(State& s, std::uint64_t frameB
             link.staticSequenceIndex=sequence; link.staticElapsedMs=request.sequenceElapsedMs;
             const auto outcome=s.evaluator->Evaluate(std::span(&request,1));
             if (outcome.error!=Code::Ok) return AnimationFailure(CodeName(outcome.error),CodeMessage(outcome.error));
-            const auto& receipt=s.evaluator->Receipts()[0]; link.asset=receipt.asset;
+            auto receipt=s.evaluator->Receipts()[0]; link.asset=receipt.asset;
+            if (receipt.poseVersion) receipt.poseVersion=++s.poseVersion; // 与逐帧姿势共用宿主编号。
             link.evaluationEpoch=receipt.evaluationEpoch; link.poseVersion=receipt.poseVersion;
             link.requestIndex=requestIndex; link.identity=receipt.instance;
             if (receipt.error!=Code::Ok) {
@@ -485,23 +487,38 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         frame->omittedDiagnostics+=static_cast<std::uint64_t>(ds.size()-n);
     };
     std::uint32_t active=0;
+    // 每 batchWidth 个连续请求为一批，与单线程划分相同；一轮内各批并行求值，再按原顺序合并，
+    // 版本号由宿主按合并顺序统一编号，因此输出与线程数无关。
+    const auto width=s.batchWidth;
+    std::vector<War3RenderCore::BatchOutcome> outcomes(s.poseHelpers.size()+1);
+    const auto evaluatorFor=[&](std::uint32_t batch) -> War3RenderCore::PoseBatchEvaluator& {
+        return batch==0 ? *s.evaluator : s.poseHelpers[batch-1];
+    };
+    if (s.evaluator) frame->timings.poseWorkers=s.poseHelpers.size()+1;
+    const std::function<void(std::uint32_t)> evaluateBatch=[&](std::uint32_t batch) {
+        const auto first=batch*width;
+        outcomes[batch]=evaluatorFor(batch).Evaluate(std::span(s.requests.data()+first,std::min(width,active-first)));
+    };
     const auto flush=[&]() -> Status {
         if (!active) return {};
         frame->timings.poseEvaluationRequests+=active;
         const auto evaluationStarted=TimingClock::now();
-        const auto outcome=s.evaluator->Evaluate(std::span(s.requests.data(),active));
+        RunAnimationTasks((active+width-1)/width,evaluateBatch);
         frame->timings.poseEvaluationNs+=ElapsedNs(evaluationStarted);
-        if (outcome.error!=Code::Ok) return AnimationFailure(CodeName(outcome.error),CodeMessage(outcome.error));
         for (std::uint32_t k=0;k<active;++k) {
+            const auto batch=k/width, local=k%width; const auto& evaluator=evaluatorFor(batch);
+            if (local==0 && outcomes[batch].error!=Code::Ok)
+                return AnimationFailure(CodeName(outcomes[batch].error),CodeMessage(outcomes[batch].error));
             const auto i=s.renderedIndices[k]; auto& link=frame->poses[i];
-            const auto& receipt=s.evaluator->Receipts()[k];
+            auto receipt=evaluator.Receipts()[local];
+            if (receipt.poseVersion) receipt.poseVersion=++s.poseVersion;
             link.asset=receipt.asset; link.evaluationEpoch=receipt.evaluationEpoch; link.poseVersion=receipt.poseVersion;
             if (receipt.error!=Code::Ok) {
                 // 局部相机被核心拒绝（越界或方向退化）同样只是这一个实例的问题：交互预览里本帧隐藏它。
                 if (!s.retainUnsupportedStatic ||
                     (!AnimationLocalDataFailure(receipt.error) && receipt.error!=Code::PoseCameraInvalid)) {
                     if (scene.dynamicMaterialStates) {
-                        const auto issues=s.evaluator->TextureIssues(k);
+                        const auto issues=evaluator.TextureIssues(local);
                         if (!issues.empty()) {
                             const auto& issue=issues.front(); const auto& spec=scene.specs[link.requestIndex];
                             return Status{{Diagnostic{DiagnosticSeverity::Error,"Render.Animation",CodeName(issue.error),
@@ -513,7 +530,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                     return AnimationFailure(CodeName(receipt.error),scene.specs[link.requestIndex].hostKey+"："+CodeMessage(receipt.error));
                 }
                 link.hidden=true; link.poseVersion=0; link.materialStateHash=0;
-                const auto ds=s.evaluator->Diagnostics(k);
+                const auto ds=evaluator.Diagnostics(local);
                 link.rejection=FirstAnimationPoseError(ds,receipt.error);
                 appendDiagnostics(ds);
                 // 固定布局的不透明几何不能删；全部mesh alpha=0，有限矩阵仅作隐藏占位。
@@ -521,13 +538,13 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 std::fill_n(frame->alphas.begin()+link.firstAlpha,link.alphaCount,0.0f);
                 if (scene.dynamicMaterialAlphas) {
                     std::fill_n(frame->layerAlphas.begin()+link.materialAlphas.offset,link.materialAlphas.count,0.0f);
-                    const auto issues=s.evaluator->MaterialIssues(k);
+                    const auto issues=evaluator.MaterialIssues(local);
                     if (issues.size()>s.maxMaterialIssues-frame->materialIssues.size())
                         return AnimationFailure("ANIMATION_MATERIAL_ISSUE_BUDGET","材质层原始诊断超过 owned 帧预算。");
                     link.materialIssues={static_cast<std::uint32_t>(frame->materialIssues.size()),static_cast<std::uint32_t>(issues.size())};
                     for (const auto& issue:issues) frame->materialIssues.push_back({issue});
                     if (scene.dynamicMaterialStates) {
-                        const auto textureIssues=s.evaluator->TextureIssues(k);
+                        const auto textureIssues=evaluator.TextureIssues(local);
                         if (textureIssues.size()>s.maxMaterialIssues-frame->materialIssues.size())
                             return AnimationFailure("ANIMATION_MATERIAL_ISSUE_BUDGET","KMTF原始字段诊断超过owned预算。");
                         link.materialIssues.count+=static_cast<std::uint32_t>(textureIssues.size());
@@ -537,19 +554,19 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 ++frame->hiddenInstances;
                 continue;
             }
-            if (auto status=CaptureAnimationPoseWarnings(link,receipt,s.requests[k],s.evaluator->Diagnostics(k),false,
-                s.evaluator->MaterialAlphaPreviewWarnings(k));
+            if (auto status=CaptureAnimationPoseWarnings(link,receipt,s.requests[k],evaluator.Diagnostics(local),false,
+                evaluator.MaterialAlphaPreviewWarnings(local));
                 !status.Succeeded()) return status;
             link.animated=true;
             ++frame->animatedInstances;
             if (captureParticleAnchors && s.requests[k].hasCamera) {
                 const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
-                CaptureAnimationParticleAnchors(*s.particles,link.requestIndex,assetIndex,s.assets[assetIndex],s.evaluator->Nodes(k));
+                CaptureAnimationParticleAnchors(*s.particles,link.requestIndex,assetIndex,s.assets[assetIndex],evaluator.Nodes(local));
             }
-            const auto groups=s.evaluator->Groups(k); const auto alphas=s.evaluator->Alphas(k); const auto colors=s.evaluator->Colors(k);
+            const auto groups=evaluator.Groups(local); const auto alphas=evaluator.Alphas(local); const auto colors=evaluator.Colors(local);
             const auto& pick=scene.pickModels[frame->instances[i].instance.model];
             if (pick.collisionNodes) {
-                const auto nodes=s.evaluator->Nodes(k);
+                const auto nodes=evaluator.Nodes(local);
                 if (pick.collisionNodes->size()!=link.collisionMatrices.count)
                     return AnimationFailure("ANIMATION_PICK_COLLISION_MAPPING","碰撞 shape 与节点来源数量不一致。");
                 constexpr std::array<unsigned,12> columns{0,1,2,4,5,6,8,9,10,12,13,14};
@@ -562,7 +579,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                     output.available=true;
                 }
             }
-            const auto issues=s.evaluator->GeosetIssues(k);
+            const auto issues=evaluator.GeosetIssues(local);
             if (issues.size()>s.maxGeosetIssues-frame->geosetIssues.size())
                 return AnimationFailure("ANIMATION_GEOSET_ISSUE_BUDGET","当前 GEOA 来源记录超出冻结帧预算。");
             link.geosetIssues={static_cast<std::uint32_t>(frame->geosetIssues.size()),static_cast<std::uint32_t>(issues.size())};
@@ -578,17 +595,17 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             const auto& model=g.models[frame->instances[i].instance.model];
             if (scene.dynamicMaterialAlphas) {
                 const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
-                if (assetIndex==UINT32_MAX || s.evaluator->LayerAlphas(k).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
+                if (assetIndex==UINT32_MAX || evaluator.LayerAlphas(local).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
                     return AnimationFailure("ANIMATION_LAYER_ALPHA_MAPPING","材质输出与当前姿势资产布局不同。");
                 if (auto status=FillAnimationLayerAlphas(scene,frame->instances[i].instance.model,link.materialAlphas,frame->layerAlphas,
-                    s.evaluator->LayerAlphas(k)); !status.Succeeded()) return status;
+                    evaluator.LayerAlphas(local)); !status.Succeeded()) return status;
             }
             if (scene.dynamicMaterialStates) {
                 const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
-                if (assetIndex==UINT32_MAX || s.evaluator->LayerTextureIds(k).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
+                if (assetIndex==UINT32_MAX || evaluator.LayerTextureIds(local).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
                     return AnimationFailure("ANIMATION_TEXTURE_MAPPING","贴图输出与当前姿势资产布局不同。");
                 if (auto status=FillAnimationMaterialStates(scene,frame->instances[i].instance.model,link.materialStates,frame->materialStates,
-                    s.evaluator->LayerTextureIds(k),s.evaluator->LayerUvTransforms(k)); !status.Succeeded()) return status;
+                    evaluator.LayerTextureIds(local),evaluator.LayerUvTransforms(local)); !status.Succeeded()) return status;
             }
             for (std::uint32_t mesh=0;mesh<model.meshCount;++mesh) {
                 const auto geoset=g.meshGeosets[model.firstMesh+mesh];
@@ -596,7 +613,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 frame->alphas[link.firstAlpha+mesh]=alphas[geoset];
                 std::copy(colors[geoset].begin(),colors[geoset].end(),frame->colors[link.firstAlpha+mesh].rgb);
             }
-            appendDiagnostics(s.evaluator->Diagnostics(k));
+            appendDiagnostics(evaluator.Diagnostics(local));
         }
         active=0; return {};
     };
@@ -633,8 +650,9 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             if (local.Succeeded()) { request.hasCamera=1; request.camera=*local.value; }
             else if (!s.retainUnsupportedStatic) return {std::nullopt,std::move(local.diagnostics)};
         }
+        if (s.requests.empty()) return fail("ANIMATION_EVALUATOR_MISSING","可求值实例没有对应的姿势求值器。");
         s.requests[active]=request; s.renderedIndices[active]=i; ++active;
-        if (active==s.batchWidth) if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
+        if (active==s.requests.size()) if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
     }
     if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
     for (const auto& matrix:frame->groups) for (const auto f:matrix.values)

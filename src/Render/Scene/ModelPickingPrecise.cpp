@@ -2,6 +2,8 @@
 #include "../Animation/AnimationInternal.h"
 
 #include <algorithm>
+#include <atomic>
+#include <functional>
 #include <cmath>
 #include <limits>
 #include <new>
@@ -172,56 +174,73 @@ std::optional<double> RaySphere(const Point& origin, const Point& direction, con
 }
 } // namespace
 
+namespace {
+// 只读场景与帧，只写 pickBounds[i]；false 表示映射不一致（整帧失败）。
+bool PrepareOnePickBounds(const AnimatedModelScene& scene, AnimationFrame& frame, std::size_t i) {
+    const auto& pose=frame.poses[i]; const auto& instance=frame.instances[i];
+    if (pose.hidden || pose.outsideView || pose.requestIndex==kBakedInstance) return true;
+    if (instance.instance.model>=scene.models.size()) return false;
+    if (frame.sharedPoseRanges && !pose.animated) {
+        if (pose.standPoseIndex>=scene.standPickBounds.size()) return false;
+        const auto& cached=scene.standPickBounds[pose.standPoseIndex]; auto& output=frame.pickBounds[i];
+        output.collisionIncomplete=cached.collisionIncomplete;
+        if (cached.available) {
+            Affine matrix{},magnitude{};
+            for (unsigned q=0;q<12;++q) { matrix[q]=instance.instance.transform[q]; magnitude[q]=std::abs(matrix[q]); }
+            if (!IncludeBox(output,matrix,cached.box,magnitude)) return false;
+        }
+        return true;
+    }
+    const auto& model=scene.models[instance.instance.model].model;
+    const auto& input=scene.pickModels[instance.instance.model]; auto& output=frame.pickBounds[i];
+    const bool owned = bool(input.ownedStaticAsset);
+    if ((owned ? !OwnedMapping(scene, instance.instance.model, input) : !input.source) || !Fits({model.firstMesh,model.meshCount},scene.meshes.size()) ||
+        !Fits(pose.collisionMatrices,frame.collisionMatrices.size()) ||
+        pose.collisionMatrices.count!=(owned ? 0 : input.source->collisionShapes.size())) return false;
+    for (std::uint32_t local=0;local<model.meshCount;++local) {
+        const auto meshIndex=model.firstMesh+local,geoset=scene.geometry.meshGeosets[meshIndex];
+        if (!owned && geoset>=input.source->geosets.size()) return false;
+        if ((!owned && (input.source->geosets[geoset].selectionFlags&4u)) || !VisibleMesh(scene,frame,instance,meshIndex,local)) continue;
+        const auto groups=scene.pickMeshGroups[meshIndex]; const auto& mesh=scene.meshes[meshIndex];
+        if (!Fits(groups,scene.pickGroupBounds.size())) return false;
+        for (std::uint32_t k=0;k<groups.count;++k) {
+            const auto& bounds=scene.pickGroupBounds[groups.offset+k];
+            const auto group=static_cast<std::uint64_t>(instance.firstGroup)+mesh.firstGroup+bounds.group;
+            if (bounds.group>=mesh.groupCount || group>=frame.groups.size()) return false;
+            std::array<double,6> box{}; std::copy(bounds.box.begin(),bounds.box.end(),box.begin());
+            const auto& matrix=frame.groups[static_cast<std::size_t>(group)];
+            if (!IncludeBox(output,Compose(instance.instance.transform,matrix),box,ComposeMagnitude(instance.instance.transform,matrix))) return false;
+        }
+    }
+    for (std::uint32_t k=0;k<pose.collisionMatrices.count;++k) {
+        const auto& shape=input.source->collisionShapes[k]; const auto& node=frame.collisionMatrices[pose.collisionMatrices.offset+k];
+        if (!Supported(shape) || !node.available) { output.collisionIncomplete=true; continue; }
+        const auto matrix=Compose(instance.instance.transform,node.matrix);
+        if (!Inverse(matrix)) { output.collisionIncomplete=true; continue; }
+        if (!IncludeBox(output,matrix,CollisionBox(shape),ComposeMagnitude(instance.instance.transform,node.matrix))) { output.collisionIncomplete=true; }
+    }
+    return true;
+}
+} // namespace
+
 Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFrame& frame) {
     const auto fail=[] { return AnimationFailure("ANIMATION_PICK_MAPPING","点选来源、实际网格或 owned 帧片段不一致。"); };
     if (scene.pickModels.size()!=scene.models.size() || scene.pickMeshGroups.size()!=scene.meshes.size() ||
         scene.geometry.meshGeosets.size()!=scene.meshes.size() || frame.poses.size()!=frame.instances.size()) return fail();
     frame.pickBounds.assign(frame.poses.size(),{});
-    for (std::size_t i=0;i<frame.poses.size();++i) {
-        const auto& pose=frame.poses[i]; const auto& instance=frame.instances[i];
-        if (pose.hidden || pose.outsideView || pose.requestIndex==kBakedInstance) continue;
-        if (instance.instance.model>=scene.models.size()) return fail();
-        if (frame.sharedPoseRanges && !pose.animated) {
-            if (pose.standPoseIndex>=scene.standPickBounds.size()) return fail();
-            const auto& cached=scene.standPickBounds[pose.standPoseIndex]; auto& output=frame.pickBounds[i];
-            output.collisionIncomplete=cached.collisionIncomplete;
-            if (cached.available) {
-                Affine matrix{},magnitude{};
-                for (unsigned q=0;q<12;++q) { matrix[q]=instance.instance.transform[q]; magnitude[q]=std::abs(matrix[q]); }
-                if (!IncludeBox(output,matrix,cached.box,magnitude)) return fail();
-            }
-            continue;
+    // 每个实例只写自己的包围盒，按固定分段并行；任一段映射不一致即整帧失败，结果与线程数无关。
+    constexpr std::size_t chunk=512;
+    const auto count=frame.poses.size();
+    std::atomic<bool> failed{false};
+    const std::function<void(std::uint32_t)> prepare=[&](std::uint32_t task) {
+        const auto end=std::min(count,(std::size_t(task)+1)*chunk);
+        for (std::size_t i=std::size_t(task)*chunk;i<end;++i) {
+            if (failed.load(std::memory_order_relaxed)) return;
+            if (!PrepareOnePickBounds(scene,frame,i)) { failed.store(true,std::memory_order_relaxed); return; }
         }
-        const auto& model=scene.models[instance.instance.model].model;
-        const auto& input=scene.pickModels[instance.instance.model]; auto& output=frame.pickBounds[i];
-        const bool owned = bool(input.ownedStaticAsset);
-        if ((owned ? !OwnedMapping(scene, instance.instance.model, input) : !input.source) || !Fits({model.firstMesh,model.meshCount},scene.meshes.size()) ||
-            !Fits(pose.collisionMatrices,frame.collisionMatrices.size()) ||
-            pose.collisionMatrices.count!=(owned ? 0 : input.source->collisionShapes.size())) return fail();
-        for (std::uint32_t local=0;local<model.meshCount;++local) {
-            const auto meshIndex=model.firstMesh+local,geoset=scene.geometry.meshGeosets[meshIndex];
-            if (!owned && geoset>=input.source->geosets.size()) return fail();
-            if ((!owned && (input.source->geosets[geoset].selectionFlags&4u)) || !VisibleMesh(scene,frame,instance,meshIndex,local)) continue;
-            const auto groups=scene.pickMeshGroups[meshIndex]; const auto& mesh=scene.meshes[meshIndex];
-            if (!Fits(groups,scene.pickGroupBounds.size())) return fail();
-            for (std::uint32_t k=0;k<groups.count;++k) {
-                const auto& bounds=scene.pickGroupBounds[groups.offset+k];
-                const auto group=static_cast<std::uint64_t>(instance.firstGroup)+mesh.firstGroup+bounds.group;
-                if (bounds.group>=mesh.groupCount || group>=frame.groups.size()) return fail();
-                std::array<double,6> box{}; std::copy(bounds.box.begin(),bounds.box.end(),box.begin());
-                const auto& matrix=frame.groups[static_cast<std::size_t>(group)];
-                if (!IncludeBox(output,Compose(instance.instance.transform,matrix),box,ComposeMagnitude(instance.instance.transform,matrix))) return fail();
-            }
-        }
-        for (std::uint32_t k=0;k<pose.collisionMatrices.count;++k) {
-            const auto& shape=input.source->collisionShapes[k]; const auto& node=frame.collisionMatrices[pose.collisionMatrices.offset+k];
-            if (!Supported(shape) || !node.available) { output.collisionIncomplete=true; continue; }
-            const auto matrix=Compose(instance.instance.transform,node.matrix);
-            if (!Inverse(matrix)) { output.collisionIncomplete=true; continue; }
-            if (!IncludeBox(output,matrix,CollisionBox(shape),ComposeMagnitude(instance.instance.transform,node.matrix))) { output.collisionIncomplete=true; }
-        }
-    }
-    return Status::Ok();
+    };
+    RunAnimationTasks(static_cast<std::uint32_t>((count+chunk-1)/chunk),prepare);
+    return failed.load() ? fail() : Status::Ok();
 }
 
 Result<ModelPickResult> PickAnimatedModelInstances(const AnimatedModelScene& scene, const AnimationFrame& frame,

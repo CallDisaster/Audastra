@@ -72,6 +72,8 @@ struct AnimationLimits {
     bool allowIdenticalMaterialAlphaKeysPreview = false;
     // 基础 PREM 子模型层，独立有界预览；默认旧服务不读取子资源。
     bool enablePremPreview = false;
+    // 姿势求值并行数（含调用线程）；0=按本机核心自动。只影响快慢，输出与线程数无关。
+    std::uint32_t poseWorkers = 0;
 };
 // 所有编辑器交互入口共用已核实的 1.27a 按动作原序取键政策；不能用于
 // 严格回放、保存或兼容性认证。几何、粒子、内存预算及坏模型保留仍由宿主显式选择。
@@ -272,6 +274,7 @@ struct AnimationFrameTimings {
     std::uint64_t particleSimulationRequests = 0, particleAnchorRequests = 0, particleAnchorNodeVisits = 0;
     std::uint64_t particleAnchorReuses = 0; // 交互预览直接复用本帧主姿势节点的实例数，不计入锚点求值。
     std::uint64_t particleSkippedTimelineMs = 0;
+    std::uint64_t poseWorkers = 0; // 本帧姿势求值实际可用的并行求值器数（含主求值器）。
     // 仅实际成功的输出数值：不含版本号、时钟、隐藏占位或 Stand 重用的计数变化。
     std::uint64_t outputMotionHash = 0, particleStateHash = 0;
     std::uint64_t minElapsedMs = 0, maxElapsedMs = 0, minGlobalMs = 0, maxGlobalMs = 0;
