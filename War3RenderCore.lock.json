@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.1.22",
+  "version": "0.1.23",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "92461b6859b1e0cde3da6702f75506741cc0aace",
+  "commit": "9dfe273b69b98d8ad2a2641ef3466d59d4edd724",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "156087a83e9e4f940793a5851a9b707ac9a9dbf7d737132d0480996d0dbd36ca"
+      "sha256": "3c972764db5990ea625515e4fef300409a4c1c8bc5f9f64e31dc99144d65c2c0"
     },
     {
       "path": "COPYRIGHT.md",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "7c86162f37cad152a7359e04512ed930ce174c63f6b641e33dadfd15309f2914"
+      "sha256": "4fceea9116691f3f09f8cf9573a2e4c1e3d7b4dcc943386db9838c0e56736e0b"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -334,11 +334,11 @@
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.cpp",
-      "sha256": "070b6554c880d63c36916356d17da16d06325ff66bb222cd1ef2a645cf7592d8"
+      "sha256": "3b966c6c08d073702a82fda7653c4cd516dec000b06f078ea5957d6b5e6c3a55"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.h",
-      "sha256": "ad884904b12366cebbfef54ac21a52524f9781b7da54c3bd13ee6d57dbcf83df"
+      "sha256": "03369de3e137014687a1d3c69839acddebd428f3b7a04946347c7e4ee2999d69"
     },
     {
       "path": "src/Render/Tools/MdxScan/ScanDetail.cpp",
@@ -566,7 +566,7 @@
     },
     {
       "path": "tests/RenderSkinInputTests.cpp",
-      "sha256": "8780565fdf42c5f005e2a1fa094ed9445ceff84ef4dfcd39e29cfc644d10b81d"
+      "sha256": "b353d4b958b50fe2aa43a9df3f0d47ffa0cbbdf12947cf4b53831205fac8fe87"
     },
     {
       "path": "tests/RenderSkinRosterTests.cpp",

@@ -217,17 +217,20 @@ void WorldViewport::PublishPrepareLease() {
         : reinterpret_cast<Render::War3PrepareEditorUpdateV1>(library_.resolve(Render::kPrepareEditorUpdateExportV1));
     const auto submit = injected_ ? nullptr
         : reinterpret_cast<Render::War3SubmitPreparedEditorVisibilityV1>(library_.resolve(Render::kSubmitPreparedEditorVisibilityExportV1));
+    const auto prepareChanges = injected_ ? nullptr
+        : reinterpret_cast<Render::War3PrepareEditorUpdateChangesV1>(library_.resolve(Render::kPrepareEditorUpdateChangesExportV1));
     preparedSubmit_ = prepare && submit ? submit : nullptr;
     if (!preparedSubmit_) return;
     std::unique_lock lock(prepareLease_->mutex);
-    prepareLease_->handle = renderer_; prepareLease_->prepare = prepare; prepareLease_->epoch = ++prepareEpoch_;
+    prepareLease_->handle = renderer_; prepareLease_->prepare = prepare; prepareLease_->prepareChanges = prepareChanges;
+    prepareLease_->epoch = ++prepareEpoch_;
 }
 
 void WorldViewport::DestroyRenderer() {
     {
         // 先收回后台借用：正在预备的线程结束后才继续销毁渲染器。
         std::unique_lock lock(prepareLease_->mutex);
-        prepareLease_->handle = nullptr; prepareLease_->prepare = nullptr;
+        prepareLease_->handle = nullptr; prepareLease_->prepare = nullptr; prepareLease_->prepareChanges = nullptr;
     }
     preparedSubmit_ = nullptr;
     ++measurementRendererEpoch_;

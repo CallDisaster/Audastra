@@ -2150,6 +2150,34 @@ void TestEditorVisibility(const War3RenderPluginApiV2* api, const War3RenderCrea
             update.expected=target; update.presentationRevision=11;
             Require(submitPrepared(renderer.handle,&update,ticket,&used)!=0 && used==0 && capture(10)==fallback,
                 "prepared stale content replaced the frame");
+            // 带变化清单的预备：清单不合格即拒绝；第一次没有可补的旧副本照常整份复制，之后插件复制与上传都只补列出实例，
+            // 画面与同内容的整份提交逐字节相同。
+            const auto prepareChanges=reinterpret_cast<War3Map::Render::War3PrepareEditorUpdateChangesV1>(
+                GetProcAddress(plugin,War3Map::Render::kPrepareEditorUpdateChangesExportV1));
+            Require(prepareChanges!=nullptr,"prepared change-list export missing");
+            const std::uint32_t second[]{1}, reversed[]{1,0}, outside[]{2};
+            const auto changed=[](std::uint64_t base,const std::uint32_t* list,std::uint32_t count) {
+                return War3Map::Render::War3EditorPoseChangesV1{sizeof(War3Map::Render::War3EditorPoseChangesV1),count,base,list};
+            };
+            fixture.skin.groups[1].values[9]=200; fixture.Bind(11,26); input=dynamicOnly();
+            auto shortChanges=changed(25,second,1); shortChanges.structSize=4;
+            for (const auto& rejected:{shortChanges,changed(25,reversed,2),changed(25,outside,1),changed(26,second,1),changed(0,second,1)})
+                Require(prepareChanges(renderer.handle,&input,&rejected,&ticket)!=0 && ticket==0,"malformed change list accepted");
+            std::uint64_t changeRevision=11;
+            std::vector<std::uint8_t> listed;
+            for (const auto& [value,content]:std::array<std::pair<float,std::uint64_t>,3>{{{200.f,26},{100.f,27},{50.f,28}}}) {
+                fixture.skin.groups[1].values[9]=value; fixture.Bind(11,content); input=dynamicOnly();
+                const auto changes=changed(content-1,second,1);
+                Require(prepareChanges(renderer.handle,&input,&changes,&ticket)==0 && ticket!=0,"change-list prepare rejected");
+                update.expected=target; update.presentationRevision=++changeRevision;
+                Require(submitPrepared(renderer.handle,&update,ticket,&used)==0 && used==1,"change-list commit rejected or copied again");
+                Require(api->getEditorPresentationTarget(renderer.handle,&target)==0 && target.contentVersion==content,"change-list target wrong");
+                listed=capture(changeRevision); RequireWorldColor(listed,receipt.frame.view,value,0,{0,255,0},1);
+            }
+            fixture.Bind(11,29); update.expected=target; update.presentationRevision=++changeRevision;
+            Require(api->submitEditorVisibility(renderer.handle,&update)==0,"full commit after change lists rejected");
+            Require(api->getEditorPresentationTarget(renderer.handle,&target)==0 && target.contentVersion==29,"full commit target wrong");
+            Require(capture(changeRevision)==listed,"change-list copy and upload differ from a full commit");
         } else {
             instances[1].transform[3]=700; visible={0,1}; update.expected=target;
             update.presentationRevision=7; update.staticInstances=instances.data(); const auto epoch=target.modelEpoch;

@@ -16,6 +16,7 @@
 #include "Backend/D3D11/D3D11Scene.h"
 #endif
 #include "Scene/ModelSkinInput.h"
+#include "SkinPoseChanges.h"
 #include "Particles/ParticleInput.h"
 #include "Scene/ModelSceneLayerData.h"
 #include <algorithm>
@@ -55,6 +56,11 @@ using War3Map::Render::Environment;
 using War3Map::Render::EditorVisibility;
 using War3Map::Render::ModelSceneLayerData;
 using War3Map::Render::ModelSceneLayers;
+using War3Map::Render::SkinPoseChangeHistory;
+using War3Map::Render::SkinPoseChangeRecord;
+using War3Map::Render::CollectSkinPoseChanges;
+using War3Map::Render::AppendSkinPoseChanges;
+using War3Map::Render::War3EditorPoseChangesV1;
 constexpr std::uint32_t kMaxSize = 4096, kMaxVertices = 262144, kMaxIndices = 1572864;
 // 地表入口含过渡层，单独放宽；普通网格入口不变。
 constexpr std::uint32_t kMaxTerrainVertices = 1048576, kMaxTerrainIndices = 6291456;
@@ -94,6 +100,8 @@ struct FrameState {
     std::shared_ptr<const ModelScene> models = std::make_shared<ModelScene>();
     std::shared_ptr<const ModelScene> skinLayout; // roster baseline元数据，静态models拥有者保持驻留。
     std::shared_ptr<const SkinPose> skinPose;
+    // 提交 skinPose 时可用的变化记录：上传按记录只比较、只写变化实例，找不到对应记录时整份比较。
+    std::shared_ptr<const SkinPoseChangeHistory> poseChanges;
     std::shared_ptr<const ParticleSceneData> particles;
     std::shared_ptr<const ParticleFrameData> particleFrame;
     std::shared_ptr<const EditorVisibility> visibility;
@@ -198,6 +206,8 @@ struct Renderer {
     // 预备好的更新（见 RenderPreparedUpdatePlugin.h），最多留两份；提交时取走。
     std::deque<PreparedEditorUpdate> prepared;
     std::uint64_t nextPreparedTicket = 0;
+    // 带变化清单预备过的最近几帧（见 SkinPoseChanges.h），整体替换、不原地修改。
+    std::shared_ptr<const SkinPoseChangeHistory> poseChanges;
     std::atomic<bool> closing{false}, workerExited{false};
     bool warp = false, captureActive = false;
     std::uint64_t adapterLuid = 0; // 创建时取下的显卡选择，之后改设置不影响已建渲染器。
@@ -370,7 +380,7 @@ struct Renderer {
                     if (attemptedParticles != next.particles || attemptedParticleFrame != next.particleFrame) {
                         // 两类候选资源全部就绪才共同发布，姿势成功不能掩盖粒子失败。
                         modelError = models == next.models && particles == next.particles
-                            ? scene.SetParticleFrame(*next.skinPose, *next.particleFrame)
+                            ? scene.SetParticleFrame(*next.skinPose, *next.particleFrame, next.poseChanges.get())
                             : scene.SetParticleModels(*next.models, *next.skinPose, *next.particles, *next.particleFrame);
                         attemptedModels = next.models; attemptedPose = next.skinPose;
                         attemptedParticles = next.particles; attemptedParticleFrame = next.particleFrame;
@@ -384,7 +394,7 @@ struct Renderer {
                     if (SUCCEEDED(modelError)) { models = next.models; particles.reset(); scene.ClearParticles(); }
                 }
                 if (SUCCEEDED(hr) && !next.particles && models == next.models && next.skinPose && attemptedPose != next.skinPose) {
-                    modelError = scene.SetSkinPose(*next.skinPose);
+                    modelError = scene.SetSkinPose(*next.skinPose, next.poseChanges.get());
                     attemptedPose = next.skinPose;
                     if (SUCCEEDED(modelError)) { particles.reset(); scene.ClearParticles(); }
                 }
@@ -444,7 +454,7 @@ struct Renderer {
                             state.models = roster->models; state.particles = roster->particleAssets;
                             state.assetIdentity = roster->candidateAssetIdentity;
                         }
-                        state.skinLayout = roster->layout; state.skinPose = roster->pose;
+                        state.skinLayout = roster->layout; state.skinPose = roster->pose; state.poseChanges.reset();
                         state.particleFrame = roster->particleFrame; state.visibility = roster->visibility;
                         state.instances.reset(); ++state.modelEpoch;
                         state.lastSkinSceneVersion = roster->pose->sceneVersion;
@@ -1209,6 +1219,7 @@ std::int32_t PublishModels(Renderer& renderer, std::shared_ptr<const ModelScene>
         if (input && (!SamePresentationTarget(input->expected, PresentationTarget(renderer.state))
             || input->presentationRevision <= renderer.state.lastPresentationRevision)) return kInvalid;
         renderer.state.models = std::move(models); renderer.state.skinPose = std::move(pose);
+        renderer.state.poseChanges.reset(); renderer.poseChanges.reset(); // 变化记录只描述编辑器带清单的姿势链
         renderer.state.skinLayout.reset();
         renderer.state.assetIdentity = renderer.state.skinPose ? renderer.state.skinPose->sceneVersion : 0;
         renderer.state.particles = std::move(particles); renderer.state.particleFrame = std::move(frame);
@@ -1274,6 +1285,7 @@ std::int32_t WAR3_RENDER_CALL UpdateSkinMatrices(War3RendererHandle handle, cons
                 || renderer.state.skinPose != frozen.skinPose || !renderer.state.skinPose
                 || pose->contentVersion <= renderer.state.skinPose->contentVersion) return kInvalid;
             renderer.state.skinPose = std::move(pose);
+            renderer.state.poseChanges.reset(); renderer.poseChanges.reset();
             renderer.state.visibility.reset();
             renderer.state.particles.reset(); renderer.state.particleFrame.reset(); ++renderer.state.request;
         }
@@ -1485,6 +1497,7 @@ std::int32_t WAR3_RENDER_CALL UpdateParticleFrame(War3RendererHandle handle, con
                 || renderer.state.particleFrame != frozen.particleFrame || !renderer.state.skinPose
                 || pose->contentVersion <= renderer.state.skinPose->contentVersion) return kInvalid;
             renderer.state.skinPose = std::move(pose); renderer.state.particleFrame = std::move(frame);
+            renderer.state.poseChanges.reset(); renderer.poseChanges.reset();
             renderer.state.visibility.reset();
             ++renderer.state.request;
         }
@@ -1514,6 +1527,43 @@ template <class T> std::shared_ptr<T> TakeRetired(std::mutex& mutex, std::deque<
     if (taken) ResetKeepingCapacity(*taken);
     else taken = std::make_shared<T>();
     return taken;
+}
+// 有变化记录时优先取能沿记录补到 input 版本的最新回收姿势：保留其内容，changed 给出要补的实例。
+// 取不到时与 TakeRetired 相同（清空后整份复制），changed 为空、delta 为 false。
+std::shared_ptr<SkinPose> TakeRetiredPose(Renderer& renderer, const SkinPoseChangeHistory* history,
+    const War3RenderSkinUpdateV2& input, std::vector<std::uint32_t>& changed, bool& delta) {
+    delta = false; changed.clear();
+    if (history && input.matrixFormat == WAR3_RENDER_GROUP_LOCAL_COLUMN_3X4) {
+        std::shared_ptr<SkinPose> taken;
+        {
+            std::lock_guard lock(renderer.mutex);
+            auto& retired = renderer.retiredPoses;
+            for (auto it = retired.rbegin(); it != retired.rend(); ++it) {
+                const auto& candidate = *it;
+                if (candidate.use_count() != 1 || candidate->sceneVersion != input.sceneVersion
+                    || candidate->matrixFormat != input.matrixFormat
+                    || !CollectSkinPoseChanges(history, input.sceneVersion, candidate->contentVersion, input.contentVersion, nullptr)) continue;
+                taken = std::const_pointer_cast<SkinPose>(std::move(*it)); retired.erase(std::next(it).base()); break;
+            }
+        }
+        if (taken) {
+            if (CollectSkinPoseChanges(history, input.sceneVersion, taken->contentVersion, input.contentVersion, &changed)) {
+                delta = true; return taken;
+            }
+            ResetKeepingCapacity(*taken); return taken;
+        }
+    }
+    return TakeRetired(renderer.mutex, renderer.retiredPoses);
+}
+// 复制一份姿势：拿到可补的旧副本时只校验、复制变化实例，结果与整份复制逐字节相同；补不上时整份复制。
+bool CopyPoseInto(Renderer& renderer, const SkinPoseChangeHistory* history, const War3RenderSkinUpdateV2& input,
+    const ModelScene& layout, std::shared_ptr<SkinPose>& pose) {
+    std::vector<std::uint32_t> changed;
+    bool delta = false;
+    pose = TakeRetiredPose(renderer, history, input, changed, delta);
+    if (delta && War3Map::Render::CopySkinUpdateInstances(input, layout, changed, *pose)) return true;
+    if (delta) ResetKeepingCapacity(*pose);
+    return War3Map::Render::CopySkinUpdate(input, layout, *pose);
 }
 // 取走票据对应的预备更新；驻留布局与输入身份全部吻合才返回，否则丢弃，由调用方照常复制。
 std::optional<PreparedEditorUpdate> TakePrepared(Renderer& renderer, std::uint64_t ticket,
@@ -1620,6 +1670,7 @@ std::int32_t SubmitEditorVisibilityImpl(War3RendererHandle handle,
                 }
             }
             renderer.state.skinPose = std::move(pose); renderer.state.particleFrame = std::move(particles);
+            if (input->modelPose || input->particleFrame) renderer.state.poseChanges = renderer.poseChanges;
             renderer.state.instances = std::move(instances); renderer.state.modelEpoch = target.modelEpoch;
             renderer.state.visibility = std::move(visibility);
             renderer.state.lastPresentationRevision = input->presentationRevision;
@@ -1636,31 +1687,46 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
 }
 // 在调用线程完成与提交相同的复制与校验，结果按票据暂存（见 RenderPreparedUpdatePlugin.h）。
 std::int32_t PrepareEditorUpdate(War3RendererHandle handle, const War3RenderEditorVisibilityUpdateV2* input,
-    std::uint64_t* ticket) noexcept {
+    const War3EditorPoseChangesV1* changes, std::uint64_t* ticket) noexcept {
     if (ticket) *ticket = 0;
     if (!handle || !input || !ticket || input->structSize != sizeof(*input) || input->staticInstances
         || (input->modelPose != nullptr) == (input->particleFrame != nullptr)) return kInvalid;
+    const auto* poseInput = input->particleFrame ? input->particleFrame->modelPose : input->modelPose;
+    if (!poseInput) return kInvalid;
+    if (changes) {
+        // 清单本身必须完整、严格升序且在实例范围内；是否用得上由插件决定。
+        if (changes->structSize != sizeof(*changes) || (changes->instanceCount && !changes->instances)
+            || changes->instanceCount > poseInput->instanceCount || !changes->baseContentVersion
+            || changes->baseContentVersion >= poseInput->contentVersion) return kInvalid;
+        for (std::uint32_t k = 0; k < changes->instanceCount; ++k)
+            if (changes->instances[k] >= poseInput->instanceCount || (k && changes->instances[k] <= changes->instances[k - 1])) return kInvalid;
+    }
     try {
         auto& renderer = *static_cast<Renderer*>(handle);
         FrameState frozen;
-        { std::lock_guard lock(renderer.mutex); frozen = renderer.state; }
+        std::shared_ptr<const SkinPoseChangeHistory> history;
+        if (changes) {
+            SkinPoseChangeRecord record{poseInput->sceneVersion, poseInput->contentVersion, changes->baseContentVersion,
+                std::make_shared<const std::vector<std::uint32_t>>(changes->instances, changes->instances + changes->instanceCount)};
+            std::lock_guard lock(renderer.mutex);
+            renderer.poseChanges = AppendSkinPoseChanges(renderer.poseChanges, std::move(record));
+            history = renderer.poseChanges; frozen = renderer.state;
+        } else { std::lock_guard lock(renderer.mutex); frozen = renderer.state; }
         PreparedEditorUpdate prepared;
         if (input->particleFrame) {
-            if (!frozen.particles || !frozen.skinPose || !input->particleFrame->modelPose) return kInvalid;
+            if (!frozen.particles || !frozen.skinPose) return kInvalid;
             prepared.particleFrame = TakeRetired(renderer.mutex, renderer.retiredParticles);
-            prepared.pose = TakeRetired(renderer.mutex, renderer.retiredPoses);
             // 粒子与姿势各写各的副本、只读同一输入：粒子在另一线程复制校验，两边都通过才算成功，与先后无关。
             // future 析构会等它结束，异常时引用的对象仍然有效。
             auto particles = std::async(std::launch::async, [&] {
                 return War3Map::Render::CopyParticleInput(*input->particleFrame,
                     frozen.particles->TextureCount(), *prepared.particleFrame);
             });
-            const bool poseCopied = War3Map::Render::CopySkinUpdate(*input->particleFrame->modelPose, SkinLayout(frozen), *prepared.pose);
+            const bool poseCopied = CopyPoseInto(renderer, history.get(), *poseInput, SkinLayout(frozen), prepared.pose);
             if (!particles.get() || !poseCopied) return kInvalid;
         } else {
             if (!frozen.skinPose || frozen.particles) return kInvalid;
-            prepared.pose = TakeRetired(renderer.mutex, renderer.retiredPoses);
-            if (!War3Map::Render::CopySkinUpdate(*input->modelPose, SkinLayout(frozen), *prepared.pose)) return kInvalid;
+            if (!CopyPoseInto(renderer, history.get(), *poseInput, SkinLayout(frozen), prepared.pose)) return kInvalid;
         }
         prepared.models = frozen.models; prepared.skinLayout = frozen.skinLayout; prepared.particles = frozen.particles;
         prepared.source = SourceOf(*input);
@@ -2223,7 +2289,12 @@ War3MapEditor_SetRenderAdapterV1(std::uint64_t luid) {
 extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
 War3MapEditor_PrepareEditorUpdateV1(War3RendererHandle handle, const War3RenderEditorVisibilityUpdateV2* input,
     std::uint64_t* ticket) {
-    return PrepareEditorUpdate(handle, input, ticket);
+    return PrepareEditorUpdate(handle, input, nullptr, ticket);
+}
+extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
+War3MapEditor_PrepareEditorUpdateChangesV1(War3RendererHandle handle, const War3RenderEditorVisibilityUpdateV2* input,
+    const War3EditorPoseChangesV1* changes, std::uint64_t* ticket) {
+    return PrepareEditorUpdate(handle, input, changes, ticket);
 }
 extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
 War3MapEditor_SubmitPreparedEditorVisibilityV1(War3RendererHandle handle, const War3RenderEditorVisibilityUpdateV2* input,

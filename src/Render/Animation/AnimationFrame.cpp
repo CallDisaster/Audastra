@@ -33,7 +33,8 @@ void ResetAnimationFrameKeepingCapacity(AnimationFrame& frame) noexcept {
     keep(frame.groups,fresh.groups); keep(frame.alphas,fresh.alphas); keep(frame.colors,fresh.colors);
     keep(frame.layerAlphas,fresh.layerAlphas); keepElements(frame.layerSlices,fresh.layerSlices);
     keep(frame.materialStates,fresh.materialStates); keepElements(frame.materialStateSlices,fresh.materialStateSlices);
-    keepElements(frame.poses,fresh.poses); keep(frame.geosetIssues,fresh.geosetIssues); keep(frame.materialIssues,fresh.materialIssues);
+    keepElements(frame.poses,fresh.poses); keep(frame.changedInstances,fresh.changedInstances);
+    keep(frame.geosetIssues,fresh.geosetIssues); keep(frame.materialIssues,fresh.materialIssues);
     keep(frame.collisionMatrices,fresh.collisionMatrices); keep(frame.pickBounds,fresh.pickBounds);
     keep(frame.particleVertices,fresh.particleVertices); keep(frame.particleDraws,fresh.particleDraws);
     keep(frame.particleMaterialFlags,fresh.particleMaterialFlags); keep(frame.particleLinks,fresh.particleLinks);
@@ -72,7 +73,7 @@ std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept 
     };
     const auto chargeString=[&](const std::string& value) { bytes+=value.capacity()+1; };
     charge(frame.requestVisibility); charge(frame.states); charge(frame.instances); charge(frame.groups);
-    charge(frame.alphas); charge(frame.colors); charge(frame.layerAlphas); charge(frame.layerSlices);
+    charge(frame.alphas); charge(frame.colors); charge(frame.layerAlphas); charge(frame.layerSlices); charge(frame.changedInstances);
     charge(frame.materialStates); charge(frame.materialStateSlices); charge(frame.geosetIssues);
     charge(frame.materialIssues); charge(frame.collisionMatrices); charge(frame.pickBounds);
     charge(frame.particleVertices); charge(frame.particleDraws); charge(frame.particleMaterialFlags);
@@ -566,13 +567,19 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         previous->alphas.size()==alphaCount && previous->colors.size()==alphaCount &&
         previous->dynamicMaterialAlphas==scene.dynamicMaterialAlphas && previous->dynamicMaterialStates==scene.dynamicMaterialStates &&
         previous->layerAlphas.size()==layerAlphaCount && (!scene.dynamicMaterialStates || previous->materialStates.size()==layerAlphaCount);
+    const auto sameRange=[](War3RenderCore::Range32 a,War3RenderCore::Range32 b) { return a.offset==b.offset && a.count==b.count; };
+    const auto sameLayout=[&](const AnimationPoseLink& old,const AnimationPoseLink& link) {
+        return old.identity==link.identity && old.requestIndex==link.requestIndex &&
+            old.firstGroup==link.firstGroup && old.groupCount==link.groupCount &&
+            old.firstAlpha==link.firstAlpha && old.alphaCount==link.alphaCount &&
+            sameRange(old.materialAlphas,link.materialAlphas) && sameRange(old.materialStates,link.materialStates);
+    };
     if (forward) {
         frame->groups.assign(previous->groups.begin(),previous->groups.end());
         frame->alphas.assign(previous->alphas.begin(),previous->alphas.end());
         frame->colors.assign(previous->colors.begin(),previous->colors.end());
         frame->layerAlphas.assign(previous->layerAlphas.begin(),previous->layerAlphas.end());
         if (scene.dynamicMaterialStates) frame->materialStates.assign(previous->materialStates.begin(),previous->materialStates.end());
-        const auto sameRange=[](War3RenderCore::Range32 a,War3RenderCore::Range32 b) { return a.offset==b.offset && a.count==b.count; };
         constexpr std::uint32_t chunk=256;
         const auto count=static_cast<std::uint32_t>(frame->poses.size());
         const auto tasks=(count+chunk-1)/chunk;
@@ -584,15 +591,12 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 const auto last=std::min(count,(task+1)*chunk);
                 for (auto i=task*chunk;i<last;++i) {
                     const auto& link=frame->poses[i]; const auto& old=previous->poses[i];
-                    const bool sameLayout=old.identity==link.identity && old.requestIndex==link.requestIndex &&
-                        old.firstGroup==link.firstGroup && old.groupCount==link.groupCount &&
-                        old.firstAlpha==link.firstAlpha && old.alphaCount==link.alphaCount &&
-                        sameRange(old.materialAlphas,link.materialAlphas) && sameRange(old.materialStates,link.materialStates);
-                    if (link.outsideView && sameLayout && old.outsideView && !old.hidden) continue;
+                    const bool kept=sameLayout(old,link);
+                    if (link.outsideView && kept && old.outsideView && !old.hidden) continue;
                     if (link.outsideView) identityGroups(link); // 视野内实例的矩阵在求值/占位路径整段重写。
                     std::fill_n(frame->alphas.begin()+link.firstAlpha,link.alphaCount,1.0f);
                     std::fill_n(frame->colors.begin()+link.firstAlpha,link.alphaCount,War3RenderMeshColorV2{{1,1,1}});
-                    if (link.outsideView && sameLayout) continue; // 刚出视野：材质保持上一帧值，已在整段复制中。
+                    if (link.outsideView && kept) continue; // 刚出视野：材质保持上一帧值，已在整段复制中。
                     const auto model=frame->instances[i].instance.model;
                     if (scene.dynamicMaterialStates) {
                         if (auto status=FillAnimationMaterialStates(scene,model,link.materialStates,frame->materialStates); !status.Succeeded()) {
@@ -910,6 +914,30 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     if (s.prem) {
         if (auto status = PrepareAnimationPrem(s, *frame, previous, advance); !status.Succeeded())
             return {std::nullopt, std::move(status.diagnostics)};
+    }
+    // 沿用上一帧数组时给出相对上一帧的变化实例：两帧都在视野外、都未隐藏、布局相同且实例记录逐字节相同的实例，
+    // 沿用路径对它没有任何写入（粒子隐藏会置 hidden）；其余一律列出，宁多勿漏。消费者据此只复制/上传这些实例。
+    if (forward) {
+        const auto count=static_cast<std::uint32_t>(frame->poses.size());
+        constexpr std::uint32_t chunk=4096;
+        const auto tasks=(count+chunk-1)/chunk;
+        std::vector<std::vector<std::uint32_t>> parts(tasks);
+        std::atomic<bool> failed{false};
+        const std::function<void(std::uint32_t)> collect=[&](std::uint32_t task) {
+            try {
+                const auto last=std::min(count,(task+1)*chunk);
+                for (auto i=task*chunk;i<last;++i) {
+                    const auto& link=frame->poses[i]; const auto& old=previous->poses[i];
+                    if (link.outsideView && old.outsideView && !link.hidden && !old.hidden && sameLayout(old,link) &&
+                        std::memcmp(&frame->instances[i],&previous->instances[i],sizeof(frame->instances[i]))==0) continue;
+                    parts[task].push_back(i);
+                }
+            } catch (...) { failed.store(true,std::memory_order_relaxed); }
+        };
+        RunAnimationTasksWith(s.limits.poseWorkers,tasks,collect);
+        if (failed.load()) throw std::bad_alloc();
+        for (const auto& part:parts) frame->changedInstances.insert(frame->changedInstances.end(),part.begin(),part.end());
+        frame->changeBaseContentVersion=previous->contentVersion;
     }
     const auto boundsStarted=TimingClock::now();
     auto bounds=PrepareAnimationPickBounds(scene,*frame);

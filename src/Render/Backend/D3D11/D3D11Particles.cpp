@@ -91,7 +91,8 @@ HRESULT D3D11Scene::SetParticleModels(const ModelScene& models, const SkinPose& 
 } catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
 catch (const std::length_error&) { return E_INVALIDARG; }
 
-HRESULT D3D11Scene::SetParticleFrame(const SkinPose& pose, const ParticleFrameData& frame) try {
+HRESULT D3D11Scene::SetParticleFrame(const SkinPose& pose, const ParticleFrameData& frame,
+    const SkinPoseChangeHistory* changes) try {
     if (!particleStatus_.sceneVersion || frame.sceneVersion != particleStatus_.sceneVersion
         || frame.contentVersion <= particleStatus_.contentVersion || pose.sceneVersion != frame.sceneVersion
         || pose.contentVersion != frame.contentVersion) return E_INVALIDARG;
@@ -101,7 +102,7 @@ HRESULT D3D11Scene::SetParticleFrame(const SkinPose& pose, const ParticleFrameDa
 #ifdef WAR3_RENDER_TEST_FAULTS
     if (ConsumeTestFault(1)) return E_FAIL;
 #endif
-    hr = SetSkinPose(pose);
+    hr = SetSkinPose(pose, changes);
     if (FAILED(hr)) return hr;
     PublishParticleFrame(frame, candidate);
     return S_OK;

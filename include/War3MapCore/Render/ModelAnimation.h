@@ -300,6 +300,10 @@ struct AnimationFrame {
     std::vector<War3RenderMaterialStateV2> materialStates;
     std::vector<War3RenderMaterialLayerSliceV2> materialStateSlices;
     std::vector<AnimationPoseLink> poses;
+    // 逐实例固定布局时相对 changeBaseContentVersion 那一帧可能变化的实例（升序）：未列出的实例记录、
+    // 矩阵组、透明度、颜色、材质层透明度/状态及其片段都与那一帧逐字节相同。0 表示没有基准，按整帧处理。
+    std::uint64_t changeBaseContentVersion = 0;
+    std::vector<std::uint32_t> changedInstances;
     std::vector<AnimationGeosetIssue> geosetIssues;
     std::vector<AnimationMaterialIssue> materialIssues;
     std::vector<AnimationCollisionMatrix> collisionMatrices;

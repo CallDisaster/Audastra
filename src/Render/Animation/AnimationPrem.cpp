@@ -47,7 +47,8 @@ std::uint64_t SceneBytes(const AnimatedModelScene& scene) {
 std::uint64_t FrameBytes(const AnimationFrame& frame) {
     return sizeof(frame) + Bytes(frame.states) + Bytes(frame.instances) + Bytes(frame.groups) + Bytes(frame.alphas) +
         Bytes(frame.colors) + Bytes(frame.layerAlphas) + Bytes(frame.layerSlices) + Bytes(frame.materialStates) +
-        Bytes(frame.materialStateSlices) + Bytes(frame.poses) + Bytes(frame.geosetIssues) + Bytes(frame.materialIssues) +
+        Bytes(frame.materialStateSlices) + Bytes(frame.poses) + Bytes(frame.changedInstances) +
+        Bytes(frame.geosetIssues) + Bytes(frame.materialIssues) +
         Bytes(frame.collisionMatrices) + Bytes(frame.pickBounds) + Bytes(frame.diagnostics) + Bytes(frame.requestVisibility);
 }
 std::uint64_t CapabilityBytes(const AnimationPremCapability& item) {

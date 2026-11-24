@@ -655,7 +655,7 @@ void WorldAnimationPlayer::StartNext(std::shared_ptr<const Render::AnimationFram
                     const auto renderStarted=CpuStampNs();
                     std::shared_lock lock(lease->mutex);
                     if (lease->handle && lease->prepare && lease->epoch==prepareMode->second) {
-                        output->prepared.renderTicket=Render::AnimationRenderer::PrepareUpdate(lease->prepare, lease->handle,
+                        output->prepared.renderTicket=Render::AnimationRenderer::PrepareUpdate(lease->prepare, lease->prepareChanges, lease->handle,
                             *scene, **output->result.value, prepareMode->first);
                         output->prepared.renderEpoch=lease->epoch;
                     }

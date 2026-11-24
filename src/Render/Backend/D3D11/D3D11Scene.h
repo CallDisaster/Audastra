@@ -2,6 +2,7 @@
 #include "../../Scene/ModelSceneData.h"
 #include "../../Scene/ModelSceneLayerData.h"
 #include "../../Particles/ParticleInput.h"
+#include "../../SkinPoseChanges.h"
 #include "War3MapCore/RenderPluginEditorVisibility.h"
 #include "War3MapCore/RenderPluginTerrainBlight.h"
 #include "War3MapCore/RenderPluginTerrainGrid.h"
@@ -83,7 +84,8 @@ public:
     // 只取成功SetMesh发布后的GPU所有者事实；捕获view/format由插件同锁封入。
     [[nodiscard]] War3RenderTerrainGridCaptureFactsV2 TerrainGridFacts() const noexcept { return terrainGridFacts_; }
     HRESULT SetModels(const ModelScene& models, const SkinPose* latestPose = nullptr);
-    HRESULT SetSkinPose(const SkinPose& pose);
+    // changes 非空且能从下一槽已上传版本沿记录补到 pose 时，只比较、只写列出实例的片段；否则整份比较。
+    HRESULT SetSkinPose(const SkinPose& pose, const SkinPoseChangeHistory* changes = nullptr);
     // 基础重绑定：调用方已通过共享校验及资产身份CAS确认verifiedStaticLayout。
     // 仅换动态两槽与实例区间；有呈现掩码或活跃粒子时拒绝，须由后续联合事务接线。
     HRESULT RebindSkinRoster(const SkinPose& pose, const ModelScene& verifiedStaticLayout);
@@ -99,7 +101,7 @@ public:
     [[nodiscard]] War3RenderSkinStatusV2 SkinStatus() const noexcept;
     HRESULT SetParticleModels(const ModelScene& models, const SkinPose& pose,
         const ParticleSceneData& particles, const ParticleFrameData& frame);
-    HRESULT SetParticleFrame(const SkinPose& pose, const ParticleFrameData& frame);
+    HRESULT SetParticleFrame(const SkinPose& pose, const ParticleFrameData& frame, const SkinPoseChangeHistory* changes = nullptr);
     void ClearParticles() noexcept;
     [[nodiscard]] War3RenderParticleStatusV2 ParticleStatus() const noexcept;
     void SetModelLayers(const ModelSceneLayers& layers);
@@ -158,9 +160,11 @@ private:
     HRESULT InitializeSkinning();
     HRESULT InitializeMaterialStateSamplers();
     static bool CountModelDrawLayers(const ModelScene& models, std::vector<std::uint32_t>& counts);
-    static bool ValidMaterialPose(const SkinPose& pose, const std::vector<std::uint32_t>& counts, bool material) noexcept;
+    // only 非空时只检查列出实例的片段与数值（其余实例已在本槽上次上传时检查过）。
+    static bool ValidMaterialPose(const SkinPose& pose, const std::vector<std::uint32_t>& counts, bool material,
+        const std::vector<std::uint32_t>* only = nullptr) noexcept;
     static bool ValidMaterialStatePose(const SkinPose& pose, const std::vector<std::uint32_t>& counts,
-        bool enabled, std::size_t textureCount) noexcept;
+        bool enabled, std::size_t textureCount, const std::vector<std::uint32_t>* only = nullptr) noexcept;
     // 仅GPU内部排布；外部72-byte实例合同和旧firstGroup/firstAlpha偏移保持。
     struct SkinGpuInstance {
         War3RenderSkinnedModelInstanceV2 instance;
@@ -179,6 +183,8 @@ private:
         std::vector<War3RenderGroupMatrixV2> groupData;
         std::vector<float> alphaData, layerAlphaData;
         std::vector<War3RenderMeshColorV2> colorData;
+        // 本槽 GPU/副本内容所属的姿势版本；0 = 未知（上传中途失败），下次整份比较。
+        std::uint64_t sceneVersion = 0, contentVersion = 0;
     };
     struct GeometryPage {
         Ptr<ID3D11Buffer> vertices, indices;
@@ -322,6 +328,7 @@ private:
     std::vector<std::pair<std::uint32_t, std::uint32_t>> skinMeshGroups_;
     std::vector<War3RenderMeshColorV2> skinMeshColors_;
     std::vector<std::uint32_t> skinModelLayerCounts_;
+    std::vector<std::uint32_t> skinChanges_; // 本次按变化记录上传的实例，复用容量
     struct SkinMeshConstants {
         std::uint32_t firstGroup, localIndex, dynamicColors, dynamicMaterialAlphas;
         float rgb[3]; std::uint32_t localLayerIndex;

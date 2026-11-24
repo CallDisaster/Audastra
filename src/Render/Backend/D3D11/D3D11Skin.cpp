@@ -55,6 +55,21 @@ void UploadChanged(ID3D11DeviceContext& context, ID3D11Buffer& buffer, std::vect
     }
     changed.Upload(context, buffer, shadow.data());
 }
+// 只比较、提交列出实例的片段；slice(实例) 返回 {首元素, 个数}，各片段须按实例序递增且在副本范围内（调用前已核对）。
+// 未列出实例的副本已与本次姿势相同，结果与整份比较逐字节相同。
+template <class T, class Slice>
+void UploadListed(ID3D11DeviceContext& context, ID3D11Buffer& buffer, std::vector<T>& shadow, const T* values,
+    const std::vector<std::uint32_t>& listed, Slice slice) noexcept {
+    ChangedRanges<T> changed(shadow.size());
+    for (const auto instance : listed) {
+        const auto [first, count] = slice(instance);
+        for (std::size_t index = first; index < std::size_t(first) + count; ++index) {
+            if (std::memcmp(&shadow[index], &values[index], sizeof(T)) == 0) continue;
+            std::memcpy(&shadow[index], &values[index], sizeof(T)); changed.Mark(index);
+        }
+    }
+    changed.Upload(context, buffer, shadow.data());
+}
 }
 HRESULT D3D11Scene::InitializeMaterialStateSamplers() {
     if (materialStateSamplers_[0]) return S_OK;
@@ -84,33 +99,50 @@ bool D3D11Scene::CountModelDrawLayers(const ModelScene& models, std::vector<std:
     }
     return models.dynamicMaterialAlphas ? models.modelLayerCounts == counts : models.modelLayerCounts.empty();
 }
-bool D3D11Scene::ValidMaterialPose(const SkinPose& pose, const std::vector<std::uint32_t>& counts, bool material) noexcept {
+bool D3D11Scene::ValidMaterialPose(const SkinPose& pose, const std::vector<std::uint32_t>& counts, bool material,
+    const std::vector<std::uint32_t>* only) noexcept {
     if (pose.dynamicMaterialAlphas != material) return false;
     if (!material) return pose.layerAlphas.empty() && pose.layerSlices.empty();
     if (pose.layerSlices.size() != pose.instances.size()) return false;
-    for (std::size_t index = 0; index < pose.instances.size(); ++index) {
+    const auto valid = [&](std::size_t index) {
         const auto model = pose.instances[index].instance.model;
         const auto& slice = pose.layerSlices[index];
         if (model >= counts.size() || slice.count != counts[model] || slice.first > pose.layerAlphas.size()
             || slice.count > pose.layerAlphas.size() - slice.first) return false;
+        if (only) for (std::uint32_t k = 0; k < slice.count; ++k) if (!std::isfinite(pose.layerAlphas[slice.first + k])) return false;
+        return true;
+    };
+    if (only) {
+        for (const auto index : *only) if (index >= pose.instances.size() || !valid(index)) return false;
+        return true;
     }
+    for (std::size_t index = 0; index < pose.instances.size(); ++index) if (!valid(index)) return false;
     for (const auto alpha : pose.layerAlphas) if (!std::isfinite(alpha)) return false;
     return true;
 }
 bool D3D11Scene::ValidMaterialStatePose(const SkinPose& pose, const std::vector<std::uint32_t>& counts,
-    bool enabled, std::size_t textureCount) noexcept {
+    bool enabled, std::size_t textureCount, const std::vector<std::uint32_t>* only) noexcept {
     if (pose.dynamicMaterialStates != enabled) return false;
     if (!enabled) return pose.materialStates.empty() && pose.materialStateSlices.empty();
     if (!pose.dynamicMaterialAlphas || pose.materialStateSlices.size() != pose.instances.size()) return false;
-    for (std::size_t index = 0; index < pose.instances.size(); ++index) {
+    const auto validState = [&](const War3RenderMaterialStateV2& value) {
+        if ((value.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE && value.textureIndex >= textureCount) || (value.samplerFlags & ~3u)) return false;
+        for (const auto uv : value.uvTransform) if (!std::isfinite(uv)) return false;
+        return true;
+    };
+    const auto valid = [&](std::size_t index) {
         const auto model = pose.instances[index].instance.model; const auto& slice = pose.materialStateSlices[index];
         if (model >= counts.size() || slice.count != counts[model] || slice.first > pose.materialStates.size()
             || slice.count > pose.materialStates.size() - slice.first) return false;
+        if (only) for (std::uint32_t k = 0; k < slice.count; ++k) if (!validState(pose.materialStates[slice.first + k])) return false;
+        return true;
+    };
+    if (only) {
+        for (const auto index : *only) if (index >= pose.instances.size() || !valid(index)) return false;
+        return true;
     }
-    for (const auto& value : pose.materialStates) {
-        if ((value.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE && value.textureIndex >= textureCount) || (value.samplerFlags & ~3u)) return false;
-        for (const auto uv : value.uvTransform) if (!std::isfinite(uv)) return false;
-    }
+    for (std::size_t index = 0; index < pose.instances.size(); ++index) if (!valid(index)) return false;
+    for (const auto& value : pose.materialStates) if (!validState(value)) return false;
     return true;
 }
 HRESULT D3D11Scene::InitializeSkinning() {
@@ -142,6 +174,7 @@ HRESULT D3D11Scene::InitializeSkinning() {
     return S_OK;
 }
 HRESULT D3D11Scene::CreateSkinBuffers(const SkinPose& pose, SkinGpuBuffers& buffers) {
+    buffers.sceneVersion = pose.sceneVersion; buffers.contentVersion = pose.contentVersion;
     if (pose.instances.empty()) return S_OK;
     const auto fits = [](std::size_t count, std::size_t stride) { return count <= (std::numeric_limits<UINT>::max)() / stride; };
     if (!fits(pose.instances.size(), sizeof(SkinGpuInstance)) || !fits(pose.groups.size(), sizeof(War3RenderGroupMatrixV2))
@@ -376,44 +409,99 @@ void D3D11Scene::PublishInstanceRoster(PreparedInstanceRoster& candidate) noexce
     if (candidate.particles) PublishParticleFrame(*candidate.particles, candidate.particleFrame);
     editorVisibility_.swap(candidate.visibility);
 }
-HRESULT D3D11Scene::SetSkinPose(const SkinPose& pose) {
+HRESULT D3D11Scene::SetSkinPose(const SkinPose& pose, const SkinPoseChangeHistory* changes) try {
     if (!skinned_ || pose.sceneVersion != skinSceneVersion_ || pose.contentVersion <= skinContentVersion_
         || pose.instances.size() != modelInstanceCount_ || pose.groups.size() != skinGroupCount_
         || pose.alphas.size() != skinAlphaCount_ || (skinDynamicColors_ ? pose.colors.size() != skinAlphaCount_ : !pose.colors.empty())
         || pose.layerAlphas.size() != skinLayerAlphaCount_
-        || pose.materialStates.size() != skinMaterialStateCount_
-        || !ValidMaterialPose(pose, skinModelLayerCounts_, skinDynamicMaterialAlphas_)
-        || !ValidMaterialStatePose(pose, skinModelLayerCounts_, skinDynamicMaterialStates_, modelTextures_.size())) return E_INVALIDARG;
+        || pose.materialStates.size() != skinMaterialStateCount_) return E_INVALIDARG;
     const auto next = 1u - activeSkinBuffer_;
     auto& buffer = skinBuffers_[next];
+    // 下一槽的内容版本已知、且能沿变化记录补到本版本时，只比较/提交列出实例（逐实例固定布局，片段按实例序连续）。
+    // 其余实例的副本已与本次姿势相同，且在写入本槽时校验过。
+    bool partial = changes && pose.matrixFormat == WAR3_RENDER_GROUP_LOCAL_COLUMN_3X4 && buffer.contentVersion
+        && buffer.sceneVersion == pose.sceneVersion
+        && CollectSkinPoseChanges(changes, pose.sceneVersion, buffer.contentVersion, pose.contentVersion, &skinChanges_);
+    using Slice = std::pair<std::uint32_t, std::uint32_t>;
+    const auto groupSlice = [&](std::uint32_t index) {
+        const auto first = pose.instances[index].firstGroup;
+        const auto end = index + 1 < pose.instances.size() ? pose.instances[index + 1].firstGroup : static_cast<std::uint32_t>(pose.groups.size());
+        return Slice{first, end - first};
+    };
+    const auto alphaSlice = [&](std::uint32_t index) {
+        const auto first = pose.instances[index].firstAlpha;
+        const auto end = index + 1 < pose.instances.size() ? pose.instances[index + 1].firstAlpha : static_cast<std::uint32_t>(pose.alphas.size());
+        return Slice{first, end - first};
+    };
+    const auto layerSlice = [&](std::uint32_t index) { return Slice{pose.layerSlices[index].first, pose.layerSlices[index].count}; };
+    const auto stateSlice = [&](std::uint32_t index) { return Slice{pose.materialStateSlices[index].first, pose.materialStateSlices[index].count}; };
+    if (partial) {
+        // 片段须在范围内且按实例序不回退；不满足时不冒险，整份比较。
+        std::uint64_t groupEnd = 0, alphaEnd = 0, layerEnd = 0, stateEnd = 0;
+        const auto ordered = [](Slice slice, std::uint64_t& end, std::size_t size) {
+            if (slice.first < end || slice.first > size || slice.second > size - slice.first) return false;
+            end = std::uint64_t(slice.first) + slice.second;
+            return true;
+        };
+        const auto nextFirst = [&](std::uint32_t index, std::uint32_t own, std::uint32_t following, std::size_t size) {
+            return own <= (index + 1 < pose.instances.size() ? std::size_t(following) : size);
+        };
+        for (const auto index : skinChanges_) {
+            if (index >= pose.instances.size()) { partial = false; break; }
+            const auto following = index + 1 < pose.instances.size() ? index + 1 : index;
+            if (!nextFirst(index, pose.instances[index].firstGroup, pose.instances[following].firstGroup, pose.groups.size())
+                || !nextFirst(index, pose.instances[index].firstAlpha, pose.instances[following].firstAlpha, pose.alphas.size())
+                || !ordered(groupSlice(index), groupEnd, pose.groups.size()) || !ordered(alphaSlice(index), alphaEnd, pose.alphas.size())
+                || (skinDynamicMaterialAlphas_ && !ordered(layerSlice(index), layerEnd, pose.layerAlphas.size()))
+                || (skinDynamicMaterialStates_ && !ordered(stateSlice(index), stateEnd, pose.materialStates.size()))) { partial = false; break; }
+        }
+    }
+    const auto* only = partial ? &skinChanges_ : nullptr;
+    if (!ValidMaterialPose(pose, skinModelLayerCounts_, skinDynamicMaterialAlphas_, only)
+        || !ValidMaterialStatePose(pose, skinModelLayerCounts_, skinDynamicMaterialStates_, modelTextures_.size(), only)) return E_INVALIDARG;
     if (!pose.instances.empty()) {
         if (!buffer.instances || !buffer.groups || !buffer.alphas || (skinDynamicColors_ && !buffer.colors)
             || buffer.instanceData.size() != pose.instances.size() || buffer.groupData.size() != pose.groups.size()
             || buffer.alphaData.size() != pose.alphas.size() || (skinDynamicColors_ && buffer.colorData.size() != pose.colors.size())
             || (skinLayerAlphaCount_ && (!buffer.layerAlphas || !buffer.layerAlphaView || buffer.layerAlphaData.size() != pose.layerAlphas.size()))
             || (skinMaterialStateCount_ && (!buffer.materialStates || !buffer.materialStateView || buffer.materialStateData.size() != pose.materialStates.size()))) return E_FAIL;
+        // 写入前先作废本槽版本：中途失败时下次整份比较（副本与已提交的 GPU 内容仍逐字节一致）。
+        buffer.contentVersion = 0;
         // DEFAULT资源由D3D11跟踪正在使用的旧内容；不重新建静态资源，也不借用宿主指针跨调用。
         // 每个数组先更新本槽副本再立即提交对应区段，中途失败时副本仍与已排队的 GPU 内容一致。
         ChangedRanges<SkinGpuInstance> instances(pose.instances.size());
-        for (std::size_t index = 0; index < pose.instances.size(); ++index) {
+        const auto markInstance = [&](std::size_t index) {
             const SkinGpuInstance value{pose.instances[index], skinDynamicMaterialAlphas_ ? pose.layerSlices[index].first : 0,
                 skinDynamicMaterialStates_ ? pose.materialStateSlices[index].first : 0};
-            if (std::memcmp(&buffer.instanceData[index], &value, sizeof(value)) == 0) continue;
+            if (std::memcmp(&buffer.instanceData[index], &value, sizeof(value)) == 0) return;
             std::memcpy(&buffer.instanceData[index], &value, sizeof(value)); instances.Mark(index);
-        }
+        };
+        if (partial) for (const auto index : skinChanges_) markInstance(index);
+        else for (std::size_t index = 0; index < pose.instances.size(); ++index) markInstance(index);
         instances.Upload(*context_.Get(), *buffer.instances.Get(), buffer.instanceData.data());
-        UploadChanged(*context_.Get(), *buffer.groups.Get(), buffer.groupData, pose.groups.data());
-        UploadChanged(*context_.Get(), *buffer.alphas.Get(), buffer.alphaData, pose.alphas.data());
-        if (skinDynamicColors_) UploadChanged(*context_.Get(), *buffer.colors.Get(), buffer.colorData, pose.colors.data());
+        if (partial) {
+            UploadListed(*context_.Get(), *buffer.groups.Get(), buffer.groupData, pose.groups.data(), skinChanges_, groupSlice);
+            UploadListed(*context_.Get(), *buffer.alphas.Get(), buffer.alphaData, pose.alphas.data(), skinChanges_, alphaSlice);
+            if (skinDynamicColors_) UploadListed(*context_.Get(), *buffer.colors.Get(), buffer.colorData, pose.colors.data(), skinChanges_, alphaSlice);
+        } else {
+            UploadChanged(*context_.Get(), *buffer.groups.Get(), buffer.groupData, pose.groups.data());
+            UploadChanged(*context_.Get(), *buffer.alphas.Get(), buffer.alphaData, pose.alphas.data());
+            if (skinDynamicColors_) UploadChanged(*context_.Get(), *buffer.colors.Get(), buffer.colorData, pose.colors.data());
+        }
         if (skinDynamicMaterialAlphas_) {
-            if (skinLayerAlphaCount_) UploadChanged(*context_.Get(), *buffer.layerAlphas.Get(), buffer.layerAlphaData, pose.layerAlphas.data());
+            if (skinLayerAlphaCount_) {
+                if (partial) UploadListed(*context_.Get(), *buffer.layerAlphas.Get(), buffer.layerAlphaData, pose.layerAlphas.data(), skinChanges_, layerSlice);
+                else UploadChanged(*context_.Get(), *buffer.layerAlphas.Get(), buffer.layerAlphaData, pose.layerAlphas.data());
+            }
 #ifdef WAR3_RENDER_TEST_FAULTS
             if (ConsumeTestFault(7)) return E_FAIL;
 #endif
         }
         if (skinDynamicMaterialStates_) {
-            if (skinMaterialStateCount_)
-                UploadChanged(*context_.Get(), *buffer.materialStates.Get(), buffer.materialStateData, pose.materialStates.data());
+            if (skinMaterialStateCount_) {
+                if (partial) UploadListed(*context_.Get(), *buffer.materialStates.Get(), buffer.materialStateData, pose.materialStates.data(), skinChanges_, stateSlice);
+                else UploadChanged(*context_.Get(), *buffer.materialStates.Get(), buffer.materialStateData, pose.materialStates.data());
+            }
 #ifdef WAR3_RENDER_TEST_FAULTS
             if (ConsumeTestFault(8)) return E_FAIL;
 #endif
@@ -425,9 +513,10 @@ HRESULT D3D11Scene::SetSkinPose(const SkinPose& pose) {
     if (ConsumeTestFault(2)) return E_FAIL;
 #endif
     activeSkinBuffer_ = next; skinContentVersion_ = pose.contentVersion;
+    buffer.sceneVersion = pose.sceneVersion; buffer.contentVersion = pose.contentVersion;
     if (!pose.instances.empty()) ++matrixUploadCount_;
     return S_OK;
-}
+} catch (const std::bad_alloc&) { return E_OUTOFMEMORY; }
 War3RenderSkinStatusV2 D3D11Scene::SkinStatus() const noexcept {
     War3RenderSkinStatusV2 status{};
     status.structSize = sizeof(status); status.active = skinned_ ? 1u : 0u;

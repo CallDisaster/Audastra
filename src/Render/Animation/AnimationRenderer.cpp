@@ -421,14 +421,20 @@ std::optional<AnimationPreparedMode> AnimationRenderer::PreparedMode() const {
     if (!handle_ || !scene_ || !frame_ || pendingRosterTicket_ || !presentationTarget_) return std::nullopt;
     return AnimationPreparedMode{particleMode_, particleMode_ && AnimationParticleMaterialSupported(api_,handle_)};
 }
-std::uint64_t AnimationRenderer::PrepareUpdate(War3PrepareEditorUpdateV1 prepare, War3RendererHandle handle,
+std::uint64_t AnimationRenderer::PrepareUpdate(War3PrepareEditorUpdateV1 prepare,
+    War3PrepareEditorUpdateChangesV1 prepareChanges, War3RendererHandle handle,
     const AnimatedModelScene& scene, const AnimationFrame& frame, AnimationPreparedMode mode) noexcept {
-    if (!prepare || !handle || (scene.dynamicColors && frame.colors.size()!=frame.alphas.size())) return 0;
+    if ((!prepare && !prepareChanges) || !handle || (scene.dynamicColors && frame.colors.size()!=frame.alphas.size())) return 0;
     const UpdateDescriptors descriptors(scene,frame,mode.particleMaterial);
     War3RenderEditorVisibilityUpdateV2 input{}; input.structSize=sizeof(input);
     if (mode.particleMode) input.particleFrame=descriptors.particles.Get();
     else input.modelPose=descriptors.pose;
     std::uint64_t ticket=0;
+    if (prepareChanges) {
+        const War3EditorPoseChangesV1 changes{sizeof(War3EditorPoseChangesV1),static_cast<std::uint32_t>(frame.changedInstances.size()),
+            frame.changeBaseContentVersion,frame.changedInstances.data()};
+        return prepareChanges(handle,&input,frame.changeBaseContentVersion ? &changes : nullptr,&ticket)==0 ? ticket : 0;
+    }
     return prepare(handle,&input,&ticket)==0 ? ticket : 0;
 }
 Status AnimationRenderer::Update(std::shared_ptr<const AnimationFrame> frame, const EditorVisibilityMasks* visibility,

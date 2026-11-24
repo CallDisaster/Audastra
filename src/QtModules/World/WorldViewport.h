@@ -102,6 +102,7 @@ public:
         std::shared_mutex mutex;
         War3RendererHandle handle = nullptr;
         Render::War3PrepareEditorUpdateV1 prepare = nullptr;
+        Render::War3PrepareEditorUpdateChangesV1 prepareChanges = nullptr; // 可空：旧插件没有带清单的预备
         std::uint64_t epoch = 0;
     };
     [[nodiscard]] std::shared_ptr<RenderPrepareLease> AnimationPrepareLease() const noexcept { return prepareLease_; }

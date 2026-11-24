@@ -308,6 +308,39 @@ void ResidentFrames() {
         if (const auto text=difference(expected,actual); !text.empty())
             throw std::runtime_error(std::string(run)+" frame "+std::to_string(f)+" differs from a single-threaded full rebuild: "+text);
     };
+    // 变化清单：沿用时以传入的上一帧为基，升序；未列出的实例在两帧里全部姿势数据逐字节相同。
+    std::size_t listedTotal=0,unlistedTotal=0;
+    const auto checkChanges=[&](const char* run,std::size_t f,const AnimationFrame* before,const AnimationFrame& after,bool reuse) {
+        const auto fail=[&](const std::string& text) {
+            throw std::runtime_error(std::string(run)+" frame "+std::to_string(f)+" change list: "+text);
+        };
+        if (!reuse || !before) {
+            if (after.changeBaseContentVersion || !after.changedInstances.empty()) fail("unexpected base without reuse");
+            return;
+        }
+        if (after.changeBaseContentVersion!=before->contentVersion) fail("base is not the previous frame");
+        const auto& changed=after.changedInstances;
+        for (std::size_t k=0;k<changed.size();++k)
+            if (changed[k]>=after.poses.size() || (k && changed[k]<=changed[k-1])) fail("not strictly increasing");
+        const auto same=[](const auto& x,const auto& y,std::size_t first,std::size_t n) {
+            return x.size()==y.size() && first<=x.size() && n<=x.size()-first &&
+                (!n || std::memcmp(x.data()+first,y.data()+first,n*sizeof(x[0]))==0);
+        };
+        std::size_t next=0;
+        for (std::uint32_t i=0;i<after.poses.size();++i) {
+            if (next<changed.size() && changed[next]==i) { ++next; ++listedTotal; continue; }
+            ++unlistedTotal;
+            const auto& link=after.poses[i];
+            if (!same(after.instances,before->instances,i,1) || !same(after.groups,before->groups,link.firstGroup,link.groupCount) ||
+                !same(after.alphas,before->alphas,link.firstAlpha,link.alphaCount) ||
+                !same(after.colors,before->colors,link.firstAlpha,link.alphaCount) ||
+                (after.dynamicMaterialAlphas && (!same(after.layerSlices,before->layerSlices,i,1) ||
+                    !same(after.layerAlphas,before->layerAlphas,link.materialAlphas.offset,link.materialAlphas.count))) ||
+                (after.dynamicMaterialStates && (!same(after.materialStateSlices,before->materialStateSlices,i,1) ||
+                    !same(after.materialStates,before->materialStates,link.materialStates.offset,link.materialStates.count))))
+                fail("unlisted instance "+std::to_string(i)+" differs from the base frame");
+        }
+    };
     std::vector<std::shared_ptr<const AnimationFrame>> rebuilt;
     {
         auto service=create(false,1);
@@ -328,6 +361,7 @@ void ResidentFrames() {
         for (std::size_t f=0;f<path.size();++f) {
             frames.push_back(Good(service->Prepare(f ? frames.back().get() : nullptr,command(f))));
             check(run,f,*rebuilt[f],*frames[f]);
+            checkChanges(run,f,f ? frames[f-1].get() : nullptr,*frames[f],reuse);
         }
     };
     keepAll("parallel rebuild",false,4);
@@ -338,11 +372,16 @@ void ResidentFrames() {
         auto service=create(true,4);
         std::shared_ptr<const AnimationFrame> frame;
         for (std::size_t f=0;f<path.size();++f) {
-            frame=Good(service->Prepare(frame.get(),command(f)));
+            const auto before=frame;
+            frame=Good(service->Prepare(before.get(),command(f)));
             check("recycled reuse",f,*rebuilt[f],*frame);
+            checkChanges("recycled reuse",f,before.get(),*frame,true);
         }
     }
-    std::cout<<"resident_frames="<<path.size()<<" instances="<<count<<" view_transitions="<<transitions<<" identical=1\n";
+    // 静止镜头的帧里多数实例不在清单上；全部列出就失去意义。
+    Require(unlistedTotal>listedTotal,"change lists listed almost every instance");
+    std::cout<<"resident_frames="<<path.size()<<" instances="<<count<<" view_transitions="<<transitions<<" identical=1"
+        <<" change_listed="<<listedTotal<<" change_unlisted="<<unlistedTotal<<"\n";
 }
 void VariantActions() {
     std::vector<MdxSequence> names(5);

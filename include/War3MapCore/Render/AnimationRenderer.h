@@ -51,7 +51,9 @@ public:
     // 最近一次 Update 是否直接用上了后台预备的副本（测量用）。
     [[nodiscard]] bool LastUpdateUsedPrepared() const noexcept { return lastUpdateUsedPrepared_; }
     // 任意线程：按与 Update 相同的描述预备一帧，返回票据；0 表示未预备。调用方保证 handle 在调用期间有效。
-    [[nodiscard]] static std::uint64_t PrepareUpdate(War3PrepareEditorUpdateV1 prepare, War3RendererHandle handle,
+    // prepareChanges 可用时附上帧的变化清单（帧没有基准时不附），插件据此只复制、只上传变化实例。
+    [[nodiscard]] static std::uint64_t PrepareUpdate(War3PrepareEditorUpdateV1 prepare,
+        War3PrepareEditorUpdateChangesV1 prepareChanges, War3RendererHandle handle,
         const AnimatedModelScene& scene, const AnimationFrame& frame, AnimationPreparedMode mode) noexcept;
     [[nodiscard]] Status Present(const EditorVisibilityMasks& visibility); // 同姿势显隐，不重新上传
     [[nodiscard]] Result<War3RenderSkinStatusV2> StatusNow() const;

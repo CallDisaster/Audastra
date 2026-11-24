@@ -22,4 +22,18 @@ using War3SubmitPreparedEditorVisibilityV1 = std::int32_t (WAR3_RENDER_CALL*)(Wa
 inline constexpr char kPrepareEditorUpdateExportV1[] = "War3MapEditor_PrepareEditorUpdateV1";
 inline constexpr char kSubmitPreparedEditorVisibilityExportV1[] = "War3MapEditor_SubmitPreparedEditorVisibilityV1";
 
+// 本帧姿势相对较早一帧（baseContentVersion，同一 sceneVersion）可能变化的实例，严格升序。
+// 调用方保证：未列出的实例在两帧里实例记录、矩阵组、透明度、颜色、材质层透明度/状态及其片段逐字节相同。
+// 只对逐实例固定布局（WAR3_RENDER_GROUP_LOCAL_COLUMN_3X4）有意义。
+struct War3EditorPoseChangesV1 {
+    std::uint32_t structSize, instanceCount;
+    std::uint64_t baseContentVersion;
+    const std::uint32_t* instances;
+};
+// 与 War3PrepareEditorUpdateV1 相同，另带可为空的变化清单。插件据此只复制、只上传变化实例；
+// 找不到对应的旧副本或清单不适用时照常整份复制，结果与不带清单相同。
+using War3PrepareEditorUpdateChangesV1 = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHandle handle,
+    const War3RenderEditorVisibilityUpdateV2* input, const War3EditorPoseChangesV1* changes, std::uint64_t* ticket);
+inline constexpr char kPrepareEditorUpdateChangesExportV1[] = "War3MapEditor_PrepareEditorUpdateChangesV1";
+
 } // namespace War3Map::Render
