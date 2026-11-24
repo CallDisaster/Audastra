@@ -460,6 +460,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         frame->materialStates=s.standFrame->materialStates;
         frame->collisionMatrices=s.standFrame->collisionMatrices; frame->geosetIssues=s.standFrame->geosetIssues;
     }
+    frame->timings.poseSlotsNs=ElapsedNs(poseStarted);
     std::uint32_t groupCount=s.sharedPoseRanges ? s.sharedGroupCount : 0,alphaCount=s.sharedPoseRanges ? s.sharedAlphaCount : 0;
     std::uint32_t layerAlphaCount=s.sharedPoseRanges ? s.sharedLayerAlphaCount : 0;
     // 逐实例打包。共享 Stand 片段时各实例只写自己的槽位：按固定分段并行，计数分段累加，结果与线程数无关；
@@ -514,6 +515,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (scene.dynamicMaterialAlphas) frame->layerSlices[i]={link.materialAlphas.offset,link.materialAlphas.count};
         return {};
     };
+    const auto packStarted=TimingClock::now();
     if (s.sharedPoseRanges) {
         constexpr std::uint32_t chunk=1024;
         const auto count=static_cast<std::uint32_t>(g.instances.size());
@@ -537,6 +539,8 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             if (auto status=packOne(i,counts); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
         frame->offscreenPoseInstances+=counts.offscreen; frame->timings.eligiblePoseInstances+=counts.eligible;
     }
+    frame->timings.posePackNs=ElapsedNs(packStarted);
+    const auto materialStarted=TimingClock::now();
     frame->groups.resize(groupCount); frame->alphas.resize(alphaCount,1.0f); frame->colors.resize(alphaCount,War3RenderMeshColorV2{{1,1,1}});
     frame->layerAlphas.resize(layerAlphaCount);
     if (scene.dynamicMaterialStates) {
@@ -567,6 +571,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         }
     }
     if (s.sharedPoseRanges) frame->collisionMatrices.resize(static_cast<std::size_t>(s.maxCollisionMatrices));
+    frame->timings.poseMaterialNs=ElapsedNs(materialStarted);
     const auto identityGroups=[&](const AnimationPoseLink& link) {
         for (std::uint32_t k=0;k<link.groupCount;++k)
             frame->groups[link.firstGroup+k]={{1,0,0,0,1,0,0,0,1,0,0,0}};
@@ -596,6 +601,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         const auto evaluationStarted=TimingClock::now();
         RunAnimationTasks((active+width-1)/width,evaluateBatch);
         frame->timings.poseEvaluationNs+=ElapsedNs(evaluationStarted);
+        const auto mergeStarted=TimingClock::now();
         for (std::uint32_t k=0;k<active;++k) {
             const auto batch=k/width, local=k%width; const auto& evaluator=evaluatorFor(batch);
             if (local==0 && outcomes[batch].error!=Code::Ok)
@@ -706,8 +712,10 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             }
             appendDiagnostics(evaluator.Diagnostics(local));
         }
+        frame->timings.poseMergeNs+=ElapsedNs(mergeStarted);
         active=0; return {};
     };
+    const auto scanStarted=TimingClock::now();
     for (std::uint32_t i=0;i<g.instances.size();++i) {
         auto& link=frame->poses[i]; const auto m=g.instances[i].model, assetIndex=s.modelAssets[m];
         const auto* asset=assetIndex==UINT32_MAX ? nullptr : &s.assets[assetIndex];
@@ -746,6 +754,8 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (active==s.requests.size()) if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
     }
     if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
+    frame->timings.poseScanNs=ElapsedNs(scanStarted)-frame->timings.poseEvaluationNs-frame->timings.poseMergeNs;
+    const auto checkStarted=TimingClock::now();
     {
         // 按固定分段并行检查；只读，结果与线程数无关。
         constexpr std::size_t chunk=8192;
@@ -759,6 +769,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         RunAnimationTasksWith(s.limits.poseWorkers,static_cast<std::uint32_t>((matrices+chunk-1)/chunk),check);
         if (invalid.load()) return fail("ANIMATION_GROUP_INVALID","组矩阵不满足插件有限值预算。");
     }
+    frame->timings.poseCheckNs=ElapsedNs(checkStarted);
     frame->timings.posePackingNs=ElapsedNs(poseStarted)-frame->timings.poseEvaluationNs;
     frame->contentVersion=NextAnimationSerial();
     if (s.particles) {

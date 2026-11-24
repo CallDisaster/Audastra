@@ -90,6 +90,9 @@ QString ClassificationName(FrameScreenshotClassification classification) {
 QJsonObject TimingJson(const AnimationFrameTimings& t) {
     return {{"prepare_ns", Number(t.prepareNs)}, {"state_advance_ns", Number(t.stateAdvanceNs)},
         {"pose_evaluation_ns", Number(t.poseEvaluationNs)}, {"pose_packing_ns", Number(t.posePackingNs)},
+        {"pose_slots_ns", Number(t.poseSlotsNs)}, {"pose_pack_ns", Number(t.posePackNs)},
+        {"pose_material_ns", Number(t.poseMaterialNs)}, {"pose_merge_ns", Number(t.poseMergeNs)},
+        {"pose_scan_ns", Number(t.poseScanNs)}, {"pose_check_ns", Number(t.poseCheckNs)},
         {"visibility_ns", Number(t.visibilityNs)}, {"visibility_nodes_visited", Number(t.visibilityNodesVisited)},
         {"visibility_bounds_tests", Number(t.visibilityBoundsTests)},
         {"particles_total_ns", Number(t.particlesTotalNs)}, {"particle_simulation_ns", Number(t.particleSimulationNs)},

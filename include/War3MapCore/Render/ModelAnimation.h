@@ -267,6 +267,9 @@ struct AnimationParticleCheckpoint; // 服务拥有的不可变模拟状态，�
 // ns 使用 steady_clock；phase 可独立汇总，particlesTotal 包含其 simulation/geometry 子项。
 struct AnimationFrameTimings {
     std::uint64_t prepareNs = 0, stateAdvanceNs = 0, poseEvaluationNs = 0, posePackingNs = 0;
+    // posePackingNs 的组成：活动槽挑选与 Stand 复制、逐实例打包、材质/碰撞填充、求值结果并入帧、
+    // 逐实例扫描排队（不含求值与并入）、组矩阵检查。仅供定位耗时，不参与结果。
+    std::uint64_t poseSlotsNs = 0, posePackNs = 0, poseMaterialNs = 0, poseMergeNs = 0, poseScanNs = 0, poseCheckNs = 0;
     std::uint64_t particlesTotalNs = 0, particleSimulationNs = 0, particleGeometryNs = 0;
     std::uint64_t pickBoundsNs = 0, fingerprintNs = 0;
     std::uint64_t visibilityNs = 0, visibilityNodesVisited = 0, visibilityBoundsTests = 0;
