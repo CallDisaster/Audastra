@@ -230,6 +230,8 @@ NameResolution ResolveObjectName(const NameResolutionContext& context, const Obj
         const auto* record = FindObject(context, {key.type, current}, invalid, ambiguous);
         if (invalid || ambiguous) return Failure(key.rawcode, ambiguous ? NameResolutionState::Ambiguous : NameResolutionState::Invalid,
             ambiguous ? "当前物体定义有重复来源" : "当前物体定义不可安全解析");
+        // 经父链到达的原版对象地图修改不继承名称/图标（见 IsStandardObjectOverride）。
+        if (record && depth > 0 && ObjectData::IsStandardObjectOverride(*record)) record = nullptr;
         if (record) {
             if (name.empty()) name = Field(*record, names).value_or(std::string{});
             if (!icon) icon = Field(*record, icons);

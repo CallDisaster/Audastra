@@ -706,10 +706,10 @@ void ObjectFieldModelTests::CustomParentChainMergesNearestValuesAndSources() {
     const auto original = Serialize(*document);
     const auto chain = ResolveObjectInheritance(*document, child, &fixture.catalog);
     QVERIFY(chain.IsComplete());
-    QCOMPARE(chain.records.size(), std::size_t{3});
+    // 原版 hfoo 在本图的修改不进入自定义对象的父链：游戏以原版未修改数据为底。
+    QCOMPARE(chain.records.size(), std::size_t{2});
     QCOMPARE(chain.records[0]->key.rawcode, std::string("H002"));
     QCOMPARE(chain.records[1]->key.rawcode, std::string("H001"));
-    QCOMPARE(chain.records[2]->key.rawcode, std::string("hfoo"));
     QVERIFY(chain.standardBase);
     QCOMPARE(chain.standardBase->key.rawcode, std::string("hfoo"));
     ObjectFieldModel model;
@@ -730,6 +730,15 @@ void ObjectFieldModelTests::CustomParentChainMergesNearestValuesAndSources() {
     QVERIFY(!model.index(FindRow(model, "ZZZZ"), 3).flags().testFlag(Qt::ItemIsEditable));
     QCOMPARE(Serialize(*document), original);
     QCOMPARE(fixture.catalog.Find(ObjectType::Unit, "hfoo")->Field("HP"), std::string_view("420"));
+    // 原版 hfoo 被本图改成 500 血；基于它、自己没改血量的自定义对象在游戏里仍是原版 420。
+    auto overridden = Parse(ObjectType::Unit, "[hfoo]\n_parent=\"hfoo\"\nuhpm=500\n[u003]\n_parent=\"hfoo\"\nunam=\"Plain\"\n");
+    QVERIFY(overridden);
+    const auto plain = ResolveObjectInheritance(*overridden, {ObjectType::Unit, "u003"}, &fixture.catalog);
+    QVERIFY(plain.IsComplete());
+    QCOMPARE(plain.records.size(), std::size_t{1});
+    QCOMPARE(ObjectFieldValue(plain, {"uhpm", "HP"}), std::optional<std::string>("420"));
+    const auto root = ResolveObjectInheritance(*overridden, {ObjectType::Unit, "hfoo"}, &fixture.catalog);
+    QCOMPARE(ObjectFieldValue(root, {"uhpm", "HP"}), std::optional<std::string>("500"));
 }
 
 void ObjectFieldModelTests::CustomParentResetAndEditsOnlyChangeSelectedObject() {

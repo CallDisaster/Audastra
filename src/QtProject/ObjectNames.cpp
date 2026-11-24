@@ -168,7 +168,8 @@ ObjectInheritanceChain ResolveInheritanceImpl(const Document& document,
             result.reason = QObject::tr("继承链循环：%1").arg(QString::fromStdString(parent));
             return result;
         }
-        if (const auto* next = document.FindObject({object.type, parent})) {
+        // 父对象若是原版对象的地图修改则跳过，直接落到原版目录（见 IsStandardObjectOverride）。
+        if (const auto* next = document.FindObject({object.type, parent}); next && !IsStandardObjectOverride(*next)) {
             current = next;
             continue;
         }

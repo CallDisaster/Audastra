@@ -40,7 +40,8 @@ Resources::ResolvedResource Tga(std::string_view path, unsigned width, unsigned 
 }
 void ActualFieldsAndWorkerCacheShareTheSameHelper() {
     QtProject::EditorProject project;
-    const std::string lni = "[BASE]\nbcat = \"P\"\nbuch = 1\nbfil = \"\"\nbptx = \"PathingTextures\\\\Fixture.tga\"\n"
+    // BASE 是自定义父对象；没有 _parent 的记录是原版对象的地图修改，按游戏规则不被继承。
+    const std::string lni = "[BASE]\n_parent = \"LTlt\"\nbcat = \"P\"\nbuch = 1\nbfil = \"\"\nbptx = \"PathingTextures\\\\Fixture.tga\"\n"
         "[Q001]\n_parent = \"BASE\"\n";
     auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Destructable).Parse(
         std::span(reinterpret_cast<const std::byte*>(lni.data()), lni.size()));

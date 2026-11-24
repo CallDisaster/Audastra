@@ -93,7 +93,9 @@ void WorldAssetBrowserTests::PagesKeepMapOverridesAndParentPresentation() {
         if (page.preparing) { ++preparationCalls; QVERIFY(page.hasMore); QCOMPARE(page.nextOffset, query.offset); continue; }
         for (const auto& row : page.rows) {
             ids.push_back(row.entry.id);
-            if (row.mapObject) { QCOMPARE(row.entry.name, QString("Map name")); QCOMPARE(row.entry.iconPath, QString("Synthetic/Map.blp")); }
+            // 地图对原版 hfoo 的修改只作用于 hfoo；自定义 U001 按游戏规则从未改过的原版取值。
+            if (row.mapObject && row.entry.id == "hfoo") { QCOMPARE(row.entry.name, QString("Map name")); QCOMPARE(row.entry.iconPath, QString("Synthetic/Map.blp")); }
+            if (row.entry.id == "U001") { QCOMPARE(row.entry.name, QString("Original")); QVERIFY(row.entry.iconPath != QString("Synthetic/Map.blp")); }
         }
         if (!page.hasMore) break;
         QVERIFY(page.nextOffset > query.offset); query.offset = page.nextOffset;
@@ -129,7 +131,8 @@ void WorldAssetBrowserTests::PagesKeepMapOverridesAndParentPresentation() {
     project.objectDocuments_[0].reset();
     const auto nativePage = QtApp::QueryObjectViewEntries(project, query); QVERIFY(!nativePage.partial);
     QCOMPARE(nativePage.rows.size(), 2); QVERIFY(nativePage.rows[1].mapObject);
-    QCOMPARE(nativePage.rows[1].entry.id, QString("U002")); QCOMPARE(nativePage.rows[1].entry.name, QString("Native name"));
+    QCOMPARE(nativePage.rows[0].entry.name, QString("Native name"));
+    QCOMPARE(nativePage.rows[1].entry.id, QString("U002")); QCOMPARE(nativePage.rows[1].entry.name, QString("Original"));
     auto editedStrings = *project.mapDocument_->Strings(); editedStrings.entries.front().value = "Current name";
     QVERIFY(project.mapEdits_->EditStrings(editedStrings).Succeeded());
     const auto stringsPage = QtApp::QueryObjectViewEntries(project, query);
@@ -142,7 +145,7 @@ void WorldAssetBrowserTests::PagesKeepMapOverridesAndParentPresentation() {
 }
 void WorldAssetBrowserTests::CapturedAnimationProperties() {
     QtProject::EditorProject project; QVERIFY(InstallObjects(project));
-    const std::string lni="[hfoo]\nfile=\"Synthetic/Tower.mdl\"\nuani=\"upgrade,first\"\n[U001]\n_parent=\"hfoo\"\n";
+    const std::string lni="[U001]\n_parent=\"hfoo\"\nfile=\"Synthetic/Tower.mdl\"\nuani=\"upgrade,first\"\n";
     auto parsed=ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(),lni.size())));
     QVERIFY(parsed.Succeeded()); project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     MapData::PlacementTransform placement; placement.rawcode="U001";
@@ -150,8 +153,8 @@ void WorldAssetBrowserTests::CapturedAnimationProperties() {
     QVERIFY(preview); QCOMPARE(preview->animationProperties,std::string("upgrade,first"));
     auto native=ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Unit); QVERIFY(native.Succeeded());
     QVERIFY(native.value->AddOriginalObject("hfoo").Succeeded()); QVERIFY(native.value->AddCustomObject("U001","hfoo").Succeeded());
-    QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"hfoo"},{"umdl"},ObjectData::NativeValueType::String,std::string("Synthetic/Tower.mdl")).Succeeded());
-    QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"hfoo"},{"uani"},ObjectData::NativeValueType::String,std::string("upgrade,second")).Succeeded());
+    QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"U001"},{"umdl"},ObjectData::NativeValueType::String,std::string("Synthetic/Tower.mdl")).Succeeded());
+    QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"U001"},{"uani"},ObjectData::NativeValueType::String,std::string("upgrade,second")).Succeeded());
     project.nativeObjectDocuments_[0]=std::make_unique<ObjectData::NativeObjectDocument>(std::move(*native.value));
     QCOMPARE(CapturePlacementPreview(project,ObjectData::ObjectType::Unit,placement,0)->animationProperties,std::string("upgrade,first"));
     project.objectDocuments_[0].reset();
@@ -167,7 +170,9 @@ void WorldAssetBrowserTests::CapturedAnimationProperties() {
 }
 void WorldAssetBrowserTests::CapturedFlightHeightAndCircleFieldsKeepRawPlacements() {
     QtProject::EditorProject project; QVERIFY(InstallObjects(project));
-    const std::string lni = "[hfoo]\numdl=\"Synthetic/Eye.mdl\"\numvt=\"fly\"\numvh=875\nussc=3\nuslz=600\nusew=1\nuscb=1\n[U001]\n_parent=\"hfoo\"\n";
+    // U000 是自定义父对象（地图对原版对象的修改不被自定义对象继承，见游戏规则）。
+    const std::string lni = "[U000]\n_parent=\"hfoo\"\numdl=\"Synthetic/Eye.mdl\"\numvt=\"fly\"\numvh=875\nussc=3\nuslz=600\nusew=1\nuscb=1\n"
+        "[U001]\n_parent=\"U000\"\n";
     auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
     QVERIFY(parsed.Succeeded()); project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     MapData::UnitPlacements units;
@@ -192,8 +197,8 @@ void WorldAssetBrowserTests::CapturedFlightHeightAndCircleFieldsKeepRawPlacement
     auto native = ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Unit); QVERIFY(native.Succeeded());
     QVERIFY(native.value->AddOriginalObject("hfoo").Succeeded()); QVERIFY(native.value->AddCustomObject("U001", "hfoo").Succeeded());
     for (const auto& [field,value] : std::array<std::pair<const char*,const char*>,2>{{{"umdl","Synthetic/Eye.mdl"}, {"umvt","fly"}}})
-        QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"hfoo"},{field},ObjectData::NativeValueType::String,std::string(value)).Succeeded());
-    QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"hfoo"},{"umvh"},ObjectData::NativeValueType::Real,475.0f).Succeeded());
+        QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"U001"},{field},ObjectData::NativeValueType::String,std::string(value)).Succeeded());
+    QVERIFY(native.value->AddModification({ObjectData::ObjectType::Unit,"U001"},{"umvh"},ObjectData::NativeValueType::Real,475.0f).Succeeded());
     project.objectDocuments_[0].reset(); project.nativeObjectDocuments_[0] = std::make_unique<ObjectData::NativeObjectDocument>(std::move(*native.value));
     const auto nativePreview = CapturePlacementPreview(project, ObjectData::ObjectType::Unit, units.units.front(), 0);
     QVERIFY(nativePreview); QCOMPARE(nativePreview->position[2], 500.0f); QCOMPARE(document.Units()->units.front().position[2],25.0f);
@@ -201,7 +206,7 @@ void WorldAssetBrowserTests::CapturedFlightHeightAndCircleFieldsKeepRawPlacement
 void WorldAssetBrowserTests::UnitsStandOnTheDisplayedGroundWhateverHeightIsStored() {
     // 游戏只按 (x, y) 创建单位，摆放文件里的 Z 常常全是 0；地面在高处时照存的 Z 画会把单位埋到地下。
     QtProject::EditorProject project; QVERIFY(InstallObjects(project));
-    const std::string lni = "[hfoo]\numdl=\"Synthetic/Foot.mdl\"\n[U001]\n_parent=\"hfoo\"\numvt=\"fly\"\numvh=200\n";
+    const std::string lni = "[hfoo]\numdl=\"Synthetic/Foot.mdl\"\n[U001]\n_parent=\"hfoo\"\numdl=\"Synthetic/Foot.mdl\"\numvt=\"fly\"\numvh=200\n";
     auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
     QVERIFY(parsed.Succeeded()); project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     MapData::UnitPlacements units;
@@ -239,7 +244,8 @@ void WorldAssetBrowserTests::BoatsAndHoverUnitsFloatOnWaterLikeTheGame() {
     // 步行单位站在水底地面上。水面 = 最近地形顶点的水高 + Water.slk 高度偏移。
     QtProject::EditorProject project; QVERIFY(InstallObjects(project));
     const std::string lni = "[hfoo]\numdl=\"Synthetic/Foot.mdl\"\n"
-        "[U002]\n_parent=\"hfoo\"\numvt=\"float\"\n[U003]\n_parent=\"hfoo\"\numvt=\"hover\"\n[U004]\n_parent=\"hfoo\"\numvt=\"amph\"\n";
+        "[U002]\n_parent=\"hfoo\"\numdl=\"Synthetic/Foot.mdl\"\numvt=\"float\"\n[U003]\n_parent=\"hfoo\"\numdl=\"Synthetic/Foot.mdl\"\numvt=\"hover\"\n"
+        "[U004]\n_parent=\"hfoo\"\numdl=\"Synthetic/Foot.mdl\"\numvt=\"amph\"\n";
     auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
     QVERIFY(parsed.Succeeded()); project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     MapData::UnitPlacements units;
@@ -430,7 +436,7 @@ void WorldAssetBrowserTests::ObservedPlacementsRebindWithoutReloadButCatalogChan
     QtProject::EditorProject project; QVERIFY(InstallObjects(project));
     std::string lni = "[hfoo]\nunam=\"TRIGSTR_1\"\n";
     for (int i = 1; i <= 64; ++i)
-        lni += "[" + QString("U%1").arg(i, 3, 16, QLatin1Char('0')).toUpper().toStdString() + "]\n_parent=\"hfoo\"\n";
+        lni += "[" + QString("U%1").arg(i, 3, 16, QLatin1Char('0')).toUpper().toStdString() + "]\n_parent=\"hfoo\"\nunam=\"TRIGSTR_1\"\n";
     auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
     QVERIFY(parsed.Succeeded());
     project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));

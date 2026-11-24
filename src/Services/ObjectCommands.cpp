@@ -91,6 +91,8 @@ Result<Chain> Inheritance(const ObjectCommandContext& context, const std::string
         if (!seen.insert(current).second)
             return Fail<Chain>("OBJECT_PARENT_CYCLE", "物编父链存在循环：" + current);
         const auto* record = context.document ? context.document->FindObject({context.type, current}) : nullptr;
+        // 经父链到达的原版对象地图修改不继承（见 IsStandardObjectOverride）。
+        if (record && depth > 0 && IsStandardObjectOverride(*record)) record = nullptr;
         if (record) result.records.push_back(record);
         if (record && record->parentRawcode) { current = *record->parentRawcode; continue; }
         result.base = context.standard->Find(context.type, current);

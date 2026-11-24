@@ -110,6 +110,13 @@ struct ObjectRecord {
     std::size_t sectionLine = 0;
 };
 
+// 记录是不是“原版对象在本图的修改”（没有父对象或父对象是自己）。
+// 自定义对象沿父链遇到这种记录时不继承它的修改：游戏与原版编辑器都以原版未修改数据为底，
+// 再叠加自定义对象自己的修改。
+[[nodiscard]] inline bool IsStandardObjectOverride(const ObjectRecord& record) noexcept {
+    return !record.parentRawcode || *record.parentRawcode == record.key.rawcode;
+}
+
 enum class ObjectChangeKind : std::uint8_t {
     Added,
     Removed,
