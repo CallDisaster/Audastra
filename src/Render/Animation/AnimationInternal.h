@@ -4,6 +4,8 @@
 #include "War3RenderCore/MaterialTextures.h"
 #include "../Particles/ParticleTypes.h"
 #include "AnimationWorkers.h"
+#include <memory>
+#include <mutex>
 #include <unordered_map>
 
 namespace War3Map::Render {
@@ -140,7 +142,19 @@ class AnimationPreparedAssets {
     std::unordered_map<std::string, std::shared_ptr<const AnimationResource>> resources_;
     std::uint64_t sourceBytes_ = 0, resourceBytes_ = 0;
 };
+// 已发出帧的回收处：最后一个持有者放手时帧回到这里（任意线程），下一次准备取出、清空内容并沿用各数组容量，
+// 省去每帧几十 MB 的新分配与缺页。只留一份备用，多余的照常释放；帧内容与新建帧逐位相同。
+class AnimationFramePool : public std::enable_shared_from_this<AnimationFramePool> {
+public:
+    // 取一份可写的新帧（有备用就复用其容量），交出时绑定回收删除器。
+    [[nodiscard]] std::shared_ptr<AnimationFrame> Take(AnimationParticleHost* particles);
+private:
+    void Return(AnimationFrame* frame) noexcept;
+    std::mutex mutex_;
+    std::unique_ptr<AnimationFrame> spare_;
+};
 struct ModelAnimationService::State {
+    std::shared_ptr<AnimationFramePool> framePool = std::make_shared<AnimationFramePool>();
     std::shared_ptr<AnimatedModelScene> scene;
     std::shared_ptr<const AnimationCatalogIdentityIndex> catalogIdentity;
     std::vector<AnimationAsset> assets;

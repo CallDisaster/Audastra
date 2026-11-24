@@ -99,21 +99,23 @@ inline void ParallelParticles() {
         spec.model.position={static_cast<float>(i%12)*256,static_cast<float>(i/12)*256,0};
         spec.sequenceIndex=0;spec.elapsedMs=500+37*i;spec.globalMs=0;spec.playing=true;
     }
-    const auto run=[&](std::uint32_t workers) {
+    const auto create=[&](std::uint32_t workers) {
         AnimationLimits limits;limits.enableParticles=true;limits.retainUnsupportedStatic=true;
         limits.playbackPolicy=AnimationPlaybackPolicy::InteractivePreview;limits.poseWorkers=workers;
-        auto service=Good(ModelAnimationService::Create({7,5,"parallel-particles"},specs,read,limits));
-        AnimationAdvance advance;advance.worldCamera=AnimationWorldCamera(View(0).worldView->camera);
-        auto first=Good(service->Prepare(nullptr,advance));
-        std::vector<decltype(first)> frames{first};
-        advance.deltaMs=33;
-        for (int i=0;i<3;++i) frames.push_back(Good(service->Prepare(frames.back().get(),advance)));
+        return Good(ModelAnimationService::Create({7,5,"parallel-particles"},specs,read,limits));
+    };
+    AnimationAdvance start;start.worldCamera=AnimationWorldCamera(View(0).worldView->camera);
+    auto advance=start;advance.deltaMs=33;
+    constexpr std::size_t frameCount=6;
+    const auto run=[&](std::uint32_t workers) {
+        auto service=create(workers);
+        std::vector<std::shared_ptr<const AnimationFrame>> frames{Good(service->Prepare(nullptr,start))};
+        while (frames.size()<frameCount) frames.push_back(Good(service->Prepare(frames.back().get(),advance)));
         return frames;
     };
     const auto serial=run(1),parallel=run(4);
     std::size_t simulated=0;
-    for (std::size_t f=0;f<serial.size();++f) {
-        const auto& a=*serial[f];const auto& b=*parallel[f];
+    const auto compare=[&](const AnimationFrame& a,const AnimationFrame& b) {
         Check(a.particleVertices.size()==b.particleVertices.size() && a.particleDraws.size()==b.particleDraws.size() &&
             a.particleMaterialFlags==b.particleMaterialFlags && a.particleLinks.size()==b.particleLinks.size(),
             "parallel particles changed output sizes");
@@ -133,9 +135,25 @@ inline void ParallelParticles() {
         Check(a.timings.particleSimulationRequests==b.timings.particleSimulationRequests &&
             a.timings.particleAnchorReuses==b.timings.particleAnchorReuses &&
             a.particleCheckpoint->stateBytes==b.particleCheckpoint->stateBytes,"parallel particles changed work counts");
-    }
+    };
+    for (std::size_t f=0;f<serial.size();++f) compare(*serial[f],*parallel[f]);
     Check(simulated>count && !serial.back()->particleVertices.empty(),"parallel particle fixture did not simulate");
-    std::cout<<"parallel_particle_instances="<<count<<" frames="<<serial.size()<<" simulated="<<simulated<<" identical=1\n";
+    {
+        // 只留上一帧：旧帧与其粒子状态放手后被下一次准备借用容量；顶点、回执与存储计费须与全部保留时逐位相同。
+        auto service=create(4);
+        auto frame=Good(service->Prepare(nullptr,start));
+        compare(*serial[0],*frame);
+        std::vector<std::uintptr_t> addresses{reinterpret_cast<std::uintptr_t>(frame.get())};
+        bool reused=false;
+        for (std::size_t f=1;f<frameCount;++f) {
+            frame=Good(service->Prepare(frame.get(),advance));
+            reused=reused || (f>=2 && reinterpret_cast<std::uintptr_t>(frame.get())==addresses[f-2]);
+            addresses.push_back(reinterpret_cast<std::uintptr_t>(frame.get()));
+            compare(*serial[f],*frame);
+        }
+        Check(reused,"released particle frames were not recycled");
+    }
+    std::cout<<"parallel_particle_instances="<<count<<" frames="<<serial.size()<<" simulated="<<simulated<<" recycled=1 identical=1\n";
 }
 inline void Run() {
     ExplicitPlaybackPolicy();

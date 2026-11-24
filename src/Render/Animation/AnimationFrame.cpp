@@ -21,10 +21,46 @@ using TimingClock = std::chrono::steady_clock;
 std::uint64_t ElapsedNs(TimingClock::time_point start) noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(TimingClock::now()-start).count());
 }
+// 清空回收帧：各数组只留容量，其余字段取新建默认值，之后的准备与新建帧走完全相同的写入路径。
+// 新增数组字段不在此列也照样正确，只是不复用其容量。
+void ResetAnimationFrameKeepingCapacity(AnimationFrame& frame) noexcept {
+    AnimationFrame fresh;
+    const auto keep=[](auto& from,auto& to) noexcept { from.clear(); to.swap(from); };
+    keep(frame.requestVisibility,fresh.requestVisibility); keep(frame.states,fresh.states); keep(frame.instances,fresh.instances);
+    keep(frame.groups,fresh.groups); keep(frame.alphas,fresh.alphas); keep(frame.colors,fresh.colors);
+    keep(frame.layerAlphas,fresh.layerAlphas); keep(frame.layerSlices,fresh.layerSlices);
+    keep(frame.materialStates,fresh.materialStates); keep(frame.materialStateSlices,fresh.materialStateSlices);
+    keep(frame.poses,fresh.poses); keep(frame.geosetIssues,fresh.geosetIssues); keep(frame.materialIssues,fresh.materialIssues);
+    keep(frame.collisionMatrices,fresh.collisionMatrices); keep(frame.pickBounds,fresh.pickBounds);
+    keep(frame.particleVertices,fresh.particleVertices); keep(frame.particleDraws,fresh.particleDraws);
+    keep(frame.particleMaterialFlags,fresh.particleMaterialFlags); keep(frame.particleLinks,fresh.particleLinks);
+    keep(frame.diagnostics,fresh.diagnostics);
+    frame=std::move(fresh);
+}
 void AddMotionHash(std::uint64_t& hash, const void* data, std::size_t size) noexcept {
     const auto* bytes=static_cast<const unsigned char*>(data);
     for (std::size_t i=0;i<size;++i) { hash^=bytes[i]; hash*=1099511628211ull; }
 }
+}
+std::shared_ptr<AnimationFrame> AnimationFramePool::Take(AnimationParticleHost* particles) {
+    std::unique_ptr<AnimationFrame> frame;
+    { std::lock_guard lock(mutex_); frame=std::move(spare_); }
+    if (frame) {
+        // 回收帧已无其他持有者：其中只剩本服务持有的粒子状态交给对应绑定借用容量。
+        if (particles) RetireAnimationParticleCheckpoint(*particles,std::move(frame->particleCheckpoint));
+        ResetAnimationFrameKeepingCapacity(*frame);
+    } else frame=std::make_unique<AnimationFrame>();
+    auto self=shared_from_this();
+    // 控制块分配失败时标准库会对指针调用删除器，帧回到备用位，不泄漏。
+    return std::shared_ptr<AnimationFrame>(frame.release(),[self](AnimationFrame* returned) noexcept { self->Return(returned); });
+}
+void AnimationFramePool::Return(AnimationFrame* frame) noexcept {
+    std::unique_ptr<AnimationFrame> owned(frame);
+    try {
+        std::lock_guard lock(mutex_);
+        if (!spare_) spare_=std::move(owned);
+    } catch (...) {}
+    // 已有备用时这一帧照常在此释放（锁外）。
 }
 std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept {
     std::uint64_t bytes=sizeof(AnimationFrame);
@@ -355,7 +391,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         return fail("ANIMATION_PREVIEW_BUDGET_INVALID", "单帧特效预算只适用于交互预览，且必须在锚样硬上限内。");
     if (previous && (previous->sceneVersion!=scene.sceneVersion || previous->documentRevision!=scene.documentRevision))
         return fail("ANIMATION_FRAME_STALE","旧帧不属于当前模型场景或地图修订。");
-    auto frame=std::make_shared<AnimationFrame>();
+    auto frame=s.framePool->Take(s.particles.get());
     frame->sceneVersion=scene.sceneVersion; frame->documentRevision=scene.documentRevision;
     frame->previewParticleBudget=advance.previewParticleBudget;
     frame->timings.candidateInstances=g.instances.size();

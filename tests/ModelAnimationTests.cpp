@@ -90,19 +90,23 @@ void ParallelPoses(std::size_t count=300, bool shared=false) {
         specs[i].sequenceIndex=static_cast<std::uint32_t>(i%2); specs[i].elapsedMs=37*i;
         specs[i].model.position={static_cast<float>(i%20)*150,static_cast<float>(i/20)*150,0};
     }
-    const auto run=[&](std::uint32_t workers) {
+    const auto create=[&](std::uint32_t workers) {
         AnimationLimits limits; limits.poseWorkers=workers;
         if (shared) {
             limits.retainUnsupportedStatic=true; limits.maxActivePoseBytes=128*1024;
             limits.maxFrameBytes=count*(sizeof(War3RenderSkinnedModelInstanceV2)+kAnimationPoseLinkBudgetBytes+
                 sizeof(AnimationInstanceState)+sizeof(AnimationPickBounds))+1024ull*1024;
         }
-        auto service=Good(ModelAnimationService::Create({7,33,"parallel-synthetic"},specs,
+        return Good(ModelAnimationService::Create({7,33,"parallel-synthetic"},specs,
             [&](auto p,auto n){return in.Read(p,n);},limits));
-        auto first=Good(service->Prepare(nullptr));
-        AnimationAdvance advance; advance.playAll=true; advance.deltaMs=33;
-        auto second=Good(service->Prepare(first.get(),advance));
-        return std::pair{first,second};
+    };
+    AnimationAdvance advance; advance.playAll=true; advance.deltaMs=33;
+    constexpr std::size_t frameCount=5;
+    const auto run=[&](std::uint32_t workers) {
+        auto service=create(workers);
+        std::vector<std::shared_ptr<const AnimationFrame>> frames{Good(service->Prepare(nullptr))};
+        while (frames.size()<frameCount) frames.push_back(Good(service->Prepare(frames.back().get(),advance)));
+        return frames;
     };
     const auto same=[](const AnimationFrame& a,const AnimationFrame& b) {
         if (a.poses.size()!=b.poses.size() || a.groups.size()!=b.groups.size() || a.colors.size()!=b.colors.size() || a.alphas!=b.alphas)
@@ -130,13 +134,28 @@ void ParallelPoses(std::size_t count=300, bool shared=false) {
             a.retainedStaticInstances==b.retainedStaticInstances && a.animatedInstances==b.animatedInstances;
     };
     const auto serial=run(1), parallel=run(4);
-    Require(serial.second->timings.outputMotionHash!=serial.first->timings.outputMotionHash,"parallel test frames did not advance");
-    Require(same(*serial.first,*parallel.first) && same(*serial.second,*parallel.second),"parallel pose evaluation changed output");
-    Require(serial.first->timings.poseWorkers==1 && parallel.first->timings.poseWorkers==4 &&
-        parallel.first->timings.poseEvaluationRequests>0 && (shared || parallel.first->timings.poseEvaluationRequests==count),
+    Require(serial[1]->timings.outputMotionHash!=serial[0]->timings.outputMotionHash,"parallel test frames did not advance");
+    for (std::size_t f=0;f<frameCount;++f) Require(same(*serial[f],*parallel[f]),"parallel pose evaluation changed output");
+    Require(serial[0]->timings.poseWorkers==1 && parallel[0]->timings.poseWorkers==4 &&
+        parallel[0]->timings.poseEvaluationRequests>0 && (shared || parallel[0]->timings.poseEvaluationRequests==count),
         "parallel pose evaluators not used");
-    Require(serial.first->sharedPoseRanges==shared && parallel.first->sharedPoseRanges==shared,"parallel test used the wrong pose layout");
-    std::cout<<"parallel_pose_instances="<<count<<" shared="<<shared<<" workers="<<parallel.first->timings.poseWorkers<<" identical=1\n";
+    Require(serial[0]->sharedPoseRanges==shared && parallel[0]->sharedPoseRanges==shared,"parallel test used the wrong pose layout");
+    {
+        // 只留上一帧：更早的帧放手后回到回收处，被下一次准备清空复用；内容须与全部保留时逐位相同。
+        auto service=create(4);
+        auto frame=Good(service->Prepare(nullptr));
+        Require(same(*serial[0],*frame),"recycling run changed the first frame");
+        std::vector<std::uintptr_t> addresses{reinterpret_cast<std::uintptr_t>(frame.get())};
+        bool reused=false;
+        for (std::size_t f=1;f<frameCount;++f) {
+            frame=Good(service->Prepare(frame.get(),advance));
+            reused=reused || (f>=2 && reinterpret_cast<std::uintptr_t>(frame.get())==addresses[f-2]);
+            addresses.push_back(reinterpret_cast<std::uintptr_t>(frame.get()));
+            Require(same(*serial[f],*frame),"recycled frame changed output");
+        }
+        Require(reused,"released frames were not recycled");
+    }
+    std::cout<<"parallel_pose_instances="<<count<<" shared="<<shared<<" workers="<<parallel[0]->timings.poseWorkers<<" frames="<<frameCount<<" recycled=1 identical=1\n";
 }
 void Instances() {
     Input in; auto service=in.Build(); auto first=Good(service->Prepare(nullptr));

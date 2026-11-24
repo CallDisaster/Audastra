@@ -1,10 +1,12 @@
 #include "AnimationParticles.h"
 #include "AnimationWorkers.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <utility>
 
@@ -64,6 +66,13 @@ struct ParticleWork {
     std::vector<Particles::Draw> draws;
     std::vector<War3RenderParticleVertexV2> vertices;
 };
+// 把数组容量调成恰好 capacity（不小于元素数）：与“复制得到恰好元素数、再 reserve”同一结果。
+template<class T> void ExactCapacity(std::vector<T>& values, std::size_t capacity) {
+    if (values.capacity() == capacity) return;
+    std::vector<T> exact; exact.reserve(capacity);
+    exact.assign(std::make_move_iterator(values.begin()), std::make_move_iterator(values.end()));
+    values.swap(exact);
+}
 bool SameCamera(const std::optional<LocalCamera>& a, const std::optional<LocalCamera>& b) {
     return a.has_value() == b.has_value() && (!a || (a->eye == b->eye && a->up == b->up));
 }
@@ -106,6 +115,18 @@ void WriteAnchor(Particles::Anchor& anchor, const War3RenderCore::NodePose& node
 }
 }
 
+void RetireAnimationParticleCheckpoint(AnimationParticleHost& host,
+    std::shared_ptr<const AnimationParticleCheckpoint> checkpoint) noexcept try {
+    if (!checkpoint || checkpoint.use_count() != 1 || checkpoint->instances.size() != host.bindings.size()) return;
+    host.spareStates.resize(host.bindings.size());
+    for (std::size_t b = 0; b < checkpoint->instances.size(); ++b) {
+        const auto& state = checkpoint->instances[b];
+        // 新帧仍共享的状态（画外、预算省略）引用数大于一，不能借。
+        if (state && state.use_count() == 1) host.spareStates[b] = state;
+    }
+} catch (...) {
+    host.spareStates.clear(); // 只是缓冲，失败就不借。
+}
 void BeginAnimationParticleAnchors(AnimationParticleHost& host, std::size_t requestCount,
     std::span<const AnimationAsset> assets) {
     host.requestBindings.assign(requestCount, UINT32_MAX);
@@ -381,11 +402,23 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         else if (!world && asset.cameraDependent && !SameCamera(old->camera, frame.worldCamera)) link.resetReason = "camera";
         candidate.timeline = timeline; candidate.camera = frame.worldCamera;
         if (link.resetReason.empty()) {
+            // 回收的同绑定旧状态若只剩本服务持有，先借它的数组容量再整份复制，免去每帧按配额新分配。
+            // 随后各数组容量调成与“复制后预留配额”完全相同，内容与存储计费都不变。
+            std::shared_ptr<const AnimationParticleState> spare;
+            if (b < host.spareStates.size()) spare = std::move(host.spareStates[b]);
+            if (spare && spare.use_count() == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                candidate.state.emitters = std::move(const_cast<AnimationParticleState&>(*spare).state.emitters);
+            }
+            spare.reset();
             candidate.state = old->state;
+            ExactCapacity(candidate.state.emitters, candidate.state.emitters.size());
             for (std::size_t i = 0; i < candidate.state.emitters.size(); ++i) {
                 auto& e = candidate.state.emitters[i];
-                if (asset.particles->emitters[i].kind == Particles::Kind::Particle2) e.particles.reserve(e.quota);
-                else e.segments.reserve(e.quota);
+                const bool particle2 = asset.particles->emitters[i].kind == Particles::Kind::Particle2;
+                const auto quota = static_cast<std::size_t>(e.quota);
+                ExactCapacity(e.particles, particle2 ? std::max(e.particles.size(), quota) : e.particles.size());
+                ExactCapacity(e.segments, particle2 ? e.segments.size() : std::max(e.segments.size(), quota));
             }
         } else {
             auto created = Particles::Create(*asset.particles, current.identity.value, current.identity.generation,
@@ -613,7 +646,8 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         if (world) { candidate.anchors = std::move(w.currentAnchors); candidate.anchorElapsedMs = current.elapsedMs; }
         candidate.counts=counts;candidate.stateHash=link.stateHash;candidate.storageBytes=StateBytes(candidate);
         checkpoint->stateBytes-=old ? old->storageBytes : 0;checkpoint->stateBytes+=candidate.storageBytes;
-        checkpoint->instances[b]=std::make_shared<const AnimationParticleState>(std::move(candidate));
+        // 对象本身可写，回收时才能借用其数组；对外仍只以只读指针共享。
+        checkpoint->instances[b]=std::make_shared<AnimationParticleState>(std::move(candidate));
         frame.timings.particleSkippedTimelineMs+=link.skippedTimelineMs;
         checkpoint->frozen[b]=0;frame.particleLinks.push_back(std::move(link));
         return {};

@@ -59,7 +59,12 @@ struct AnimationParticleHost {
     std::vector<Particles::Anchor> frameAnchors;
     std::vector<std::uint64_t> anchorSerials; // 绑定→写入时的帧序号；等于 anchorSerial 才属于本帧。
     std::uint64_t anchorSerial = 0;
+    // 绑定→回收帧里只剩本服务持有的旧状态。下一次复制该绑定的状态时借用其数组容量，内容照常整份复制。
+    std::vector<std::shared_ptr<const AnimationParticleState>> spareStates;
 };
+// 回收帧的粒子检查点：只有本服务还持有的状态记为对应绑定的备用缓冲（准备线程调用）。
+void RetireAnimationParticleCheckpoint(AnimationParticleHost& host,
+    std::shared_ptr<const AnimationParticleCheckpoint> checkpoint) noexcept;
 // 每帧主姿势求值前调用（仅交互预览）：按当前绑定表重建索引并开启新一帧的锚点序号。
 void BeginAnimationParticleAnchors(AnimationParticleHost& host, std::size_t requestCount,
     std::span<const AnimationAsset> assets);
