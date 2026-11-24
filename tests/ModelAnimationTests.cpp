@@ -93,9 +93,11 @@ void ParallelPoses(std::size_t count=300, bool shared=false) {
     const auto create=[&](std::uint32_t workers) {
         AnimationLimits limits; limits.poseWorkers=workers;
         if (shared) {
+            // 余量须小于逐实例矩阵本身（2600 实例至少 2600 组，约 122 KiB），整帧放不下才转共享片段；
+            // 又须容得下请求表、材质切片与调度索引（约 55 KiB 以内）。
             limits.retainUnsupportedStatic=true; limits.maxActivePoseBytes=128*1024;
             limits.maxFrameBytes=count*(sizeof(War3RenderSkinnedModelInstanceV2)+kAnimationPoseLinkBudgetBytes+
-                sizeof(AnimationInstanceState)+sizeof(AnimationPickBounds))+1024ull*1024;
+                sizeof(AnimationInstanceState)+sizeof(AnimationPickBounds))+96ull*1024;
         }
         return Good(ModelAnimationService::Create({7,33,"parallel-synthetic"},specs,
             [&](auto p,auto n){return in.Read(p,n);},limits));
