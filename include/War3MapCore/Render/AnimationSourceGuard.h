@@ -2,6 +2,7 @@
 #include "War3MapCore/Types.h"
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 namespace War3Map::Render {
 // Windows 只读来源租约。读取前登记，读取后及复用前 Verify；不允许把重命名后的旧句柄
@@ -16,6 +17,9 @@ public:
     [[nodiscard]] Status Watch(const std::filesystem::path& path, bool allowMissing = false);
     [[nodiscard]] Status WatchGameRoot(const std::filesystem::path& root);
     [[nodiscard]] Status Verify() const;
+    // 已登记的文件（含登记时缺失的路径），供宿主监视其所在目录的变化。
+    [[nodiscard]] std::vector<std::filesystem::path> Paths() const;
+    [[nodiscard]] std::size_t Count() const noexcept;
 private:
     struct State;
     std::unique_ptr<State> state_;

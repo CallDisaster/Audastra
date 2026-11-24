@@ -625,7 +625,8 @@ void WorldAnimationPlayer::StartNext(std::shared_ptr<const Render::AnimationFram
             bool sourceValid=true;
             if (source) {
                 const auto started=CpuStampNs();
-                auto valid = source->VerifyCurrentSource();
+                // 逐帧只在来源目录有变化通知或满 1 秒时完整核对（见 VerifyCurrentSourceForFrame）。
+                auto valid = source->VerifyCurrentSourceForFrame();
                 timing.sourceBeforeNs=CpuStampNs()-started;
                 timing.sourceBefore=valid.Succeeded() ? WorldAnimationSourceCheck::Passed : WorldAnimationSourceCheck::Rejected;
                 if (!valid.Succeeded()) {
@@ -638,7 +639,7 @@ void WorldAnimationPlayer::StartNext(std::shared_ptr<const Render::AnimationFram
             if (output->result.Succeeded()) FrameTiming(timing,**output->result.value);
             if (source && output->result.Succeeded()) {
                 const auto started=CpuStampNs();
-                const auto valid = source->VerifyCurrentSource();
+                const auto valid = source->VerifyCurrentSourceForFrame();
                 timing.sourceAfterNs=CpuStampNs()-started;
                 timing.sourceAfter=valid.Succeeded() ? WorldAnimationSourceCheck::Passed : WorldAnimationSourceCheck::Rejected;
                 if (!valid.Succeeded()) {

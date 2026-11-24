@@ -66,6 +66,13 @@ Status AnimationSourceGuard::WatchGameRoot(const std::filesystem::path& root) {
     }
     return Verify();
 }
+std::vector<std::filesystem::path> AnimationSourceGuard::Paths() const {
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(state_->leases.size());
+    for (const auto& [path, lease] : state_->leases) paths.push_back(path);
+    return paths;
+}
+std::size_t AnimationSourceGuard::Count() const noexcept { return state_->leases.size(); }
 Status AnimationSourceGuard::Verify() const {
     for (const auto& [path, lease] : state_->leases) {
         const FileLease current(path, true);

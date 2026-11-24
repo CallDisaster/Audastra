@@ -323,6 +323,42 @@ Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorPr
     return Result<WorldTerrainSources>::Success(std::move(result));
 }
 
+namespace {
+// 一组目录的变化通知。只回答“自建立以来这些目录是否都没有变化”；建不起来就当作有变化。
+class DirectoryChangeWatch {
+public:
+    DirectoryChangeWatch() = default;
+    DirectoryChangeWatch(const DirectoryChangeWatch&) = delete;
+    DirectoryChangeWatch& operator=(const DirectoryChangeWatch&) = delete;
+    ~DirectoryChangeWatch() { Close(); }
+    [[nodiscard]] bool Quiet(std::size_t key) const noexcept {
+        if (handles_.empty() || key != key_ || std::chrono::steady_clock::now() - armed_ >= std::chrono::seconds(1)) return false;
+        return WaitForMultipleObjects(static_cast<DWORD>(handles_.size()), handles_.data(), FALSE, 0) == WAIT_TIMEOUT;
+    }
+    void Arm(const std::vector<std::filesystem::path>& files, std::size_t key) noexcept try {
+        Close();
+        std::set<std::wstring> directories;
+        for (const auto& file : files) if (file.has_parent_path()) directories.insert(file.parent_path().wstring());
+        if (directories.empty() || directories.size() > MAXIMUM_WAIT_OBJECTS) return;
+        for (const auto& directory : directories) {
+            const auto handle = FindFirstChangeNotificationW(directory.c_str(), FALSE,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE);
+            if (handle == INVALID_HANDLE_VALUE) { Close(); return; }
+            handles_.push_back(handle);
+        }
+        key_ = key; armed_ = std::chrono::steady_clock::now();
+    } catch (...) { Close(); }
+    void Close() noexcept {
+        for (const auto handle : handles_) FindCloseChangeNotification(handle);
+        handles_.clear(); key_ = 0;
+    }
+private:
+    std::vector<HANDLE> handles_;
+    std::size_t key_ = 0;
+    std::chrono::steady_clock::time_point armed_{};
+};
+} // namespace
+
 // 后台线程独占：地图只读租约 + 归档 + 导入快照 + 游戏包，按“会话导入 → 地图 → 游戏”解析。
 struct WorldResourceReader::State {
     WorldTerrainSources sources;
@@ -337,6 +373,8 @@ struct WorldResourceReader::State {
     std::shared_ptr<const Render::AnimationSourceGuard> heightGuard; // 冻结后随高度owner发布；复用仅复核文件身份。
     std::string heightRuleFingerprint;
     bool animationReads = false;
+    std::mutex frameVerifyMutex; // 逐帧核对可能与界面线程的当场核对并发；只保护下面的通知状态。
+    DirectoryChangeWatch frameChanges;
 };
 
 WorldResourceReader::WorldResourceReader() : state_(std::make_unique<State>()) {}
@@ -358,6 +396,21 @@ Status WorldResourceReader::VerifyCurrentSource() const {
         "地图资源来源已被替换，请重新加载地形。");
     const auto animation = state_->animationGuard.Verify();
     return animation.Succeeded() && state_->heightGuard ? state_->heightGuard->Verify() : animation;
+}
+Status WorldResourceReader::VerifyCurrentSourceForFrame() const {
+    std::lock_guard lock(state_->frameVerifyMutex);
+    // 监视集由登记文件数与高度规则身份确定；有新登记或换了规则即重新建立并完整核对。
+    const auto key = (state_->animationGuard.Count() + 1) * 1000003u ^ std::hash<const void*>{}(state_->heightGuard.get());
+    if (state_->frameChanges.Quiet(key)) return Status::Ok();
+    std::vector<std::filesystem::path> files{state_->sources.archivePath};
+    if (state_->sources.readOnlyArchive) files.push_back(state_->sources.readOnlyArchive->SourcePath());
+    for (auto& path : state_->animationGuard.Paths()) files.push_back(std::move(path));
+    if (state_->heightGuard) for (auto& path : state_->heightGuard->Paths()) files.push_back(std::move(path));
+    // 先建通知再核对：核对期间发生的变化也会让下一次照常核对。
+    state_->frameChanges.Arm(files, key);
+    auto status = VerifyCurrentSource();
+    if (!status.Succeeded()) state_->frameChanges.Close();
+    return status;
 }
 
 Result<std::vector<std::byte>> WorldResourceReader::ReadMapArchiveMember(std::string_view path, std::size_t maxBytes) {

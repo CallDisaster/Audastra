@@ -527,7 +527,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         }
         if (request!=kBakedInstance) link.identity=frame->states[request].identity;
         if (s.sharedPoseRanges && slots[i]==UINT32_MAX) RebindCachedAnimationPoseWarnings(link);
-        else link.warnings={};
+        else if (s.sharedPoseRanges) link.warnings={}; // 不共享时整条链刚复位，警告已是默认。
         if (scene.dynamicMaterialStates) {
             link.materialStates=link.materialAlphas;
             frame->materialStateSlices[i]={link.materialStates.offset,link.materialStates.count};
@@ -862,7 +862,8 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             const auto end=std::min(count,(std::size_t(task)+1)*chunk);
             for (std::size_t p=std::size_t(task)*chunk;p<end;++p) {
                 auto& link=frame->poses[p];
-                if (link.hidden || link.outsideView) link.warnings={}; // 粒子链可能在主姿势成功后隐藏整实例。
+                // 粒子链可能在主姿势成功后隐藏整实例。不共享时视野外的链在打包时整条复位、之后无人写警告，不再重复清。
+                if (link.hidden || (link.outsideView && s.sharedPoseRanges)) link.warnings={};
                 if (link.outsideView) continue;
                 if (s.sharedPoseRanges && !link.animated && !link.hidden) continue; // 实际缓存片段的指纹/可见度不逐实例重复计算。
                 link.noVisibleGeometry=!AnimationHasVisibleLayers(scene,*frame,link,frame->instances[link.renderedInstance].instance.model);

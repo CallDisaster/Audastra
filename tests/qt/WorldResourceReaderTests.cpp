@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <Windows.h>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -97,6 +98,9 @@ void ReplacementWithIdenticalBytesDoesNotReuseOldIdentity() {
     QTemporaryDir directory; Require(directory.isValid(), "temporary directory");
     const auto sources = Fixture(std::filesystem::path(directory.path().toStdWString()) / L"source.w3x");
     auto original = WorldResourceReader::Open(sources); Require(original.Succeeded(), "open first source");
+    // 逐帧核对：首次完整核对并建立目录通知，紧接着的一次沿用结论。
+    Require((*original.value)->VerifyCurrentSourceForFrame().Succeeded() && (*original.value)->VerifyCurrentSourceForFrame().Succeeded(),
+        "per-frame source check passes on the unchanged source");
     auto replacement = sources; replacement.archivePath = sources.archivePath.parent_path() / L"replacement.w3x";
     std::filesystem::copy_file(sources.archivePath, replacement.archivePath);
     const auto identicalHash = Sha256File(replacement.archivePath);
@@ -121,6 +125,16 @@ void ReplacementWithIdenticalBytesDoesNotReuseOldIdentity() {
     const auto current = (*original.value)->VerifyCurrentSource();
     Require(!current.Succeeded() && current.diagnostics.front().code == "WORLD_ASSET_SOURCE_CHANGED",
         "current path replacement is detected");
+    // 逐帧核对由目录变化通知触发完整核对，最迟满 1 秒也会完整核对；替换必须在这个界限内报出。
+    const auto replacedAt = std::chrono::steady_clock::now();
+    auto frameCheck = (*original.value)->VerifyCurrentSourceForFrame();
+    while (frameCheck.Succeeded() && std::chrono::steady_clock::now() - replacedAt < std::chrono::milliseconds(1500)) {
+        Sleep(20); frameCheck = (*original.value)->VerifyCurrentSourceForFrame();
+    }
+    Require(!frameCheck.Succeeded() && frameCheck.diagnostics.front().code == "WORLD_ASSET_SOURCE_CHANGED",
+        "per-frame source check reports the replaced source within its one-second bound");
+    std::cout << "frame_source_check_detect_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - replacedAt).count() << '\n';
     const auto stale = WorldResourceReader::Open(sources, original.value->get());
     Require(!stale.Succeeded() && stale.diagnostics.front().code == "WORLD_ASSET_SOURCE_CHANGED",
         "replaced path cannot inherit old verification");

@@ -83,6 +83,10 @@ public:
     [[nodiscard]] Resources::ResourceResolver& Resolver() noexcept;
     // 缓存复用前确认来源路径仍指向打开时的同一文件；避免原地保存后的旧句柄被当成新地图资源。
     [[nodiscard]] Status VerifyCurrentSource() const;
+    // 动画逐帧路径用：被核对的文件读取期间都以拒写方式占用，外部只能改名、删除或新建，都会触发所在目录的
+    // 变化通知。自上次完整核对后这些目录都无通知且不足 1 秒时沿用通过结论，否则照常完整核对。
+    // 打开、保存、安装等边界仍用 VerifyCurrentSource 当场核对。
+    [[nodiscard]] Status VerifyCurrentSourceForFrame() const;
     // 只比较捕获的完整查找配置；实际文件租约仍须在每次任务前后Verify。
     [[nodiscard]] bool MatchesSources(const WorldTerrainSources& sources) const;
     // 动画缓存必须记录真实命中的游戏 MPQ 层/地图覆盖，而非笼统的 Game 来源。
