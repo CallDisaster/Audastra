@@ -174,9 +174,25 @@ HRESULT D3D11Scene::SetModelInstances(const std::vector<War3RenderModelInstanceV
     context_->UpdateSubresource(modelInstances_.Get(), 0, nullptr, instances.data(), 0, 0);
     return S_OK;
 }
+ID3D11RasterizerState* D3D11Scene::CullBackVariant(ID3D11RasterizerState* source) {
+    if (cullRasterizer_ && cullSource_.Get() == source) return cullRasterizer_.Get();
+    D3D11_RASTERIZER_DESC desc{};
+    if (source) source->GetDesc(&desc);
+    else { desc.FillMode = D3D11_FILL_SOLID; desc.DepthClipEnable = TRUE; }
+    // MDX 三角形从法线一侧看是逆时针；本管线为右手、无镜像，故屏幕上逆时针为正面。
+    desc.CullMode = D3D11_CULL_BACK; desc.FrontCounterClockwise = TRUE;
+    Ptr<ID3D11RasterizerState> created;
+    if (FAILED(device_->CreateRasterizerState(&desc, &created))) return nullptr; // 建不出时该层按双面画。
+    cullSource_ = source; cullRasterizer_ = std::move(created);
+    return cullRasterizer_.Get();
+}
 void D3D11Scene::DrawModels(int pass) {
     auto* instanceBuffer = skinned_ ? skinBuffers_[activeSkinBuffer_].instances.Get() : modelInstances_.Get();
     if (!instanceBuffer) return;
+    // 游戏对非双面层剔除背面。以进入时的状态为底（贴地预览保留自己的深度偏移），结束后还原。
+    Ptr<ID3D11RasterizerState> incoming; context_->RSGetState(&incoming);
+    ID3D11RasterizerState* const culled = CullBackVariant(incoming.Get());
+    ID3D11RasterizerState* activeRaster = incoming.Get();
     context_->IASetInputLayout(skinned_ ? skinLayout_.Get() : modelLayout_.Get());
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     const UINT strides[]{static_cast<UINT>(skinned_ ? sizeof(War3RenderSkinnedModelVertexV2) : sizeof(War3RenderModelVertexV2)),
@@ -227,6 +243,8 @@ void D3D11Scene::DrawModels(int pass) {
                     skinValues.localLayerIndex = modelLocalLayer + layerIndex - mesh.firstLayer;
                     context_->UpdateSubresource(skinMeshConstants_.Get(), 0, nullptr, &skinValues, 0, 0);
                 }
+                auto* raster = (layer.flags & WAR3_RENDER_MODEL_CULL_BACK) && culled ? culled : incoming.Get();
+                if (raster != activeRaster) { context_->RSSetState(raster); activeRaster = raster; }
                 const bool textured = layer.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE;
                 const ModelLayerConstants values{layer.alpha, layer.filterMode, layer.flags, textured ? 1u : 0u};
                 context_->UpdateSubresource(modelConstants_.Get(), 0, nullptr, &values, 0, 0);
@@ -262,6 +280,7 @@ void D3D11Scene::DrawModels(int pass) {
             modelLocalLayer += mesh.layerCount;
         }
     }
+    if (activeRaster != incoming.Get()) context_->RSSetState(incoming.Get());
     context_->OMSetBlendState(nullptr, nullptr, 0xffffffff); context_->OMSetDepthStencilState(nullptr, 0);
     ID3D11ShaderResourceView* empty = nullptr; context_->PSSetShaderResources(0, 1, &empty);
     ID3D11ShaderResourceView* emptySkin[]{nullptr, nullptr, nullptr, nullptr, nullptr}; context_->VSSetShaderResources(2, 5, emptySkin);

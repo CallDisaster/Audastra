@@ -304,7 +304,7 @@ void TestBuild() {
         && scene.modelBounds[0][1] == 0 && scene.modelBounds[0][4] == 10, "模型局部包围盒");
     const auto& turned = scene.instances[1].transform;
     Require(std::abs(turned[0]) < 1e-5f && std::abs(turned[1] + 2) < 1e-5f && turned[3] == 200
-        && std::abs(turned[4] - 2) < 1e-5f && turned[10] == 3 && scene.instances[1].color[0] == 0.5f, "T·Rz·S 变换与颜色");
+        && std::abs(turned[4] - 2) < 1e-5f && turned[10] == 3 && scene.instances[1].color[0] == 0.5f, "T·S·Rz 变换与颜色");
     // 第一层是队伍色（替换贴图 1），第二层是透明测试的普通贴图。
     Require(scene.textures.size() == 2, "队伍色 01 与普通贴图各一张");
     const auto& layers = scene.layers;
@@ -351,8 +351,11 @@ void TestMaterialUnfoggedFlags() {
     Files files;
     files.files[Key("Textures\\Crate.blp")] = Blp(4, 4, 200);
     files.files[Key(TeamColorTexture(0))] = Blp(2, 2, 255);
-    const std::array<std::pair<std::uint32_t, std::uint32_t>, 7> cases{{
-        {0, 0}, {0x1, 1}, {0x2, 0}, {0x20, WAR3_RENDER_MODEL_UNFOGGED}, {0x80, 4}, {0xa1, 7}, {0x10, 0}}};
+    // 未置 0x10（双面）的层一律带背面剔除，与游戏一致。
+    constexpr auto cull = WAR3_RENDER_MODEL_CULL_BACK;
+    const std::array<std::pair<std::uint32_t, std::uint32_t>, 8> cases{{
+        {0, cull}, {0x1, 1 | cull}, {0x2, cull}, {0x20, WAR3_RENDER_MODEL_UNFOGGED | cull}, {0x80, 4 | cull},
+        {0xa1, 7 | cull}, {0x10, 0}, {0x31, 1 | WAR3_RENDER_MODEL_UNFOGGED}}};
     for (const auto [sourceFlags, expectedFlags] : cases) {
         auto bytes = RigidTestModel();
         constexpr std::array<char, 4> layersTag{'L', 'A', 'Y', 'S'};
@@ -376,8 +379,8 @@ void TestMaterialUnfoggedFlags() {
             for (const auto& model : scene->models) {
                 const auto& mesh = scene->meshes[model.firstMesh];
                 Require(scene->layers[mesh.firstLayer].flags == expectedFlags
-                    && scene->layers[mesh.firstLayer + 1].flags == 0,
-                    "静态、显式姿态及预览层须保留各自 Unfogged，且不改变旧光照/深度标志");
+                    && scene->layers[mesh.firstLayer + 1].flags == WAR3_RENDER_MODEL_CULL_BACK,
+                    "静态、显式姿态及预览层须保留各自 Unfogged、双面与光照/深度标志");
             }
         }
         Require(files.files.at(Key("Original\\FogLayer.mdx")) == bytes, "渲染不得回写来源模型");

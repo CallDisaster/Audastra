@@ -122,7 +122,7 @@ void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCre
                 checkColors(fogged, view, true, mode);
             }
             const auto accepted = capture();
-            layers[1].flags = 8;
+            layers[1].flags = 16;
             Require((skinned ? api->submitSkinnedModelScene(renderer.handle, &skin)
                              : api->submitModelScene(renderer.handle, &scene)) != 0
                 && capture() == accepted, "unknown material flags replaced completed unfogged frame");

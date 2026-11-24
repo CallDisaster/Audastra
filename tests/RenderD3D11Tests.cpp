@@ -1302,6 +1302,30 @@ void TestModels(const RendererOwner& renderer) {
     const auto cleared = Capture(renderer, 320, 240, 900);
     RequireWorldColor(cleared, ReadView(renderer), -500, 0, {0, 0, 255}, 1);
 
+    // 背面剔除：同一方块按两种绕序各画一次。从上看逆时针为正面：带剔除标志时正面可见、
+    // 反绕序被剔除透出蓝色地面；不带标志（双面）的反绕序在剔除层之后画，仍须可见。
+    {
+        vertices = {{{-250,-250,5, 0,0,1, 0.25f,0.75f}, {250,-250,5, 0,0,1, 0.75f,0.75f},
+            {-250,250,5, 0,0,1, 0.25f,0.25f}, {250,250,5, 0,0,1, 0.75f,0.25f}}}; // 前面已清零
+        const std::array<std::uint16_t, 12> windings{0,1,2,1,3,2, 0,2,1,1,2,3};
+        const std::array<War3RenderModelLayerV2, 3> cullLayers{{
+            {0, 0, WAR3_RENDER_MODEL_UNSHADED | WAR3_RENDER_MODEL_CULL_BACK, 1.0f},
+            {0, 0, WAR3_RENDER_MODEL_UNSHADED | WAR3_RENDER_MODEL_CULL_BACK, 1.0f},
+            {0, 0, WAR3_RENDER_MODEL_UNSHADED, 1.0f}}};
+        const std::array<War3RenderModelMeshV2, 3> cullMeshes{{{0, 6, 0, 0, 1}, {6, 6, 0, 1, 1}, {6, 6, 0, 2, 1}}};
+        const std::array<War3RenderModelV2, 3> cullModels{{{0, 1}, {1, 1}, {2, 1}}};
+        const std::array<War3RenderModelInstanceV2, 3> cullInstances{{at(0, -800, 0), at(1, 0, 0), at(2, 800, 0)}};
+        const War3RenderModelSceneV2 culling{sizeof(culling), 4, 12, 3, 3, 3, 3, 1, vertices.data(), windings.data(),
+            cullLayers.data(), cullMeshes.data(), cullModels.data(), cullInstances.data(), textures};
+        Require(api->submitModelScene(renderer.handle, &culling) == 0, "culling scene rejected");
+        const auto culled = Capture(renderer, 320, 240, 900);
+        const auto culledView = ReadView(renderer);
+        RequireWorldColor(culled, culledView, -800, 0, {255, 0, 0}, 1);
+        RequireWorldColor(culled, culledView, 0, 0, {0, 0, 255}, 1);
+        RequireWorldColor(culled, culledView, 800, 0, {255, 0, 0}, 1);
+        Require(api->submitModelScene(renderer.handle, &empty) == 0, "model clear after culling rejected");
+    }
+
     // 半透明地形（水面）在不透明模型之后绘制且不写深度：z=100 的半透明蓝色水面下，
     // z=5 的红色模型必须透出（红蓝混合），没有模型处透出绿色地面。
     {

@@ -53,7 +53,7 @@ void Factory() {
     Check((unfogged->Meshes()[0].flags & WAR3_RENDER_MODEL_UNFOGGED) != 0
         && unfogged->IdentitySha256() != beforeFlag->IdentitySha256(),
         "owned Unfogged must survive freezing and have a distinct content identity");
-    meshes[0].flags = 8;
+    meshes[0].flags = 16;
     Check(!FreezeOwnedStaticModelAsset(meshes, textures).Succeeded(), "unknown owned layer flag accepted");
     meshes[0].flags = originalFlags;
     meshes[0].indices[0] = UINT16_MAX;

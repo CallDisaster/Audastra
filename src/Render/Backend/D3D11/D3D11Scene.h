@@ -292,6 +292,9 @@ private:
     War3RenderTerrainGridCaptureFactsV2 terrainGridFacts_{};
     Ptr<ID3D11RasterizerState> rasterizer_;
     Ptr<ID3D11RasterizerState> groundDecalRasterizer_; // 显式GroundDecalPreview层独用，不改地形/模型。
+    // 非双面模型层的背面剔除状态：由进入 DrawModels 时的光栅状态派生，只改剔除方式。
+    Ptr<ID3D11RasterizerState> cullSource_, cullRasterizer_;
+    ID3D11RasterizerState* CullBackVariant(ID3D11RasterizerState* source);
     // 模型：顶点/索引/实例缓冲、贴图、每模型实例区间；按过滤模式分两遍绘制。
     Ptr<ID3D11VertexShader> modelVertexShader_;
     Ptr<ID3D11PixelShader> modelPixelShader_;
