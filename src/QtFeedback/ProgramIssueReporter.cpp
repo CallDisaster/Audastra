@@ -1,5 +1,7 @@
 #include "ProgramIssueReporter.h"
 
+#include "War3MapCore/Render/RenderPluginStatus.h"
+
 #include <QDateTime>
 
 #include <algorithm>
@@ -85,8 +87,7 @@ std::optional<Feedback::DraftResult> ProgramIssueReporter::RenderFailure(std::st
     const auto slot = RenderOperation(operation);
     if (!slot || result == 0 || boundedMessage.size() > 512 || reporting) return std::nullopt;
     // 旧成功状态（硬件名称等）不解释当前拒绝；失败状态或明确失败 message 则沿原诊断展示。
-    const bool priorSuccess = boundedMessage.starts_with("D3D11 WARP / Feature Level 11.0 / ")
-        || boundedMessage.starts_with("D3D11 hardware / Feature Level 11.0 / ");
+    const bool priorSuccess = Render::IsRenderSuccessStatus(boundedMessage);
     if (statusAvailable && !boundedMessage.empty() && !priorSuccess) return std::nullopt;
     try {
         // 悬停等周期查询可能持续失败；每个允许操作只在成功落盘后限频，不储存插件正文。

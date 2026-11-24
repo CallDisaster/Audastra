@@ -11,8 +11,9 @@ ParticleOutput VSParticle(ParticleInput input) {
 }
 float4 PSParticle(ParticleOutput input) : SV_TARGET {
     float4 texel = modelTexture.Sample(modelSampler, input.uv) * input.color;
-    // 原版材质 mode 1：GE 192 的 alpha test，并保留源 alpha 参与混合。
-    if (layerFilter == 1 && texel.a < (192.0 / 255.0)) discard;
+    // 原版材质 mode 1：8 位 alpha GE 192 的 alpha test，并保留源 alpha 参与混合。按 8 位取整比较（阈值 191.5/255）：
+    // 顶点 alpha 正好 192/255 时，部分显卡的插值会落到该值下方 1 ULP，直接比 192/255 会被误丢弃。
+    if (layerFilter == 1 && texel.a * 255.0 < 191.5) discard;
     if (layerFilter == 0) texel.a = 1.0;
     float keep = (layerFlags & 2) != 0 ? 1.0 : FogKeep(input.depth);
     if (layerFilter == 3 || layerFilter == 4) texel.rgb *= keep;

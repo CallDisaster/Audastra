@@ -135,6 +135,9 @@ void ProgramIssueReporterTests::RenderFailureRequiresMissingSpecificDiagnostic()
     const auto staleSuccess = reporter.RenderFailure("submitModelScene", -8, true, 0, 0,
         "D3D11 WARP / Feature Level 11.0 / model ready");
     QVERIFY(staleSuccess);
+    // Vulkan 后端的成功状态同样不解释当前拒绝；它的失败说明照常展示。
+    QVERIFY(reporter.RenderFailure("setCamera", -8, true, 0, 0, "Vulkan hardware / terrain base layer"));
+    QVERIFY(!reporter.RenderFailure("setEnvironment", -8, true, 0, 0, "Vulkan failed: original-secret-value-123"));
     const auto repeat = reporter.RenderFailure("resize", -5, true, 0, -5, {});
     QVERIFY(!repeat);
     QCOMPARE(Take(queue->GetStatus(resized->entry.id), "suppressed render occurrence").occurrences, std::uint64_t{1});

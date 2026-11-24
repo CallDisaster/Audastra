@@ -8,6 +8,7 @@
 #include "War3MapCore/RenderPluginTerrainGrid.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include "War3MapCore/Render/RenderAdapterPlugin.h"
+#include "War3MapCore/Render/RenderPluginStatus.h"
 #include "War3MapCore/Render/RenderPreparedUpdatePlugin.h"
 // 同一份插件源码按编译定义选后端；未定义 WAR3_RENDER_BACKEND_VULKAN 时就是 D3D11。
 #ifdef WAR3_RENDER_BACKEND_VULKAN
@@ -42,8 +43,12 @@ namespace {
 std::atomic<std::uint64_t> renderAdapterLuid{0};
 #ifdef WAR3_RENDER_BACKEND_VULKAN
 using RenderScene = War3Map::Render::VulkanScene;
+constexpr char kBackendName[] = "Vulkan";
+constexpr const char* kHardwareStatus = War3Map::Render::kRenderStatusVulkanHardware;
 #else
 using RenderScene = War3Map::Render::D3D11Scene;
+constexpr char kBackendName[] = "D3D11";
+constexpr const char* kHardwareStatus = War3Map::Render::kRenderStatusD3D11Hardware;
 #endif
 using War3Map::Render::Mesh;
 using War3Map::Render::TerrainOwnedCapacityBytes;
@@ -284,7 +289,7 @@ struct Renderer {
         std::lock_guard lock(mutex);
         status.result = static_cast<std::int32_t>(error);
         status.deviceReady = 0;
-        std::snprintf(status.message, sizeof(status.message), "D3D11 failed: 0x%08lX", static_cast<unsigned long>(error));
+        std::snprintf(status.message, sizeof(status.message), "%s failed: 0x%08lX", kBackendName, static_cast<unsigned long>(error));
         pixels.clear(); captureDone = captured;
         for (auto& ticket : rosterResults) if (ticket.state == WAR3_RENDER_ROSTER_QUEUED) {
             ticket.state = WAR3_RENDER_ROSTER_REJECTED; ticket.result = static_cast<std::int32_t>(error);
@@ -567,8 +572,9 @@ struct Renderer {
                     else if (FAILED(environmentError)) std::snprintf(status.message, sizeof(status.message),
                         "Environment upload failed: 0x%08lX; previous environment retained",
                         static_cast<unsigned long>(environmentError));
-                    else std::snprintf(status.message, sizeof(status.message), "%s / Feature Level 11.0 / %s%s",
-                        warp ? "D3D11 WARP" : "D3D11 hardware", next.mesh->terrain ? "terrain base layer" : "height colors",
+                    else std::snprintf(status.message, sizeof(status.message), "%s / %s%s",
+                        warp ? War3Map::Render::kRenderStatusD3D11Warp : kHardwareStatus,
+                        next.mesh->terrain ? "terrain base layer" : "height colors",
                         adapterFallback ? War3Map::Render::kRenderAdapterFallbackMessage : "");
                     if (capture) {
                         pixels = std::move(captured); captureDone = next.capture;

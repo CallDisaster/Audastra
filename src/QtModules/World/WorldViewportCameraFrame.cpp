@@ -1,6 +1,8 @@
 #include "WorldViewport.h"
 #include "WorldViewportInternals.h"
 
+#include "War3MapCore/Render/RenderPluginStatus.h"
+
 #include <QThread>
 
 #include <algorithm>
@@ -316,8 +318,7 @@ Result<Render::CapturedFrameRgba> WorldViewport::CaptureCompletedFrame(std::uint
             status.result != 0 || status.deviceReady != 1 || status.width != width || status.height != height ||
             status.frameCount != capture.frameCount || status.documentRevision != expectedRevision ||
             // 模型上传失败时插件仍可能返回背景帧和 result=0；成功状态必须绑定到同一完成帧。
-            !(std::string_view(status.message, sizeof(status.message)).starts_with("D3D11 WARP / Feature Level 11.0 / ") ||
-                std::string_view(status.message, sizeof(status.message)).starts_with("D3D11 hardware / Feature Level 11.0 / ")))
+            !Render::IsRenderSuccessStatus(std::string_view(status.message, sizeof(status.message))))
             return fail("WORLD_CAPTURE_MODEL_UPLOAD", "模型未在本次完成帧成功上传，截图已丢弃。");
     }
     output.documentRevision = expectedRevision;
