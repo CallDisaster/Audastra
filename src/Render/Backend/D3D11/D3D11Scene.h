@@ -75,7 +75,9 @@ public:
     struct GpuTiming { std::uint64_t serial = 0, nanoseconds = 0; bool available = false; };
     void PollGpuTimings(std::vector<GpuTiming>& output);
     [[nodiscard]] bool GpuTimingsPending() const noexcept;
-    HRESULT Initialize(bool warp);
+    // adapterLuid 非 0 时在这块显卡上建设备；本机已没有这块卡时退回系统默认（AdapterFallback() 为真）。
+    HRESULT Initialize(bool warp, std::uint64_t adapterLuid = 0);
+    [[nodiscard]] bool AdapterFallback() const noexcept { return adapterFallback_; }
     HRESULT SetTarget(HWND window, UINT width, UINT height);
     HRESULT SetMesh(const Mesh& mesh);
     // 只取成功SetMesh发布后的GPU所有者事实；捕获view/format由插件同锁封入。
@@ -239,6 +241,7 @@ private:
     std::uint64_t gpuSerial_ = 0;
     bool gpuTiming_ = false;
     std::array<char, 256> adapterName_{};
+    bool adapterFallback_ = false;
     UINT featureLevel_ = 0;
     bool softwareDevice_ = false;
     Ptr<ID3D11DeviceContext> context_;

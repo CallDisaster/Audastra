@@ -3,6 +3,7 @@
 #include "AgentSettingsStore.h"
 #include "ApplicationSettingsTransfer.h"
 #include "War3MapCore/Update/SemanticVersion.h"
+#include "War3MapCore/Render/RenderAdapters.h"
 #include "../QtCommon/MapBackupPaths.h"
 #include "../QtCommon/ApplicationPaths.h"
 
@@ -173,6 +174,11 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
     if (services.worldEffectQuality && *services.worldEffectQuality != QStringLiteral("complete")
         && *services.worldEffectQuality != QStringLiteral("balanced") && *services.worldEffectQuality != QStringLiteral("power-saving"))
         return Fail(error, QStringLiteral("特效显示须为完整、平衡或省电。"));
+    if (services.renderAdapter && !Render::ValidRenderAdapterKey(services.renderAdapter->toStdString()))
+        return Fail(error, QStringLiteral("显卡须为“跟随系统”或本机列出的一块显卡。"));
+    if (services.renderAdapterName && (services.renderAdapterName->size() > 256
+        || std::any_of(services.renderAdapterName->begin(), services.renderAdapterName->end(), [](QChar c) { return c.unicode() < 32; })))
+        return Fail(error, QStringLiteral("显卡名称无效。"));
     if (services.mapTestWindowMode && !Services::ParseMapTestWindowMode(services.mapTestWindowMode->toStdString()))
         return Fail(error, QStringLiteral("测试窗口方式须为窗口化、无边框窗口化或全屏。"));
     if (services.mapTestRenderer && !Services::ParseMapTestRenderer(services.mapTestRenderer->toStdString()))
@@ -220,6 +226,8 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
     if (services.recoveryEnabled) keys.push_back({QString::fromLatin1(kRecoveryEnabledSettingsKey), {}, *services.recoveryEnabled});
     if (services.recoveryIntervalMinutes) keys.push_back({QString::fromLatin1(kRecoveryIntervalSettingsKey), {}, *services.recoveryIntervalMinutes});
     if (services.worldEffectQuality) keys.push_back({QStringLiteral("world/effectQuality"), {}, *services.worldEffectQuality});
+    if (services.renderAdapter) keys.push_back({QStringLiteral("world/renderAdapter"), {}, *services.renderAdapter});
+    if (services.renderAdapterName) keys.push_back({QStringLiteral("world/renderAdapterName"), {}, *services.renderAdapterName});
     for (auto& key : keys) {
         key.before = ReadKey(preferences, key.key);
         key.changed = key.before.exists ? !Same(key.before, {true, key.written}) : !key.written.toString().isEmpty();

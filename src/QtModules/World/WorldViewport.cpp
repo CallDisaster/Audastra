@@ -1,6 +1,8 @@
 #include "WorldViewport.h"
 #include "WorldDiagnosticJson.h"
 #include "WorldFrameRelease.h"
+#include "WorldRenderAdapter.h"
+#include "War3MapCore/Render/RenderAdapterPlugin.h"
 #include "WorldSelectionPresentation.h"
 #include "WorldViewportInternals.h"
 
@@ -169,6 +171,8 @@ void WorldViewport::EnsureRenderer() {
         failed_ = true;
         SetStatus(tr("无法加载兼容的 D3D11 渲染插件：%1").arg(library_.errorString()));
     } else {
+        // 编辑器设置的显卡（或命令行 --render-adapter）；测试注入的后端不经插件选卡。
+        adapterNotice_ = injected_ ? QString() : ApplyRenderAdapterPreference(library_);
         const War3RenderCreateInfoV2 info{sizeof(War3RenderCreateInfoV2), static_cast<std::uint32_t>(pixels.width()),
             static_cast<std::uint32_t>(pixels.height()), 0};
         renderer_ = api_->createRenderer(&info);
@@ -256,7 +260,15 @@ void WorldViewport::Tick() {
             if (std::string_view(status.message, sizeof(status.message)).starts_with("Model upload failed:"))
                 SetStatus(tr("模型上传失败：%1").arg(QString::fromUtf8(status.message,
                     std::find(std::begin(status.message), std::end(status.message), '\0') - std::begin(status.message))));
-            else SetStatus(status.software ? tr("D3D11 · 软件渲染") : tr("D3D11 · 硬件渲染"));
+            else {
+                // 选定的显卡在建设备时已不存在：插件退回系统默认并在状态消息里注明，这里如实显示。
+                if (adapterNotice_.isEmpty() && std::string_view(status.message, sizeof(status.message))
+                        .find(Render::kRenderAdapterFallbackMessage) != std::string_view::npos)
+                    adapterNotice_ = tr("所选显卡不可用，已使用系统默认显卡");
+                auto text = status.software ? tr("D3D11 · 软件渲染") : tr("D3D11 · 硬件渲染");
+                if (!adapterNotice_.isEmpty()) text += QStringLiteral(" · ") + adapterNotice_;
+                SetStatus(text);
+            }
         }
         if (animationRenderer_) {
             const auto skin = animationRenderer_->StatusNow();

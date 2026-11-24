@@ -7,6 +7,7 @@
 #include "War3MapCore/RenderPluginTerrainBlight.h"
 #include "War3MapCore/RenderPluginTerrainGrid.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
+#include "War3MapCore/Render/RenderAdapterPlugin.h"
 #include "Backend/D3D11/D3D11Scene.h"
 #include "Scene/ModelSkinInput.h"
 #include "Particles/ParticleInput.h"
@@ -25,8 +26,12 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
 
 namespace {
+// 编辑器“选择显卡”设置：之后新建的渲染器在这块卡上建设备；0 表示跟随系统默认。
+std::atomic<std::uint64_t> renderAdapterLuid{0};
 using War3Map::Render::D3D11Scene;
 using War3Map::Render::Mesh;
 using War3Map::Render::TerrainOwnedCapacityBytes;
@@ -144,6 +149,7 @@ struct Renderer {
     std::deque<std::shared_ptr<const ParticleFrameData>> retiredParticles;
     std::atomic<bool> closing{false}, workerExited{false};
     bool warp = false, captureActive = false;
+    std::uint64_t adapterLuid = 0; // 创建时取下的显卡选择，之后改设置不影响已建渲染器。
     FrameState state;
     War3RenderStatusV2 status{sizeof(War3RenderStatusV2)};
     std::vector<std::uint8_t> pixels;
@@ -187,6 +193,7 @@ struct Renderer {
     std::thread thread;
     explicit Renderer(const War3RenderCreateInfoV2& info) {
         state.width = info.width; state.height = info.height; warp = info.forceWarp != 0;
+        adapterLuid = renderAdapterLuid.load();
         status.width = info.width; status.height = info.height;
         status.software = warp ? 1u : 0u;
         thread = std::thread([this] { Run(); });
@@ -231,7 +238,8 @@ struct Renderer {
 #ifdef WAR3_RENDER_TEST_FAULTS
             scene.SetTestFaultSource(&testFault);
 #endif
-            HRESULT failure = scene.Initialize(warp);
+            HRESULT failure = scene.Initialize(warp, adapterLuid);
+            const bool adapterFallback = scene.AdapterFallback();
             {
                 std::lock_guard lock(mutex);
                 metricsAdapterName = scene.AdapterName();
@@ -498,8 +506,9 @@ struct Renderer {
                     else if (FAILED(environmentError)) std::snprintf(status.message, sizeof(status.message),
                         "Environment upload failed: 0x%08lX; previous environment retained",
                         static_cast<unsigned long>(environmentError));
-                    else std::snprintf(status.message, sizeof(status.message), "%s / Feature Level 11.0 / %s",
-                        warp ? "D3D11 WARP" : "D3D11 hardware", next.mesh->terrain ? "terrain base layer" : "height colors");
+                    else std::snprintf(status.message, sizeof(status.message), "%s / Feature Level 11.0 / %s%s",
+                        warp ? "D3D11 WARP" : "D3D11 hardware", next.mesh->terrain ? "terrain base layer" : "height colors",
+                        adapterFallback ? War3Map::Render::kRenderAdapterFallbackMessage : "");
                     if (capture) {
                         pixels = std::move(captured); captureDone = next.capture;
                         captureInfo = {sizeof(War3RenderCaptureInfoV2), next.width, next.height,
@@ -2068,6 +2077,21 @@ const War3RenderPluginApiV2 api{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGI
 }
 extern "C" WAR3_RENDER_EXPORT const War3RenderPluginApiV2* WAR3_RENDER_CALL
 War3MapEditor_GetRenderPluginApiV2(std::uint32_t version) { return version == WAR3_RENDER_PLUGIN_API_V2 ? &api : nullptr; }
+// 编辑器设置的显卡（见 RenderAdapterPlugin.h）：本机没有这块卡时记为系统默认并返回 1，不静默冒用。
+extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
+War3MapEditor_SetRenderAdapterV1(std::uint64_t luid) {
+    if (luid) {
+        Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+        Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+        const LUID value{static_cast<DWORD>(luid & 0xFFFFFFFFu), static_cast<LONG>(luid >> 32)};
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || FAILED(factory->EnumAdapterByLuid(value, IID_PPV_ARGS(&adapter)))) {
+            renderAdapterLuid.store(0);
+            return 1;
+        }
+    }
+    renderAdapterLuid.store(luid);
+    return 0;
+}
 #ifdef WAR3_RENDER_TEST_FAULTS
 extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
 War3RenderTest_SetFault(War3RendererHandle handle, std::uint32_t stage) {

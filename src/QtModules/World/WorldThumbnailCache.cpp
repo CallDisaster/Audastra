@@ -1,4 +1,5 @@
 #include "WorldThumbnailCache.h"
+#include "WorldRenderAdapter.h"
 
 #include <QCryptographicHash>
 #include <QCoreApplication>
@@ -80,6 +81,8 @@ struct Worker {
             if (library->load()) {
                 const auto getApi = reinterpret_cast<War3GetRenderPluginApiV2>(library->resolve("War3MapEditor_GetRenderPluginApiV2"));
                 if (getApi) api = getApi(WAR3_RENDER_PLUGIN_API_V2);
+                // 缩略图与视口用同一块显卡；不可用时同样退回系统默认（说明由视口状态行给出）。
+                (void)ApplyRenderAdapterPreference(*library);
             }
         }
         if (!Render::AnimationRenderer::Supported(api) || !api->createRenderer || !api->destroyRenderer

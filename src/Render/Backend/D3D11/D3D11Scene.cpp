@@ -1,6 +1,7 @@
 #include "D3D11Scene.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include <DirectXMath.h>
+#include <dxgi1_4.h>
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -82,10 +83,20 @@ HRESULT D3D11Scene::Buffer(const void* data, UINT bytes, UINT bind, ID3D11Buffer
     initial.pSysMem = data;
     return device_->CreateBuffer(&desc, data ? &initial : nullptr, output);
 }
-HRESULT D3D11Scene::Initialize(bool warp) {
+HRESULT D3D11Scene::Initialize(bool warp, std::uint64_t adapterLuid) {
     constexpr D3D_FEATURE_LEVEL levels[]{D3D_FEATURE_LEVEL_11_0};
     D3D_FEATURE_LEVEL actual{};
-    HRESULT hr = D3D11CreateDevice(nullptr, warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE,
+    // 编辑器设置指定了显卡时按 LUID 取这块卡；找不到（已拔出或驱动停用）就用系统默认，并如实标记退回。
+    Ptr<IDXGIAdapter> chosen;
+    adapterFallback_ = false;
+    if (!warp && adapterLuid) {
+        Ptr<IDXGIFactory4> factory;
+        const LUID luid{static_cast<DWORD>(adapterLuid & 0xFFFFFFFFu), static_cast<LONG>(adapterLuid >> 32)};
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || FAILED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&chosen)))) {
+            chosen.Reset(); adapterFallback_ = true;
+        }
+    }
+    HRESULT hr = D3D11CreateDevice(chosen.Get(), warp ? D3D_DRIVER_TYPE_WARP : chosen ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
         nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 1, D3D11_SDK_VERSION,
         &device_, &actual, &context_);
     if (FAILED(hr)) return hr;

@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "WorldRenderAdapter.h"
 #include "ApplicationIdentity.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "War3MapCore/DiagnosticTrace.h"
@@ -380,6 +381,11 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     const int backgroundSeconds = backgroundOption >= 0 ? arguments[backgroundOption + 1].toInt(&backgroundValid) : 0;
     if (!backgroundValid || (backgroundOption >= 0 && (backgroundSeconds < 1 || backgroundSeconds > 3600))) return 1;
     if (cameraTour && backgroundOption < 0) return 1;
+    // 测量与对照用：本进程显式选显卡（显卡键、名称片段或 default），覆盖编辑器设置，不写回设置。
+    if (const qsizetype adapterOption = arguments.indexOf(QStringLiteral("--render-adapter")); adapterOption >= 0) {
+        if (adapterOption + 1 >= arguments.size() || arguments[adapterOption + 1].startsWith(QStringLiteral("--"))) return 1;
+        War3Map::Modules::SetRenderAdapterOverride(arguments[adapterOption + 1]);
+    }
     MainWindow window(measurementOption >= 0 ? MainWindow::StartupMode::HeadlessProbe : MainWindow::StartupMode::Normal);
     window.SetSaveInProcessOnly(saveInProcessOnly);
     // 与探针共用会话级 UI 根；不改作者全局设置，旧版目录同样由 Catalog 解析。

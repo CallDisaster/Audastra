@@ -862,6 +862,8 @@ void MainWindow::ShowApplicationSettings() {
         services.recoveryEnabled = recovery.recoveryEnabled;
         services.recoveryIntervalMinutes = recovery.recoveryIntervalMinutes;
         services.worldEffectQuality = worldEffectsPage->QualityName();
+        services.renderAdapter = worldEffectsPage->RenderAdapterKey();
+        services.renderAdapterName = worldEffectsPage->RenderAdapterName();
         if (feedbackSection) {
             if (!feedbackSection->Validate(error)) return false;
             const auto feedback = feedbackSection->Preferences();

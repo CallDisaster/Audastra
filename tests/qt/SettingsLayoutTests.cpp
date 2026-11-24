@@ -67,7 +67,8 @@ void Capture(QWidget& dialog, const QString& pageName, const QString& fileName,
     const QStringList names{QStringLiteral("updateChannel"), QStringLiteral("updateSettingsStatus"),
         QStringLiteral("mapTestRuntimeRoot"), QStringLiteral("mapTestSlkEnabled"),
         QStringLiteral("mapBackupDirectory"), QStringLiteral("mapBackupLimit"),
-        QStringLiteral("recoveryEnabled"), QStringLiteral("recoveryIntervalMinutes"), QStringLiteral("worldEffectQuality")};
+        QStringLiteral("recoveryEnabled"), QStringLiteral("recoveryIntervalMinutes"), QStringLiteral("worldEffectQuality"),
+        QStringLiteral("worldRenderAdapter")};
     for (const auto& name : names) {
         if (const auto* control = page.findChild<QWidget*>(name)) controls.insert(name, RectJson(InDialog(control, dialog)));
     }
@@ -201,7 +202,8 @@ void SettingsLayoutTests::SharedGuttersAndWrappedUpdateContent() {
             const QStringList fields = name == QStringLiteral("mapTestSettingsPage")
                 ? QStringList{QStringLiteral("mapTestRuntimeRoot"),
                     QStringLiteral("mapBackupDirectory"), QStringLiteral("mapBackupLimit")}
-                : name == QStringLiteral("worldEffectsSettingsPage") ? QStringList{QStringLiteral("worldEffectQuality")}
+                : name == QStringLiteral("worldEffectsSettingsPage")
+                    ? QStringList{QStringLiteral("worldEffectQuality"), QStringLiteral("worldRenderAdapter")}
                 : QStringList{QStringLiteral("recoveryEnabled"), QStringLiteral("recoveryIntervalMinutes")};
             for (const auto& field : fields) {
                 auto* control = page->findChild<QWidget*>(field); QVERIFY(control);

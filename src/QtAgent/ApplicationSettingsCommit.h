@@ -37,6 +37,8 @@ struct ApplicationServicePreferences {
     std::optional<bool> recoveryEnabled;
     std::optional<int> recoveryIntervalMinutes;
     std::optional<QString> worldEffectQuality;
+    // 世界视口用的显卡：跨重启的显卡键（空 = 跟随系统）与选择时的显示名。
+    std::optional<QString> renderAdapter, renderAdapterName;
     std::optional<QString> externalDependenciesDirectory;
 };
 

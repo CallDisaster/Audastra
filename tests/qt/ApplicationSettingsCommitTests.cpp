@@ -111,6 +111,7 @@ private slots:
     void failedFinalSaveRestoresRecoveryTypesAndAbsentKeys();
     void recoveryRollbackPreservesConcurrentInterval();
     void worldEffectsCommitAndRollback();
+    void renderAdapterCommitAndValidation();
     void mapTestDisplayCommitAndValidation();
 };
 
@@ -814,6 +815,38 @@ void ApplicationSettingsCommitTests::worldEffectsCommitAndRollback() {
         QCOMPARE(actual.value(QStringLiteral("world/effectQuality")).toString(), name);
         QCOMPARE(actual.value(QStringLiteral("world/unrelated")).toInt(), 17);
     }
+}
+
+// 世界视口显卡：只写跨重启的显卡键（空 = 跟随系统）与显示名；格式不对的键、名称一律拒绝且不改已存值。
+void ApplicationSettingsCommitTests::renderAdapterCommitAndValidation() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto ini = directory.filePath(QStringLiteral("adapter.ini"));
+    QSettings preferences(ini, QSettings::IniFormat);
+    preferences.setFallbacksEnabled(false);
+    AgentSettingsStore store(directory.filePath(QStringLiteral("ai.json")));
+    QVERIFY(Write(store.FilePath(), originalJson));
+    ApplicationServicePreferences services;
+    QString error;
+    services.renderAdapter = QStringLiteral("10DE:1CB1:11BC1028:A1#0");
+    services.renderAdapterName = QStringLiteral("Synthetic adapter");
+    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services), qPrintable(error));
+    QCOMPARE(preferences.value(QStringLiteral("world/renderAdapter")).toString(), QStringLiteral("10DE:1CB1:11BC1028:A1#0"));
+    QCOMPARE(preferences.value(QStringLiteral("world/renderAdapterName")).toString(), QStringLiteral("Synthetic adapter"));
+    for (const auto& invalid : {QStringLiteral("Quadro"), QStringLiteral("10de:1cb1:11bc1028:a1#0"),
+             QStringLiteral("10DE:1CB1:11BC1028:A1"), QStringLiteral("10DE:1CB1:11BC1028:A1#1234")}) {
+        services.renderAdapter = invalid;
+        QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+        QCOMPARE(preferences.value(QStringLiteral("world/renderAdapter")).toString(), QStringLiteral("10DE:1CB1:11BC1028:A1#0"));
+    }
+    services.renderAdapter = QString();
+    services.renderAdapterName = QStringLiteral("bad") + QChar(10) + QStringLiteral("name"); // 控制字符
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+    services.renderAdapterName = QString();
+    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services), qPrintable(error));
+    QSettings actual(ini, QSettings::IniFormat);
+    actual.setFallbacksEnabled(false);
+    QVERIFY(actual.value(QStringLiteral("world/renderAdapter")).toString().isEmpty()); // 跟随系统。
 }
 
 // 地图测试的显示设置：只认稳定名称，认不出的值不写入。

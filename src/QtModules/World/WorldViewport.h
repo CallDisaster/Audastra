@@ -387,6 +387,7 @@ private:
     const War3RenderPluginApiV2* api_ = nullptr;
     War3RendererHandle renderer_ = nullptr;
     bool injected_ = false;
+    QString adapterNotice_; // 所选显卡不可用、已退回系统默认时附在状态行后的说明
     bool initializing_ = false;
     bool failed_ = false;
     bool destroying_ = false;

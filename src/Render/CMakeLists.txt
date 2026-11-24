@@ -70,6 +70,13 @@ target_compile_options(war3-render-d3d11 PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(war3-render-d3d11 PRIVATE d3d11 dxgi War3RenderCore::SkinInput)
 
 # CPU 材质目录、解码和空间查询共用 Core；不依赖 Qt 或 GPU 插件。
+# 列出本机显卡供“选择显卡”设置使用（只查询 DXGI，不建设备）；设置页与视口共用。
+add_library(War3MapRenderAdapters STATIC RenderAdapters.cpp)
+add_library(War3MapEditor::RenderAdapters ALIAS War3MapRenderAdapters)
+target_link_libraries(War3MapRenderAdapters PUBLIC War3MapEditor::Core dxgi)
+target_compile_definitions(War3MapRenderAdapters PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(War3MapRenderAdapters PRIVATE /W4 /permissive- /utf-8)
+
 add_library(War3MapRenderSupport STATIC
     TerrainShadowCaster.cpp
     Tools/FrameMeasurement.cpp
@@ -123,6 +130,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/EditorOverlay.cpp)
 add_library(War3MapEditor::RenderSupport ALIAS War3MapRenderSupport)
 target_link_libraries(War3MapRenderSupport PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3RenderCore::CPU)
+target_link_libraries(War3MapRenderSupport PUBLIC War3MapEditor::RenderAdapters)
 target_compile_definitions(War3MapRenderSupport PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(War3MapRenderSupport PRIVATE /W4 /permissive- /utf-8)
 

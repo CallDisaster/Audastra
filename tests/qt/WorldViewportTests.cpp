@@ -4,6 +4,8 @@
 #include "WorldAnimationViewContractChecks.h"
 #include "WorldAnimationPlaybackContractChecks.h"
 #include "WorldModelPreview.h"
+#include "WorldRenderAdapter.h"
+#include "War3MapCore/Render/RenderAdapters.h"
 #include "../AnimationTestModel.h"
 #include "../AnimationParticleContinuityTests.h"
 #include "../AnimationParticleVisibilityPreviewTests.h"
@@ -31,6 +33,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -379,6 +382,7 @@ private slots:
     void AnimationPauseStepAndCaptureStayBound();
     void AnimationPickHistorySharesAcceptedFrames();
     void AnimationPickHistoryChargesWholeSharedFrames();
+    void RenderAdapterPreferenceFindsKeysNamesAndOverride();
     void ModelPreviewUsesGameOrderAndSubmitsMotion();
     void ModelPreviewParticleGameOrderStaysStrictAboutInvalidData();
     void ModelPreviewRealSequences();
@@ -698,6 +702,35 @@ void WorldViewportTests::AnimationPickHistoryChargesWholeSharedFrames() {
     History::Append(viewport, oversized);
     QCOMPARE(History::Count(viewport), std::size_t{0});
     QCOMPARE(viewport.AnimationTarget().get(), oversized.get()); // 拒绝旁路历史，不丢绘制源帧。
+}
+
+void WorldViewportTests::RenderAdapterPreferenceFindsKeysNamesAndOverride() {
+    // 显卡键精确匹配优先；名称片段不区分大小写；都不匹配返回空，由调用方退回系统默认。
+    std::vector<Render::RenderAdapter> adapters(3);
+    adapters[0].key = "8086:3E98:08711028:02#0"; adapters[0].name = "Synthetic Integrated Adapter"; adapters[0].luid = 11;
+    adapters[1].key = "10DE:1CB1:11BC1028:A1#0"; adapters[1].name = "Synthetic Discrete Adapter"; adapters[1].luid = 22;
+    adapters[2].key = "10DE:1CB1:11BC1028:A1#1"; adapters[2].name = "Synthetic Discrete Adapter"; adapters[2].luid = 33;
+    QCOMPARE(Render::FindRenderAdapter(adapters, "10DE:1CB1:11BC1028:A1#1")->luid, std::uint64_t{33});
+    QCOMPARE(Render::FindRenderAdapter(adapters, "discrete")->luid, std::uint64_t{22}); // 同名取第一块。
+    QCOMPARE(Render::FindRenderAdapter(adapters, "INTEGRATED")->luid, std::uint64_t{11});
+    QVERIFY(!Render::FindRenderAdapter(adapters, "10DE:1CB1:11BC1028:A1#2"));
+    QVERIFY(!Render::FindRenderAdapter(adapters, ""));
+    QVERIFY(Render::ValidRenderAdapterKey("") && Render::ValidRenderAdapterKey(adapters[2].key));
+    QVERIFY(!Render::ValidRenderAdapterKey("10DE:1CB1:11BC1028:A1") && !Render::ValidRenderAdapterKey("discrete"));
+    // 本机实际枚举：只列硬件显卡，键合法且互不相同。
+    const auto actual = Render::EnumerateRenderAdapters();
+    QVERIFY(actual.Succeeded());
+    std::set<std::string> keys;
+    for (const auto& adapter : *actual.value) {
+        QVERIFY2(Render::ValidRenderAdapterKey(adapter.key) && !adapter.key.empty(), adapter.key.c_str());
+        QVERIFY(keys.insert(adapter.key).second);
+        QVERIFY(adapter.luid != 0);
+    }
+    // 命令行覆盖：default 表示跟随系统；其他文本原样作为查找条件和说明名。
+    SetRenderAdapterOverride(QStringLiteral(" Discrete "));
+    QCOMPARE(ReadRenderAdapterPreference().text, QStringLiteral("Discrete"));
+    SetRenderAdapterOverride(QStringLiteral("DEFAULT"));
+    QVERIFY(ReadRenderAdapterPreference().text.isEmpty());
 }
 
 void WorldViewportTests::CameraAndCompletedFrameStayBound() {
