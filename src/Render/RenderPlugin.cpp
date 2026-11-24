@@ -9,7 +9,12 @@
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include "War3MapCore/Render/RenderAdapterPlugin.h"
 #include "War3MapCore/Render/RenderPreparedUpdatePlugin.h"
+// 同一份插件源码按编译定义选后端；未定义 WAR3_RENDER_BACKEND_VULKAN 时就是 D3D11。
+#ifdef WAR3_RENDER_BACKEND_VULKAN
+#include "Backend/Vulkan/VulkanScene.h"
+#else
 #include "Backend/D3D11/D3D11Scene.h"
+#endif
 #include "Scene/ModelSkinInput.h"
 #include "Particles/ParticleInput.h"
 #include "Scene/ModelSceneLayerData.h"
@@ -34,7 +39,11 @@
 namespace {
 // 编辑器“选择显卡”设置：之后新建的渲染器在这块卡上建设备；0 表示跟随系统默认。
 std::atomic<std::uint64_t> renderAdapterLuid{0};
-using War3Map::Render::D3D11Scene;
+#ifdef WAR3_RENDER_BACKEND_VULKAN
+using RenderScene = War3Map::Render::VulkanScene;
+#else
+using RenderScene = War3Map::Render::D3D11Scene;
+#endif
 using War3Map::Render::Mesh;
 using War3Map::Render::TerrainOwnedCapacityBytes;
 using War3Map::Render::TerrainGridUploadMetadataBytes;
@@ -276,7 +285,7 @@ struct Renderer {
     void Run() noexcept {
         struct Exited { std::atomic<bool>& value; ~Exited() { value.store(true, std::memory_order_release); } } exited{workerExited};
         try {
-            D3D11Scene scene;
+            RenderScene scene;
 #ifdef WAR3_RENDER_TEST_FAULTS
             scene.SetTestFaultSource(&testFault);
 #endif
@@ -303,7 +312,7 @@ struct Renderer {
             std::shared_ptr<const std::vector<War3RenderVertexV2>> overlay = std::make_shared<std::vector<War3RenderVertexV2>>();
             std::uint64_t appliedSceneEpoch = 0;
             HRESULT meshError = S_OK;
-            std::vector<D3D11Scene::GpuTiming> gpuTimings;
+            std::vector<RenderScene::GpuTiming> gpuTimings;
             // GPU 时间戳晚一两帧才可读：读出后回填到同一次绘制的完成记录，不改其他字段。
             const auto publishGpuTimings = [&] {
                 gpuTimings.clear();
@@ -399,7 +408,7 @@ struct Renderer {
                 std::shared_ptr<const RosterCandidate> installedRoster;
                 if (SUCCEEDED(hr) && next.roster) {
                     const auto roster = next.roster;
-                    std::unique_ptr<D3D11Scene::PreparedInstanceRoster> prepared;
+                    std::unique_ptr<RenderScene::PreparedInstanceRoster> prepared;
                     const auto oldSkin = scene.SkinStatus();
                     auto rosterError = models == roster->baseModels && SUCCEEDED(modelError)
                         && SUCCEEDED(visibilityError) && oldSkin.sceneVersion == roster->expected.sceneVersion
@@ -462,7 +471,7 @@ struct Renderer {
                 { std::lock_guard lock(mutex); completed = captureDone; }
                 const bool capture = next.capture > completed;
                 float viewProjection[16]{};
-                D3D11Scene::DrawTimings drawTimings;
+                RenderScene::DrawTimings drawTimings;
                 if (SUCCEEDED(hr)) hr = scene.Draw(next.camera, capture ? &captured : nullptr, closing, viewProjection, &drawTimings);
                 if (FAILED(hr)) { failure = hr; ReportFailure(hr, next.capture); continue; }
                 {
