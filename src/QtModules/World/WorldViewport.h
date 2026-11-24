@@ -96,6 +96,9 @@ public:
         Render::WorldModelScene picking; // 只填可见实例与请求映射，不复制模型/包围盒
         std::optional<Result<Services::WorldModelBugPlaceholderFrameSnapshot>> bugSnapshot;
         std::uint64_t renderTicket = 0, renderEpoch = 0; // 插件预备票据及其渲染器代次；0 = 未预备
+        // 该帧实际驻留字节（遍历全部姿势链），在后台算好；frame 标明属于哪一帧，界面线程核对后直接用。
+        const Render::AnimationFrame* retainedFrame = nullptr;
+        std::uint64_t retainedBytes = 0;
     };
     // 后台线程借用当前渲染器预备插件更新；销毁渲染器前独占锁清空，epoch 区分前后两个渲染器。
     struct RenderPrepareLease {

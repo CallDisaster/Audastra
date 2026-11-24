@@ -219,6 +219,7 @@ void WorldViewport::PrepareAnimationFrame(const std::shared_ptr<const Render::An
     output.scene = scene;
     Render::AnimationPickingInstances(*scene, frame, output.picking);
     output.bugSnapshot = Services::CaptureWorldModelBugPlaceholderFrame(scene, frame);
+    output.retainedFrame = &frame; output.retainedBytes = Render::AnimationFrameRetainedBytes(frame);
 }
 bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::AnimationFrame> frame,
     const std::shared_ptr<Render::WorldModelScene>& picking, AnimationFramePreparation* prepared) try {

@@ -657,7 +657,8 @@ void WorldViewport::RetainAnimationPickFrame(AnimationFramePreparation* prepared
     // 共享帧连同粒子、材质与检查点一起驻留，按整帧实际占用计费；至多保留最近三帧。
     const auto budget = animationPickHistoryBudget_;
     constexpr std::size_t maximumFrames = 3;
-    const auto bytes = Render::AnimationFrameRetainedBytes(source);
+    const auto bytes = prepared && prepared->retainedFrame == &source ? prepared->retainedBytes
+        : Render::AnimationFrameRetainedBytes(source);
     const auto retire = [this] {
         auto retired = std::move(animationPickHistory_.front().frame);
         animationPickHistory_.pop_front();
