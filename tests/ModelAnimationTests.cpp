@@ -378,6 +378,18 @@ void ResidentFrames() {
             checkChanges("recycled reuse",f,before.get(),*frame,true);
         }
     }
+    {
+        // 多留一帧：回收到的帧比上一帧早两帧，须沿两段变化记录补齐，仍与整帧重建逐位相同。
+        auto service=create(true,4);
+        std::shared_ptr<const AnimationFrame> older,frame;
+        for (std::size_t f=0;f<path.size();++f) {
+            const auto before=frame;
+            frame=Good(service->Prepare(before.get(),command(f)));
+            check("recycled two behind",f,*rebuilt[f],*frame);
+            checkChanges("recycled two behind",f,before.get(),*frame,true);
+            older=before;
+        }
+    }
     // 静止镜头的帧里多数实例不在清单上；全部列出就失去意义。
     Require(unlistedTotal>listedTotal,"change lists listed almost every instance");
     std::cout<<"resident_frames="<<path.size()<<" instances="<<count<<" view_transitions="<<transitions<<" identical=1"

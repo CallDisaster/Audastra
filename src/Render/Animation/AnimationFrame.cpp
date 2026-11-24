@@ -25,14 +25,16 @@ std::uint64_t ElapsedNs(TimingClock::time_point start) noexcept {
 // 新增数组字段不在此列也照样正确，只是不复用其容量。
 // 逐实例数组（实例、姿势链、两种层片段）连元素一起留下：Prepare 打包时逐个整体重写，
 // 省掉每帧串行析构/构造几万条姿势链，改由打包分段并行覆盖。
-void ResetAnimationFrameKeepingCapacity(AnimationFrame& frame) noexcept {
+// keepPose 时五个姿势数组连内容留下（见 AnimationFramePool::Take）。
+void ResetAnimationFrameKeepingCapacity(AnimationFrame& frame, bool keepPose) noexcept {
     AnimationFrame fresh;
     const auto keep=[](auto& from,auto& to) noexcept { from.clear(); to.swap(from); };
     const auto keepElements=[](auto& from,auto& to) noexcept { to.swap(from); };
+    const auto keepPoseArray=[&](auto& from,auto& to) noexcept { if (keepPose) keepElements(from,to); else keep(from,to); };
     keep(frame.requestVisibility,fresh.requestVisibility); keep(frame.states,fresh.states); keepElements(frame.instances,fresh.instances);
-    keep(frame.groups,fresh.groups); keep(frame.alphas,fresh.alphas); keep(frame.colors,fresh.colors);
-    keep(frame.layerAlphas,fresh.layerAlphas); keepElements(frame.layerSlices,fresh.layerSlices);
-    keep(frame.materialStates,fresh.materialStates); keepElements(frame.materialStateSlices,fresh.materialStateSlices);
+    keepPoseArray(frame.groups,fresh.groups); keepPoseArray(frame.alphas,fresh.alphas); keepPoseArray(frame.colors,fresh.colors);
+    keepPoseArray(frame.layerAlphas,fresh.layerAlphas); keepElements(frame.layerSlices,fresh.layerSlices);
+    keepPoseArray(frame.materialStates,fresh.materialStates); keepElements(frame.materialStateSlices,fresh.materialStateSlices);
     keepElements(frame.poses,fresh.poses); keep(frame.changedInstances,fresh.changedInstances);
     keep(frame.geosetIssues,fresh.geosetIssues); keep(frame.materialIssues,fresh.materialIssues);
     keep(frame.collisionMatrices,fresh.collisionMatrices); keep(frame.pickBounds,fresh.pickBounds);
@@ -46,13 +48,16 @@ void AddMotionHash(std::uint64_t& hash, const void* data, std::size_t size) noex
     for (std::size_t i=0;i<size;++i) { hash^=bytes[i]; hash*=1099511628211ull; }
 }
 }
-std::shared_ptr<AnimationFrame> AnimationFramePool::Take(AnimationParticleHost* particles) {
+std::shared_ptr<AnimationFrame> AnimationFramePool::Take(AnimationParticleHost* particles, std::uint64_t* residentContentVersion) {
+    if (residentContentVersion) *residentContentVersion=0;
     std::unique_ptr<AnimationFrame> frame;
     { std::lock_guard lock(mutex_); frame=std::move(spare_); }
     if (frame) {
         // 回收帧已无其他持有者：其中只剩本服务持有的粒子状态交给对应绑定借用容量。
         if (particles) RetireAnimationParticleCheckpoint(*particles,std::move(frame->particleCheckpoint));
-        ResetAnimationFrameKeepingCapacity(*frame);
+        const bool resident=residentContentVersion && !frame->sharedPoseRanges && frame->contentVersion;
+        if (resident) *residentContentVersion=frame->contentVersion;
+        ResetAnimationFrameKeepingCapacity(*frame,resident);
     } else frame=std::make_unique<AnimationFrame>();
     auto self=shared_from_this();
     // 控制块分配失败时标准库会对指针调用删除器，帧回到备用位，不泄漏。
@@ -395,7 +400,8 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         return fail("ANIMATION_PREVIEW_BUDGET_INVALID", "单帧特效预算只适用于交互预览，且必须在锚样硬上限内。");
     if (previous && (previous->sceneVersion!=scene.sceneVersion || previous->documentRevision!=scene.documentRevision))
         return fail("ANIMATION_FRAME_STALE","旧帧不属于当前模型场景或地图修订。");
-    auto frame=s.framePool->Take(s.particles.get());
+    std::uint64_t residentVersion=0; // 回收帧留着的姿势数组属于哪一帧；0 = 没有留下
+    auto frame=s.framePool->Take(s.particles.get(),&residentVersion);
     frame->sceneVersion=scene.sceneVersion; frame->documentRevision=scene.documentRevision;
     frame->previewParticleBudget=advance.previewParticleBudget;
     frame->timings.candidateInstances=g.instances.size();
@@ -574,12 +580,38 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             old.firstAlpha==link.firstAlpha && old.alphaCount==link.alphaCount &&
             sameRange(old.materialAlphas,link.materialAlphas) && sameRange(old.materialStates,link.materialStates);
     };
+    // 回收帧留着较早一帧的姿势数组、且变化记录能接到上一帧时，不整段复制上一帧：只把其间变化、本帧又在视野外的实例
+    // 补成上一帧内容。本帧视野内实例的各片段在下面（默认值、求值或占位）整段重写，不必先补。
+    std::vector<std::uint32_t> residentChanges;
+    const bool resident=forward && residentVersion && frame->groups.size()==previous->groups.size() &&
+        frame->alphas.size()==previous->alphas.size() && frame->colors.size()==previous->colors.size() &&
+        frame->layerAlphas.size()==previous->layerAlphas.size() && frame->materialStates.size()==previous->materialStates.size() &&
+        CollectSkinPoseChanges(s.changeHistory.get(),scene.sceneVersion,residentVersion,previous->contentVersion,&residentChanges) &&
+        (residentChanges.empty() || residentChanges.back()<frame->poses.size());
+    if (!forward && !s.sharedPoseRanges) {
+        // 逐实例布局但不沿用：回收帧留下的旧内容不能当默认值。共享片段模式上面已整段赋值。
+        frame->groups.clear(); frame->alphas.clear(); frame->colors.clear(); frame->layerAlphas.clear(); frame->materialStates.clear();
+    }
     if (forward) {
-        frame->groups.assign(previous->groups.begin(),previous->groups.end());
-        frame->alphas.assign(previous->alphas.begin(),previous->alphas.end());
-        frame->colors.assign(previous->colors.begin(),previous->colors.end());
-        frame->layerAlphas.assign(previous->layerAlphas.begin(),previous->layerAlphas.end());
-        if (scene.dynamicMaterialStates) frame->materialStates.assign(previous->materialStates.begin(),previous->materialStates.end());
+        if (resident) {
+            for (const auto i:residentChanges) {
+                const auto& link=frame->poses[i];
+                if (!link.outsideView) continue;
+                std::copy_n(previous->groups.begin()+link.firstGroup,link.groupCount,frame->groups.begin()+link.firstGroup);
+                std::copy_n(previous->alphas.begin()+link.firstAlpha,link.alphaCount,frame->alphas.begin()+link.firstAlpha);
+                std::copy_n(previous->colors.begin()+link.firstAlpha,link.alphaCount,frame->colors.begin()+link.firstAlpha);
+                if (scene.dynamicMaterialAlphas) std::copy_n(previous->layerAlphas.begin()+link.materialAlphas.offset,
+                    link.materialAlphas.count,frame->layerAlphas.begin()+link.materialAlphas.offset);
+                if (scene.dynamicMaterialStates) std::copy_n(previous->materialStates.begin()+link.materialStates.offset,
+                    link.materialStates.count,frame->materialStates.begin()+link.materialStates.offset);
+            }
+        } else {
+            frame->groups.assign(previous->groups.begin(),previous->groups.end());
+            frame->alphas.assign(previous->alphas.begin(),previous->alphas.end());
+            frame->colors.assign(previous->colors.begin(),previous->colors.end());
+            frame->layerAlphas.assign(previous->layerAlphas.begin(),previous->layerAlphas.end());
+            if (scene.dynamicMaterialStates) frame->materialStates.assign(previous->materialStates.begin(),previous->materialStates.end());
+        }
         constexpr std::uint32_t chunk=256;
         const auto count=static_cast<std::uint32_t>(frame->poses.size());
         const auto tasks=(count+chunk-1)/chunk;
@@ -943,6 +975,9 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     auto bounds=PrepareAnimationPickBounds(scene,*frame);
     measurement.pickBoundsNs=ElapsedNs(boundsStarted);
     if (!bounds.Succeeded()) return {std::nullopt,std::move(bounds.diagnostics)};
+    if (frame->changeBaseContentVersion)
+        s.changeHistory=AppendSkinPoseChanges(s.changeHistory,{scene.sceneVersion,frame->contentVersion,frame->changeBaseContentVersion,
+            std::make_shared<const std::vector<std::uint32_t>>(frame->changedInstances)});
     measurement.prepareNs=ElapsedNs(prepareStarted);
     return Output::Success(std::move(frame));
 } catch (const std::bad_alloc&) {

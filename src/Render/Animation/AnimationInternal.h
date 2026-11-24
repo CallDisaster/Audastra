@@ -4,6 +4,7 @@
 #include "War3RenderCore/MaterialTextures.h"
 #include "../Particles/ParticleTypes.h"
 #include "AnimationWorkers.h"
+#include "../SkinPoseChanges.h"
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -147,7 +148,10 @@ class AnimationPreparedAssets {
 class AnimationFramePool : public std::enable_shared_from_this<AnimationFramePool> {
 public:
     // 取一份可写的新帧（有备用就复用其容量），交出时绑定回收删除器。
-    [[nodiscard]] std::shared_ptr<AnimationFrame> Take(AnimationParticleHost* particles);
+    // residentContentVersion 非空且备用帧是逐实例固定布局时，五个姿势数组（矩阵组、透明度、颜色、层透明度、材质状态）
+    // 连内容一起留下并写出其内容版本，调用方按变化记录补齐；否则写 0，数组为空。
+    [[nodiscard]] std::shared_ptr<AnimationFrame> Take(AnimationParticleHost* particles,
+        std::uint64_t* residentContentVersion = nullptr);
 private:
     void Return(AnimationFrame* frame) noexcept;
     std::mutex mutex_;
@@ -191,6 +195,8 @@ struct ModelAnimationService::State {
     std::vector<std::uint32_t> renderedIndices;
     std::vector<War3RenderCore::PoseBatchEvaluator> poseHelpers;
     std::uint64_t poseVersion = 0; // 宿主按实例顺序统一编号，与求值线程数无关。
+    // 最近几帧相对其基准帧的变化实例（只在 Prepare 线程读写）；回收帧据此只补变化实例。
+    std::shared_ptr<const SkinPoseChangeHistory> changeHistory;
 };
 // 辅助求值器（纯暂存）总量上限；超过就少开线程，不影响结果。
 inline constexpr std::uint64_t kAnimationPoseHelperBytes = 128ull * 1024 * 1024;
