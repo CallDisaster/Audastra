@@ -633,8 +633,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
                 auto& w=works[i];
                 try { step(w); } catch (...) { w.exception=std::current_exception(); }
             };
-            if (host.workers==1) { for (std::uint32_t i=0;i<count;++i) run(i); }
-            else RunAnimationTasks(static_cast<std::uint32_t>(count), run);
+            RunAnimationTasksWith(host.workers, static_cast<std::uint32_t>(count), run);
         };
         const auto simulated=works.size()-(invalid ? 1 : 0);
         tasks(simulated, setup);

@@ -80,10 +80,10 @@ void LargeScene() {
         "camera scheduling changed static assets or pool capacity");
     std::cout << "large_scene_instances=" << count << " retained_stand=" << nearLast->budgetStaticInstances << '\n';
 }
-void ParallelPoses() {
+void ParallelPoses(std::size_t count=300, bool shared=false) {
     // 多批实例：单线程与并行求值逐位相同（含宿主统一编号的姿势版本），并行数只影响快慢。
+    // 超过 2048 个实例时状态推进分成多段并行；shared 时走共享 Stand 片段（大地图模式），逐实例打包也分段并行。
     Input in;
-    constexpr std::size_t count=300;
     std::vector<AnimationInstanceSpec> specs(count,in.specs[0]);
     for (std::size_t i=0;i<count;++i) {
         specs[i].identity.value=i+1; specs[i].hostKey="parallel:"+std::to_string(i);
@@ -92,6 +92,11 @@ void ParallelPoses() {
     }
     const auto run=[&](std::uint32_t workers) {
         AnimationLimits limits; limits.poseWorkers=workers;
+        if (shared) {
+            limits.retainUnsupportedStatic=true; limits.maxActivePoseBytes=128*1024;
+            limits.maxFrameBytes=count*(sizeof(War3RenderSkinnedModelInstanceV2)+kAnimationPoseLinkBudgetBytes+
+                sizeof(AnimationInstanceState)+sizeof(AnimationPickBounds))+1024ull*1024;
+        }
         auto service=Good(ModelAnimationService::Create({7,33,"parallel-synthetic"},specs,
             [&](auto p,auto n){return in.Read(p,n);},limits));
         auto first=Good(service->Prepare(nullptr));
@@ -107,16 +112,31 @@ void ParallelPoses() {
         for (std::size_t i=0;i<a.poses.size();++i) {
             const auto& x=a.poses[i]; const auto& y=b.poses[i];
             if (x.poseVersion!=y.poseVersion || x.matrixHash!=y.matrixHash || x.alphaHash!=y.alphaHash ||
-                x.animated!=y.animated || x.hidden!=y.hidden) return false;
+                x.animated!=y.animated || x.hidden!=y.hidden || x.identity!=y.identity || x.requestIndex!=y.requestIndex ||
+                x.renderedInstance!=y.renderedInstance || x.firstGroup!=y.firstGroup || x.firstAlpha!=y.firstAlpha ||
+                x.standPoseIndex!=y.standPoseIndex || x.staticForBudget!=y.staticForBudget || x.outsideView!=y.outsideView)
+                return false;
         }
-        return a.timings.outputMotionHash==b.timings.outputMotionHash && a.timings.poseEvaluationRequests==b.timings.poseEvaluationRequests;
+        if (a.instances.size()!=b.instances.size() || a.states.size()!=b.states.size() ||
+            std::memcmp(a.instances.data(),b.instances.data(),a.instances.size()*sizeof(a.instances[0]))!=0) return false;
+        for (std::size_t i=0;i<a.states.size();++i) {
+            const auto& x=a.states[i]; const auto& y=b.states[i];
+            if (x.identity!=y.identity || x.sequenceIndex!=y.sequenceIndex || x.elapsedMs!=y.elapsedMs || x.globalMs!=y.globalMs ||
+                x.speed!=y.speed || x.fractionalMs!=y.fractionalMs || x.playing!=y.playing || x.transform!=y.transform || x.tint!=y.tint)
+                return false;
+        }
+        return a.timings.outputMotionHash==b.timings.outputMotionHash && a.timings.poseEvaluationRequests==b.timings.poseEvaluationRequests &&
+            a.timings.eligiblePoseInstances==b.timings.eligiblePoseInstances && a.offscreenPoseInstances==b.offscreenPoseInstances &&
+            a.retainedStaticInstances==b.retainedStaticInstances && a.animatedInstances==b.animatedInstances;
     };
     const auto serial=run(1), parallel=run(4);
     Require(serial.second->timings.outputMotionHash!=serial.first->timings.outputMotionHash,"parallel test frames did not advance");
     Require(same(*serial.first,*parallel.first) && same(*serial.second,*parallel.second),"parallel pose evaluation changed output");
     Require(serial.first->timings.poseWorkers==1 && parallel.first->timings.poseWorkers==4 &&
-        parallel.first->timings.poseEvaluationRequests==count,"parallel pose evaluators not used");
-    std::cout<<"parallel_pose_instances="<<count<<" workers="<<parallel.first->timings.poseWorkers<<" identical=1\n";
+        parallel.first->timings.poseEvaluationRequests>0 && (shared || parallel.first->timings.poseEvaluationRequests==count),
+        "parallel pose evaluators not used");
+    Require(serial.first->sharedPoseRanges==shared && parallel.first->sharedPoseRanges==shared,"parallel test used the wrong pose layout");
+    std::cout<<"parallel_pose_instances="<<count<<" shared="<<shared<<" workers="<<parallel.first->timings.poseWorkers<<" identical=1\n";
 }
 void Instances() {
     Input in; auto service=in.Build(); auto first=Good(service->Prepare(nullptr));
@@ -1012,7 +1032,7 @@ void Submission() {
 }
 int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
-    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
+    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); ParallelPoses(2600); ParallelPoses(2600,true); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
     else if(which=="submission") Submission();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();

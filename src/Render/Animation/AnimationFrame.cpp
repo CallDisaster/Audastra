@@ -364,7 +364,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     frame->worldCamera=advance.worldCamera ? advance.worldCamera : previous ? previous->worldCamera : std::nullopt;
     frame->worldView=advance.worldView ? advance.worldView : previous ? previous->worldView : std::nullopt;
     if (frame->worldView) frame->worldCamera=AnimationWorldCamera(frame->worldView->camera);
-    if (auto check=AdvanceAnimationStates(frame->states,scene,advance); !check.Succeeded())
+    if (auto check=AdvanceAnimationStates(frame->states,scene,advance,s.limits.poseWorkers); !check.Succeeded())
         return {std::nullopt,std::move(check.diagnostics)};
     frame->timings.stateAdvanceNs=ElapsedNs(stateStarted);
     const auto visibilityStarted=TimingClock::now();
@@ -426,13 +426,16 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     }
     std::uint32_t groupCount=s.sharedPoseRanges ? s.sharedGroupCount : 0,alphaCount=s.sharedPoseRanges ? s.sharedAlphaCount : 0;
     std::uint32_t layerAlphaCount=s.sharedPoseRanges ? s.sharedLayerAlphaCount : 0;
-    for (std::uint32_t i=0;i<g.instances.size();++i) {
+    // 逐实例打包。共享 Stand 片段时各实例只写自己的槽位：按固定分段并行，计数分段累加，结果与线程数无关；
+    // 不共享时片段偏移要逐个累加，仍按顺序执行。
+    struct PackCounts { std::uint64_t offscreen=0, eligible=0; };
+    const auto packOne=[&](std::uint32_t i, PackCounts& counts) -> Status {
         const auto m=g.instances[i].model, request=g.instanceRequests[i];
         const auto candidateAsset=s.modelAssets[m];
         const bool outside=request!=kBakedInstance && !frame->requestVisibility.empty() && !frame->requestVisibility[request];
         if (request!=kBakedInstance && candidateAsset!=UINT32_MAX && s.assets[candidateAsset].compiled.Valid()) {
-            if (outside) ++frame->offscreenPoseInstances;
-            else ++frame->timings.eligiblePoseInstances;
+            if (outside) ++counts.offscreen;
+            else ++counts.eligible;
         }
         auto& link=frame->poses[i];
         if (s.sharedPoseRanges) {
@@ -453,7 +456,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (pick.source && !s.sharedPoseRanges && !outside) {
             const auto count=pick.source->collisionShapes.size();
             if (count>s.maxCollisionMatrices-frame->collisionMatrices.size())
-                return fail("ANIMATION_PICK_COLLISION_BUDGET","碰撞节点 owned 帧超出冻结预算。");
+                return AnimationFailure("ANIMATION_PICK_COLLISION_BUDGET","碰撞节点 owned 帧超出冻结预算。");
             link.collisionMatrices={static_cast<std::uint32_t>(frame->collisionMatrices.size()),static_cast<std::uint32_t>(count)};
             frame->collisionMatrices.resize(frame->collisionMatrices.size()+count);
         }
@@ -473,6 +476,30 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             frame->materialStateSlices[i]={link.materialStates.offset,link.materialStates.count};
         }
         if (scene.dynamicMaterialAlphas) frame->layerSlices[i]={link.materialAlphas.offset,link.materialAlphas.count};
+        return {};
+    };
+    if (s.sharedPoseRanges) {
+        constexpr std::uint32_t chunk=1024;
+        const auto count=static_cast<std::uint32_t>(g.instances.size());
+        const auto tasks=(count+chunk-1)/chunk;
+        std::vector<PackCounts> counted(tasks);
+        std::atomic<bool> failed{false};
+        const std::function<void(std::uint32_t)> pack=[&](std::uint32_t task) {
+            try {
+                const auto last=std::min(count,(task+1)*chunk);
+                for (auto i=task*chunk;i<last;++i) (void)packOne(i,counted[task]);
+            } catch (...) { failed.store(true,std::memory_order_relaxed); }
+        };
+        RunAnimationTasksWith(s.limits.poseWorkers,tasks,pack);
+        if (failed.load()) throw std::bad_alloc();
+        for (const auto& counts:counted) {
+            frame->offscreenPoseInstances+=counts.offscreen; frame->timings.eligiblePoseInstances+=counts.eligible;
+        }
+    } else {
+        PackCounts counts;
+        for (std::uint32_t i=0;i<g.instances.size();++i)
+            if (auto status=packOne(i,counts); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
+        frame->offscreenPoseInstances+=counts.offscreen; frame->timings.eligiblePoseInstances+=counts.eligible;
     }
     frame->groups.resize(groupCount); frame->alphas.resize(alphaCount,1.0f); frame->colors.resize(alphaCount,War3RenderMeshColorV2{{1,1,1}});
     frame->layerAlphas.resize(layerAlphaCount);
@@ -693,7 +720,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             for (std::size_t q=std::size_t(task)*chunk;q<end;++q) for (const auto f:frame->groups[q].values)
                 if (!std::isfinite(f) || std::abs(f)>1e7f) { invalid.store(true,std::memory_order_relaxed); return; }
         };
-        RunAnimationTasks(static_cast<std::uint32_t>((matrices+chunk-1)/chunk),check);
+        RunAnimationTasksWith(s.limits.poseWorkers,static_cast<std::uint32_t>((matrices+chunk-1)/chunk),check);
         if (invalid.load()) return fail("ANIMATION_GROUP_INVALID","组矩阵不满足插件有限值预算。");
     }
     frame->timings.posePackingNs=ElapsedNs(poseStarted)-frame->timings.poseEvaluationNs;
@@ -725,7 +752,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 if (scene.dynamicMaterialStates) link.materialStateHash=AnimationBitsHash(frame->materialStates.data()+link.materialStates.offset,link.materialStates.count*sizeof(War3RenderMaterialStateV2));
             }
         };
-        RunAnimationTasks(static_cast<std::uint32_t>((count+chunk-1)/chunk),fingerprint);
+        RunAnimationTasksWith(s.limits.poseWorkers,static_cast<std::uint32_t>((count+chunk-1)/chunk),fingerprint);
     }
     auto& measurement=frame->timings;
     measurement.outputMotionHash=measurement.particleStateHash=14695981039346656037ull;

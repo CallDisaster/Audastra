@@ -1,9 +1,11 @@
 #include "AnimationInternal.h"
 #include "AnimationVisibility.h"
+#include "AnimationWorkers.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -124,7 +126,7 @@ Status CheckAnimationState(const AnimationInstanceState& s) {
     return {};
 }
 Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const AnimatedModelScene& scene,
-    const AnimationAdvance& a) {
+    const AnimationAdvance& a, std::uint32_t workers) {
     if (a.worldView) if (auto status=CheckAnimationView(*a.worldView); !status.Succeeded()) return status;
     if (a.deltaMs > 1000 || states.size() != scene.specs.size() || a.edits.size() > states.size())
         return AnimationFailure("ANIMATION_ADVANCE_BUDGET", "推进时间、编辑数或实例表不符合本场景预算。");
@@ -151,7 +153,7 @@ Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const
         if (edit.transform) s.transform = *edit.transform;
         if (edit.tint) s.tint = *edit.tint;
     }
-    for (std::size_t i = 0; i < states.size(); ++i) {
+    const auto advanceOne = [&](std::size_t i) -> Status {
         auto& s = states[i];
         if (s.identity != scene.specs[i].identity) return AnimationFailure("ANIMATION_INSTANCE_STALE", "实例表身份已变化。");
         if (a.restartFinished && !s.playing && s.sequenceIndex < scene.sequences[i].size()) {
@@ -162,7 +164,7 @@ Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const
         }
         if (a.playAll) s.playing = *a.playAll;
         if (auto status = CheckAnimationState(s); !status.Succeeded()) return status;
-        if (!(s.playing || a.stepPaused) || !a.deltaMs) continue;
+        if (!(s.playing || a.stepPaused) || !a.deltaMs) return {};
         const auto scaled = static_cast<double>(a.deltaMs) * s.speed + s.fractionalMs;
         const auto whole = static_cast<std::uint64_t>(scaled);
         s.fractionalMs = scaled - static_cast<double>(whole);
@@ -174,7 +176,29 @@ Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const
                 s.playing = false; s.fractionalMs = 0;
             }
         }
-        if (auto status = CheckAnimationState(s); !status.Succeeded()) return status;
+        return CheckAnimationState(s);
+    };
+    // 各实例的推进互不依赖：按固定分段并行。出错时返回序号最小的实例，与逐个推进相同；
+    // 出错的整帧会被丢弃，其余分段多推进的状态不会发布。结果与线程数无关。
+    constexpr std::size_t chunk = 2048;
+    const auto count = states.size();
+    const auto tasks = static_cast<std::uint32_t>((count + chunk - 1) / chunk);
+    std::vector<std::optional<Status>> failures(tasks);
+    const std::function<void(std::uint32_t)> advance = [&](std::uint32_t task) {
+        const auto end = std::min(count, (std::size_t(task) + 1) * chunk);
+        for (std::size_t i = std::size_t(task) * chunk; i < end; ++i) {
+            try {
+                if (auto status = advanceOne(i); !status.Succeeded()) { failures[task] = std::move(status); return; }
+            } catch (...) {
+                failures[task] = Status{}; // 诊断分配失败：下方按位置报告，不在任务里再抛。
+                return;
+            }
+        }
+    };
+    RunAnimationTasksWith(workers, tasks, advance);
+    for (auto& failure : failures) if (failure) {
+        if (failure->Succeeded()) return AnimationFailure("ANIMATION_ADVANCE_FAILED", "实例状态推进时内存不足，未发布半帧。");
+        return std::move(*failure);
     }
     return {};
 }

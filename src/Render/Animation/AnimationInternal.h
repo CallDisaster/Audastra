@@ -196,8 +196,9 @@ inline constexpr std::uint64_t kAnimationPoseHelperBytes = 128ull * 1024 * 1024;
 [[nodiscard]] Status CheckAnimationState(const AnimationInstanceState& state);
 [[nodiscard]] Result<AnimationInstanceState> MakeAnimationInitialState(const AnimationInstanceSpec& input,
     const AnimationAsset& asset, bool retainUnsupported, std::vector<Diagnostic>& warnings);
+// workers 同 AnimationLimits::poseWorkers：1 时逐个推进（对照测试用），否则分段并行，结果相同。
 [[nodiscard]] Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states,
-    const AnimatedModelScene& scene, const AnimationAdvance& advance);
+    const AnimatedModelScene& scene, const AnimationAdvance& advance, std::uint32_t workers = 0);
 // boundedPreview：交互预览把有限但超出核心有界范围的局部相机收回到范围内（方向不变）；
 // 严格回放保持原值，由核心如实拒绝。
 [[nodiscard]] Result<War3RenderCore::LocalCamera> ToAnimationLocalCamera(
