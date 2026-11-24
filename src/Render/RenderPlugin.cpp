@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <future>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -1638,10 +1639,15 @@ std::int32_t PrepareEditorUpdate(War3RendererHandle handle, const War3RenderEdit
         if (input->particleFrame) {
             if (!frozen.particles || !frozen.skinPose || !input->particleFrame->modelPose) return kInvalid;
             prepared.particleFrame = TakeRetired(renderer.mutex, renderer.retiredParticles);
-            if (!War3Map::Render::CopyParticleInput(*input->particleFrame,
-                frozen.particles->TextureCount(), *prepared.particleFrame)) return kInvalid;
             prepared.pose = TakeRetired(renderer.mutex, renderer.retiredPoses);
-            if (!War3Map::Render::CopySkinUpdate(*input->particleFrame->modelPose, SkinLayout(frozen), *prepared.pose)) return kInvalid;
+            // 粒子与姿势各写各的副本、只读同一输入：粒子在另一线程复制校验，两边都通过才算成功，与先后无关。
+            // future 析构会等它结束，异常时引用的对象仍然有效。
+            auto particles = std::async(std::launch::async, [&] {
+                return War3Map::Render::CopyParticleInput(*input->particleFrame,
+                    frozen.particles->TextureCount(), *prepared.particleFrame);
+            });
+            const bool poseCopied = War3Map::Render::CopySkinUpdate(*input->particleFrame->modelPose, SkinLayout(frozen), *prepared.pose);
+            if (!particles.get() || !poseCopied) return kInvalid;
         } else {
             if (!frozen.skinPose || frozen.particles) return kInvalid;
             prepared.pose = TakeRetired(renderer.mutex, renderer.retiredPoses);
