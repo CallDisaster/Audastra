@@ -588,6 +588,9 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         frame->layerAlphas.size()==previous->layerAlphas.size() && frame->materialStates.size()==previous->materialStates.size() &&
         CollectSkinPoseChanges(s.changeHistory.get(),scene.sceneVersion,residentVersion,previous->contentVersion,&residentChanges) &&
         (residentChanges.empty() || residentChanges.back()<frame->poses.size());
+    // 沿用路径对该实例没有任何写入（两帧都在视野外、布局相同、上一帧未隐藏）；变化清单据此只再看隐藏与实例记录。
+    std::vector<std::uint8_t> steady;
+    if (forward) steady.assign(frame->poses.size(),0);
     if (!forward && !s.sharedPoseRanges) {
         // 逐实例布局但不沿用：回收帧留下的旧内容不能当默认值。共享片段模式上面已整段赋值。
         frame->groups.clear(); frame->alphas.clear(); frame->colors.clear(); frame->layerAlphas.clear(); frame->materialStates.clear();
@@ -624,7 +627,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 for (auto i=task*chunk;i<last;++i) {
                     const auto& link=frame->poses[i]; const auto& old=previous->poses[i];
                     const bool kept=sameLayout(old,link);
-                    if (link.outsideView && kept && old.outsideView && !old.hidden) continue;
+                    if (link.outsideView && kept && old.outsideView && !old.hidden) { steady[i]=1; continue; }
                     if (link.outsideView) identityGroups(link); // 视野内实例的矩阵在求值/占位路径整段重写。
                     std::fill_n(frame->alphas.begin()+link.firstAlpha,link.alphaCount,1.0f);
                     std::fill_n(frame->colors.begin()+link.firstAlpha,link.alphaCount,War3RenderMeshColorV2{{1,1,1}});
@@ -947,8 +950,8 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (auto status = PrepareAnimationPrem(s, *frame, previous, advance); !status.Succeeded())
             return {std::nullopt, std::move(status.diagnostics)};
     }
-    // 沿用上一帧数组时给出相对上一帧的变化实例：两帧都在视野外、都未隐藏、布局相同且实例记录逐字节相同的实例，
-    // 沿用路径对它没有任何写入（粒子隐藏会置 hidden）；其余一律列出，宁多勿漏。消费者据此只复制/上传这些实例。
+    // 沿用上一帧数组时给出相对上一帧的变化实例：沿用路径没有写入（steady）、本帧也没被粒子隐藏、实例记录逐字节相同的
+    // 实例不列，其余一律列出，宁多勿漏。消费者据此只复制/上传这些实例。
     if (forward) {
         const auto count=static_cast<std::uint32_t>(frame->poses.size());
         constexpr std::uint32_t chunk=4096;
@@ -959,8 +962,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             try {
                 const auto last=std::min(count,(task+1)*chunk);
                 for (auto i=task*chunk;i<last;++i) {
-                    const auto& link=frame->poses[i]; const auto& old=previous->poses[i];
-                    if (link.outsideView && old.outsideView && !link.hidden && !old.hidden && sameLayout(old,link) &&
+                    if (steady[i] && !frame->poses[i].hidden &&
                         std::memcmp(&frame->instances[i],&previous->instances[i],sizeof(frame->instances[i]))==0) continue;
                     parts[task].push_back(i);
                 }
