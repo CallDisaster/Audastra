@@ -150,6 +150,8 @@ struct Renderer {
     std::uint64_t nextRosterTicket = 0;
     std::array<War3RenderInstanceRosterResultV2, 64> rosterResults{};
     std::array<War3RenderFrameMetricsV2, WAR3_RENDER_FRAME_METRICS_RING_CAPACITY> frameMetrics{};
+    // 与 frameMetrics 同下标：该帧 GPU 时间戳序号，0＝未计时或已回填。
+    std::array<std::uint64_t, WAR3_RENDER_FRAME_METRICS_RING_CAPACITY> frameMetricGpuSerials{};
     std::size_t metricsFirst = 0, metricsCount = 0;
     std::array<char, 256> metricsAdapterName{};
     std::uint32_t metricsFeatureLevel = 0, metricsSoftware = 0;
@@ -232,14 +234,40 @@ struct Renderer {
             std::shared_ptr<const std::vector<War3RenderVertexV2>> overlay = std::make_shared<std::vector<War3RenderVertexV2>>();
             std::uint64_t appliedSceneEpoch = 0;
             HRESULT meshError = S_OK;
+            std::vector<D3D11Scene::GpuTiming> gpuTimings;
+            // GPU 时间戳晚一两帧才可读：读出后回填到同一次绘制的完成记录，不改其他字段。
+            const auto publishGpuTimings = [&] {
+                gpuTimings.clear();
+                scene.PollGpuTimings(gpuTimings);
+                if (gpuTimings.empty()) return;
+                std::lock_guard lock(mutex);
+                for (const auto& timing : gpuTimings) {
+                    for (std::size_t i = 0; i < metricsCount; ++i) {
+                        const auto index = (metricsFirst + metricsCount - 1 - i) % frameMetrics.size();
+                        if (frameMetricGpuSerials[index] != timing.serial) continue;
+                        frameMetricGpuSerials[index] = 0;
+                        if (timing.available) {
+                            frameMetrics[index].gpuDrawNs = timing.nanoseconds;
+                            frameMetrics[index].flags |= WAR3_RENDER_FRAME_METRICS_GPU_TIME_AVAILABLE;
+                        }
+                        break;
+                    }
+                }
+            };
             for (;;) {
                 FrameState next;
+                bool requested = true;
                 {
                     std::unique_lock lock(mutex);
-                    changed.wait(lock, [&] { return closing || state.request != lastRequest; });
+                    const auto ready = [&] { return closing || state.request != lastRequest; };
+                    if (SUCCEEDED(failure) && scene.GpuTimingsPending())
+                        requested = changed.wait_for(lock, std::chrono::milliseconds(1), ready);
+                    else changed.wait(lock, ready);
                     if (closing) break;
-                    next = state; lastRequest = next.request;
+                    if (requested) { next = state; lastRequest = next.request; }
                 }
+                if (SUCCEEDED(failure)) publishGpuTimings();
+                if (!requested) continue;
                 if (FAILED(failure)) { ReportFailure(failure, next.capture); continue; }
                 const auto uploadStarted = std::chrono::steady_clock::now();
                 auto hr = scene.SetTarget(next.window, next.width, next.height);
@@ -441,6 +469,7 @@ struct Renderer {
                         ? metrics.completed.presentation.visibleParticleDrawCount : metrics.particleDrawCount;
                     const auto metricIndex = (metricsFirst + metricsCount) % frameMetrics.size();
                     frameMetrics[metricIndex] = metrics;
+                    frameMetricGpuSerials[metricIndex] = drawTimings.gpuSerial;
                     if (metricsCount < frameMetrics.size()) ++metricsCount;
                     else metricsFirst = (metricsFirst + 1) % frameMetrics.size();
                     if (FAILED(meshError)) std::snprintf(status.message, sizeof(status.message),

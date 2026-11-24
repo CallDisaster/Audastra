@@ -32,7 +32,8 @@ private:
     std::unique_ptr<State> state_;
     void Tick();
     void ObserveAccepted();
-    void Drain();
+    // final=false 时不消费刚完成、GPU 时间尚未回填的帧（最多等 kGpuSettleNs），停止或读回时 final=true 全部读出。
+    void Drain(bool final = false);
     void Capture();
     void CollectCapture(bool wait);
     void RecordCapture(const Render::FrameScreenshotSample& sample, QJsonObject json);

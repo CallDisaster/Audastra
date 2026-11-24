@@ -262,6 +262,7 @@ struct WorldFrameRecorder::State {
     QJsonArray phaseEvents;
     War3RenderFrameMetricsPageV2 device{};
     std::uint64_t cursor = 0, rendererEpoch = 0, cpuCursor = 0, startedNs = 0;
+    bool gpuTimingSeen = false; // 本次测量的插件确实回填过 GPU 时间后才为它等待。
     std::uint64_t instanceCursor = 0;
     std::uint64_t lastMeasuredCpuSequence = 0, witnessConfirmedSinceNs = 0, unobscuredSinceNs = 0;
     std::uint64_t nextCaptureNs = 0, nextStatusNs = 0, bytesWritten = 0, captureIndex = 0;
@@ -491,7 +492,9 @@ void WorldFrameRecorder::ObserveAccepted() {
     if (state_->accepted.size() > 512) state_->accepted.pop_front();
 }
 
-void WorldFrameRecorder::Drain() {
+void WorldFrameRecorder::Drain(bool final) {
+    // GPU 时间戳在完成后一两帧才回填；超过这段时间仍没有就按不可用记录。
+    constexpr std::uint64_t kGpuSettleNs = 100'000'000;
     if (!Running() || !state_->viewport || !state_->worldGuard) return;
     auto* viewport = state_->viewport.data();
     const auto epoch = viewport->MeasurementRendererEpoch();
@@ -512,8 +515,13 @@ void WorldFrameRecorder::Drain() {
             state_->Write(state_->frames, {{"event", "ring_gap"}, {"lost_records", Number(state_->device.lostBeforeCount)}, {"after_frame", Number(state_->cursor)}});
         }
         if (result.value->records.empty()) break;
+        bool settling = false;
         for (const auto& record : result.value->records) {
             const auto& completed = record.completed; const auto& view = completed.view;
+            if (record.flags & WAR3_RENDER_FRAME_METRICS_GPU_TIME_AVAILABLE) state_->gpuTimingSeen = true;
+            else if (!final && state_->gpuTimingSeen && NowNs() - std::min(NowNs(), record.completedSteadyNs) < kGpuSettleNs) {
+                settling = true; break;
+            }
             const auto* meta = state_->Find(completed.skin.sceneVersion, completed.skin.contentVersion);
             FrameMeasurementSample sample;
             sample.identity = state_->Identity(view, completed.camera, completed.skin.sceneVersion, completed.skin.contentVersion);
@@ -579,7 +587,7 @@ void WorldFrameRecorder::Drain() {
             state_->CheckCaptureInterval(sample);
             state_->analyzer.AddCompletedFrame(sample); state_->Write(state_->frames, json); state_->cursor = view.frameCount;
         }
-        if (state_->cursor >= state_->device.latestFrame) break;
+        if (settling || state_->cursor >= state_->device.latestFrame) break;
     }
     if (auto* player = state_->world.AnimationPlayer()) {
         const auto history = player->TimingHistory(state_->cpuCursor);
@@ -622,7 +630,7 @@ void WorldFrameRecorder::Capture() {
     }
     const auto begun = NowNs(); auto captured = viewport->CaptureCompletedFrame(viewport->DocumentRevision(), kMaximumFrameCaptureBytes);
     sample.readbackNs = NowNs() - begun; sample.monotonicNs = NowNs();
-    Drain(); // 读回可能完成新帧；先接收其不可变完成回执，不将未来帧当旧身份。
+    Drain(true); // 读回可能完成新帧；先接收其不可变完成回执，不将未来帧当旧身份。
     QJsonObject json{{"steady_ns", Number(sample.monotonicNs)}, {"phase", state_->phase}, {"readback_ns", Optional(sample.readbackNs)}};
     if (!captured.Succeeded()) {
         ++state_->screenshotsFailed; sample.result = FrameMeasurementResult::Rejected;
@@ -821,7 +829,7 @@ bool WorldFrameRecorder::WriteSummary(const QString& reason) {
 
 void WorldFrameRecorder::Stop(const QString& reason) {
     if (!Running()) return;
-    state_->timer.stop(); Drain();
+    state_->timer.stop(); Drain(true);
     // 停止不丢已读回的截图；旧会话在日志关闭/State更换前同步取回唯一在途结果。
     // 最后的等待和UI落盘也属于这轮测量开销，不从记录时长中扣除。
     CollectCapture(true); state_->endedNs = NowNs();

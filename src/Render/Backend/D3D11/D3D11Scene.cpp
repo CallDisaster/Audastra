@@ -91,6 +91,16 @@ HRESULT D3D11Scene::Initialize(bool warp) {
     if (FAILED(hr)) return hr;
     featureLevel_ = static_cast<UINT>(actual);
     softwareDevice_ = warp; // 创建的实际驱动类型；此处没有硬件失败后的隐式回退。
+    // GPU 时间戳只用于测量；建不出来时如实报告“无 GPU 时间”，不影响绘制。
+    gpuTiming_ = true;
+    for (auto& timer : gpuTimers_) {
+        const D3D11_QUERY_DESC disjoint{D3D11_QUERY_TIMESTAMP_DISJOINT, 0}, stamp{D3D11_QUERY_TIMESTAMP, 0};
+        if (FAILED(device_->CreateQuery(&disjoint, &timer.disjoint)) || FAILED(device_->CreateQuery(&stamp, &timer.begin))
+            || FAILED(device_->CreateQuery(&stamp, &timer.end))) {
+            gpuTiming_ = false;
+            break;
+        }
+    }
     Ptr<IDXGIDevice> dxgiDevice;
     Ptr<IDXGIAdapter> adapter;
     DXGI_ADAPTER_DESC adapterDesc{};
@@ -755,6 +765,13 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     };
     const auto drawStart = Clock::now();
     DrawTimings measured;
+    GpuTimer* gpu = nullptr;
+    if (gpuTiming_ && !gpuTimers_[nextGpuTimer_].serial) {
+        gpu = &gpuTimers_[nextGpuTimer_];
+        gpu->serial = ++gpuSerial_;
+        context_->Begin(gpu->disjoint.Get());
+        context_->End(gpu->begin.Get());
+    }
     const auto target = XMVectorSet(camera.targetX, camera.targetY, camera.targetZ, 1);
     const auto eye = XMVectorAdd(target, XMVectorSet(camera.distance * std::cos(camera.pitchRadians) * std::cos(camera.yawRadians),
         camera.distance * std::cos(camera.pitchRadians) * std::sin(camera.yawRadians), camera.distance * std::sin(camera.pitchRadians), 0));
@@ -827,6 +844,12 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
         context_->Draw(overlayCount_, 0);
         context_->OMSetDepthStencilState(nullptr, 0);
     }
+    if (gpu) {
+        context_->End(gpu->end.Get());
+        context_->End(gpu->disjoint.Get());
+        measured.gpuSerial = gpu->serial;
+        nextGpuTimer_ = (nextGpuTimer_ + 1) % gpuTimers_.size();
+    }
     measured.drawCpuNs = nanoseconds(Clock::now() - drawStart);
     if (capture) {
         const auto readbackStart = Clock::now();
@@ -870,6 +893,31 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     measured.completedSteadyNs = nanoseconds(completed.time_since_epoch());
     if (timings) *timings = measured;
     return measured.presentResult;
+}
+void D3D11Scene::PollGpuTimings(std::vector<GpuTiming>& output) {
+    // 从最旧的在途查询开始；按提交顺序完成，遇到未完成的即停。
+    for (std::size_t k = 0; k < gpuTimers_.size(); ++k) {
+        auto& timer = gpuTimers_[(nextGpuTimer_ + k) % gpuTimers_.size()];
+        if (!timer.serial) continue;
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+        const auto state = context_->GetData(timer.disjoint.Get(), &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (state == S_FALSE) break;
+        GpuTiming result;
+        result.serial = timer.serial;
+        UINT64 begin = 0, end = 0;
+        if (state == S_OK && !disjoint.Disjoint && disjoint.Frequency
+            && context_->GetData(timer.begin.Get(), &begin, sizeof(begin), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK
+            && context_->GetData(timer.end.Get(), &end, sizeof(end), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && end >= begin) {
+            result.nanoseconds = static_cast<std::uint64_t>(
+                static_cast<long double>(end - begin) * 1.0e9L / static_cast<long double>(disjoint.Frequency));
+            result.available = true;
+        }
+        output.push_back(result);
+        timer.serial = 0;
+    }
+}
+bool D3D11Scene::GpuTimingsPending() const noexcept {
+    return std::any_of(gpuTimers_.begin(), gpuTimers_.end(), [](const auto& timer) { return timer.serial != 0; });
 }
 D3D11Scene::~D3D11Scene() {
     // 附加层只释放自己拥有的资源，不能清空共享立即上下文的世界状态。

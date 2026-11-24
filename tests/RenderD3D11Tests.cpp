@@ -150,13 +150,26 @@ void TestFrameMetrics(const War3RenderPluginApiV2* api, const War3RenderCreateIn
         const auto& row = rows[i];
         Require(row.structSize == sizeof(row) && row.completed.view.frameCount == page.oldestFrame + i
             && row.completedSteadyNs && row.drawCpuNs && row.uploadCpuNs && !row.presentCpuNs
-            && !row.gpuDrawNs && !row.result && !row.presentResult
+            && !row.result && !row.presentResult
+            && ((row.flags & WAR3_RENDER_FRAME_METRICS_GPU_TIME_AVAILABLE) ? row.gpuDrawNs != 0 : row.gpuDrawNs == 0)
             && (row.flags & (WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID))
                 == (WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID)
-            && !(row.flags & (WAR3_RENDER_FRAME_METRICS_WINDOW_ATTACHED | WAR3_RENDER_FRAME_METRICS_GPU_TIME_AVAILABLE)),
-            "headless metrics mislabeled as visible/GPU execution or lost a completed draw");
+            && !(row.flags & WAR3_RENDER_FRAME_METRICS_WINDOW_ATTACHED),
+            "headless metrics mislabeled as visible, claimed GPU time without a value, or lost a completed draw");
         if (i) Require(row.completedSteadyNs >= rows[i - 1].completedSteadyNs, "completion clock regressed");
     }
+    // 时间戳在绘制后一两帧内回填到同一行，不新增绘制；设备支持时必须出现真实 GPU 时长。
+    bool gpuTimed = false;
+    for (int attempt = 0; attempt < 200 && !gpuTimed; ++attempt) {
+        War3RenderFrameMetricsPageV2 timed{sizeof(timed)};
+        std::array<War3RenderFrameMetricsV2, WAR3_RENDER_FRAME_METRICS_PAGE_LIMIT> timedRows{};
+        Require(api->getFrameMetrics(renderer.handle, 0, timedRows.data(), static_cast<std::uint32_t>(timedRows.size()), &timed) == 0
+            && timed.latestFrame == screenshotView.frameCount, "metrics reread failed or drew a frame");
+        for (std::uint32_t i = 0; i < timed.count; ++i)
+            gpuTimed |= (timedRows[i].flags & WAR3_RENDER_FRAME_METRICS_GPU_TIME_AVAILABLE) && timedRows[i].gpuDrawNs;
+        if (!gpuTimed) Sleep(10);
+    }
+    Require(gpuTimed, "GPU timestamp queries never filled a completed frame");
     const auto& last = rows[page.count - 1];
     Require(SameView(last.completed.view, screenshotView) && last.readbackCpuNs
         && (last.flags & WAR3_RENDER_FRAME_METRICS_READBACK), "metrics and screenshot do not share completed frame");

@@ -66,8 +66,15 @@ public:
     // CPU 提交、GPU 等待读回和 Present 独立计时；不冒称 GPU 执行时长。
     struct DrawTimings {
         std::uint64_t drawCpuNs = 0, presentCpuNs = 0, readbackCpuNs = 0, completedSteadyNs = 0;
+        // 非零表示本次 Draw 首尾写了 GPU 时间戳；结果稍后由 PollGpuTimings 按同一序号给出。
+        std::uint64_t gpuSerial = 0;
         HRESULT presentResult = S_OK;
     };
+    // GPU 绘制时长＝Draw 首尾时间戳之差（不含读回与 Present）。只取已完成的查询，不等待 GPU；
+    // 时钟不连续或查询失败时 available=false，不填估算值。按绘制先后返回。
+    struct GpuTiming { std::uint64_t serial = 0, nanoseconds = 0; bool available = false; };
+    void PollGpuTimings(std::vector<GpuTiming>& output);
+    [[nodiscard]] bool GpuTimingsPending() const noexcept;
     HRESULT Initialize(bool warp);
     HRESULT SetTarget(HWND window, UINT width, UINT height);
     HRESULT SetMesh(const Mesh& mesh);
@@ -225,6 +232,12 @@ private:
     void DrawTerrainGrid(bool translucent);
     void ClearTerrainFetchState();
     Ptr<ID3D11Device> device_;
+    // 时间戳环：GPU 落后超过环长时本帧不计时，不覆盖尚未读出的查询。
+    struct GpuTimer { Ptr<ID3D11Query> disjoint, begin, end; std::uint64_t serial = 0; };
+    std::array<GpuTimer, 8> gpuTimers_{};
+    std::size_t nextGpuTimer_ = 0;
+    std::uint64_t gpuSerial_ = 0;
+    bool gpuTiming_ = false;
     std::array<char, 256> adapterName_{};
     UINT featureLevel_ = 0;
     bool softwareDevice_ = false;
