@@ -442,10 +442,13 @@ void WorldViewportTests::OptionalCapabilitiesAndPhysicalLimitDoNotEmitPluginFail
     BackendState state; active = &state;
     auto unsupported = backend;
     unsupported.setEnvironment = nullptr;
-    WorldViewport viewport(nullptr, &unsupported);
+    // 子窗口不受窗口管理器对顶层窗口按屏幕尺寸的限制，物理上限检查与测试机显示器无关。
+    QWidget host; host.resize(320, 240);
+    WorldViewport viewport(&host, &unsupported);
     QSignalSpy failures(&viewport, &WorldViewport::PluginFailed);
     viewport.resize(5000, 200); QVERIFY(Bind(viewport, 17));
-    viewport.show(); QApplication::processEvents();
+    host.show(); QApplication::processEvents();
+    QVERIFY(viewport.isVisible() && viewport.width() == 5000);
     QVERIFY(!viewport.RendererReady());
     QCOMPARE(failures.count(), 0);
     viewport.resize(320, 240); QApplication::processEvents();
