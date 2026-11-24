@@ -132,13 +132,38 @@ struct AnimationAdvance {
     std::optional<AnimationView> worldView; // 未提供时维持无视锥过滤的旧调用语义。
     std::optional<AnimationParticleFrameBudget> previewParticleBudget; // 仅InteractivePreview；每帧owned软预算。
 };
+// 定长记录的共享存储。大多数实例没有警告，整帧复制姿势链时只复制指针；
+// 只读时未分配等同全默认记录，写入前才独占一份（与其他帧共享时先复制）。
+template<class T, std::size_t N>
+class SharedRecordArray {
+public:
+    using value_type = T;
+    [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
+    [[nodiscard]] const T* data() const noexcept { return data_ ? data_->data() : Empty().data(); }
+    [[nodiscard]] const T* begin() const noexcept { return data(); }
+    [[nodiscard]] const T* end() const noexcept { return data() + N; }
+    [[nodiscard]] const T& operator[](std::size_t index) const noexcept { return data()[index]; }
+    [[nodiscard]] T& operator[](std::size_t index) { return Own()[index]; }
+    [[nodiscard]] T* begin() { return Own().data(); }
+    [[nodiscard]] T* end() { return Own().data() + N; }
+    // 预算按每条姿势链可能独占一份记录收费，不因共享而少算（与容器容量同口径，不计分配器开销）。
+    static constexpr std::size_t kOwnedBytes = sizeof(std::array<T, N>);
+private:
+    static const std::array<T, N>& Empty() noexcept { static const std::array<T, N> empty{}; return empty; }
+    std::array<T, N>& Own() {
+        if (!data_) data_ = std::make_shared<std::array<T, N>>();
+        else if (data_.use_count() > 1) data_ = std::make_shared<std::array<T, N>>(*data_);
+        return *data_;
+    }
+    std::shared_ptr<std::array<T, N>> data_;
+};
 // 每条实际姿势直接拥有有界警告；全局256条摘要不承担实例归属。
 // 缓存Stand可显式重绑目标owner，但始终保存原缓存姿势的实际动作/时钟。
 struct AnimationPoseWarnings {
     static constexpr std::size_t Capacity = 8;
-    std::array<War3RenderCore::PoseDiagnostic, Capacity> records{};
+    SharedRecordArray<War3RenderCore::PoseDiagnostic, Capacity> records;
     // 与 records 平行；只有实际 KMTA 兼容警告才有有效 materialIndex。
-    std::array<War3RenderCore::MaterialAlphaPreviewWarning, Capacity> materialRecords{};
+    SharedRecordArray<War3RenderCore::MaterialAlphaPreviewWarning, Capacity> materialRecords;
     std::uint32_t count = 0;
     std::uint64_t omitted = 0;
     std::uint32_t requestIndex = UINT32_MAX, sequenceIndex = UINT32_MAX;
@@ -171,8 +196,11 @@ struct AnimationPoseLink {
     std::uint32_t staticSequenceIndex = UINT32_MAX; // 实际缓存 SEQS；缺Stand时显式记录真实首动作。
     std::uint32_t standPoseIndex = UINT32_MAX; // (几何模型,Stand序列)缓存身份，不与模型序号混用。
     std::uint64_t staticElapsedMs = 0, staticGlobalMs = 0;
-    AnimationPoseWarnings warnings; // sizeof(link)已纳入完整帧/Stand/活动槽预算。
+    AnimationPoseWarnings warnings; // 链与其可能独占的记录按 kAnimationPoseLinkBudgetBytes 计入完整帧/Stand/活动槽预算。
 };
+// 每条姿势链的预算收费：链本身加两组警告记录可能独占的存储。
+inline constexpr std::size_t kAnimationPoseLinkBudgetBytes = sizeof(AnimationPoseLink)
+    + decltype(AnimationPoseWarnings::records)::kOwnedBytes + decltype(AnimationPoseWarnings::materialRecords)::kOwnedBytes;
 struct AnimationGeosetIssue {
     std::uint32_t geosetIndex = War3RenderCore::NoIndex;
     War3RenderCore::PoseDiagnostic diagnostic;
@@ -242,6 +270,7 @@ struct AnimationFrameTimings {
     std::uint64_t visibilityNs = 0, visibilityNodesVisited = 0, visibilityBoundsTests = 0;
     std::uint64_t candidateInstances = 0, eligiblePoseInstances = 0, poseEvaluationRequests = 0;
     std::uint64_t particleSimulationRequests = 0, particleAnchorRequests = 0, particleAnchorNodeVisits = 0;
+    std::uint64_t particleAnchorReuses = 0; // 交互预览直接复用本帧主姿势节点的实例数，不计入锚点求值。
     std::uint64_t particleSkippedTimelineMs = 0;
     // 仅实际成功的输出数值：不含版本号、时钟、隐藏占位或 Stand 重用的计数变化。
     std::uint64_t outputMotionHash = 0, particleStateHash = 0;

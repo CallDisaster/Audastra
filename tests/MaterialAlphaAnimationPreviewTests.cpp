@@ -209,7 +209,7 @@ void Warnings() {
         specs[i].sequenceIndex = 1; specs[i].elapsedMs = 400 + i % 200;
     }
     limits = PreviewLimits(); limits.retainUnsupportedStatic = true;
-    const auto metadata = specs.size() * (sizeof(War3RenderSkinnedModelInstanceV2) + sizeof(AnimationPoseLink) +
+    const auto metadata = specs.size() * (sizeof(War3RenderSkinnedModelInstanceV2) + kAnimationPoseLinkBudgetBytes +
         sizeof(AnimationInstanceState) + sizeof(AnimationPickBounds));
     limits.maxFrameBytes = static_cast<std::uint64_t>(metadata) + 131072; limits.maxActivePoseBytes = 4096;
     const auto cachedService = Good(fixture.Create(limits, specs));

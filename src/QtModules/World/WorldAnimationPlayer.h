@@ -148,6 +148,8 @@ private:
     std::deque<WorldInstanceTiming> instanceTimings_;
     std::uint64_t instanceTimingSequence_ = 0;
     WorldAnimationTiming* timingSink_ = nullptr; // 仅 GUI 栈内有效；统计同步 Changed 接收者。
+    int changeBatch_ = 0; // 接收一帧期间的多次状态变化合并为结束时一次 Changed。
+    bool changeDeferred_ = false;
     bool resumePending_ = false;
     bool restartPending_ = false; // 用户点播放：下一次实际推进让已结束的不循环动作从头开始
     bool instanceActivatesPlayback_ = false; // 仅已接受的名单候选实际包含playAll=true时确认恢复。

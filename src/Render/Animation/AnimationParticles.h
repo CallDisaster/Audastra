@@ -25,6 +25,9 @@ struct AnimationParticleState {
     std::optional<War3RenderCore::LocalCamera> camera;
     std::uint64_t storageBytes = 0, stateHash = 0;
     Particles::Counts counts;
+    // 交互预览：上次模拟结束时刻的发射器节点。下一帧的固定步在它与当前节点之间插值，不逐步重求骨架。
+    std::vector<Particles::Anchor> anchors;
+    std::uint64_t anchorElapsedMs = 0;
 };
 struct AnimationParticleCheckpoint {
     std::uint64_t sceneVersion = 0, contentVersion = 0;
@@ -49,7 +52,19 @@ struct AnimationParticleHost {
     bool retainUnsupportedStatic = false;
     AnimationPlaybackPolicy playbackPolicy = AnimationPlaybackPolicy::StrictReplay;
     bool omitRejectedLinks = false; // 逐实例原因仍在不可变 capability/query；不为无模拟实例超额分配帧回执。
+    // 交互预览：本帧主姿势求值顺带写下发射器节点，粒子直接复用，不再为当前时刻单独求骨架。
+    std::vector<std::uint32_t> requestBindings; // 请求→绑定；无绑定为 UINT32_MAX。每帧按当前绑定表重建。
+    std::vector<std::uint32_t> anchorOffsets; // 绑定→frameAnchors 起点，按该绑定资产的发射器节点数排列。
+    std::vector<Particles::Anchor> frameAnchors;
+    std::vector<std::uint64_t> anchorSerials; // 绑定→写入时的帧序号；等于 anchorSerial 才属于本帧。
+    std::uint64_t anchorSerial = 0;
 };
+// 每帧主姿势求值前调用（仅交互预览）：按当前绑定表重建索引并开启新一帧的锚点序号。
+void BeginAnimationParticleAnchors(AnimationParticleHost& host, std::size_t requestCount,
+    std::span<const AnimationAsset> assets);
+// 主姿势成功求值后写入该请求的发射器节点。没有绑定或绑定资产不是本次求值的资产时不写。
+void CaptureAnimationParticleAnchors(AnimationParticleHost& host, std::uint32_t request, std::uint32_t assetIndex,
+    const AnimationAsset& asset, std::span<const War3RenderCore::NodePose> nodes);
 [[nodiscard]] Status ReadAnimationParticleAsset(AnimationAsset& asset, std::span<const std::byte> bytes,
     const AnimationLimits& limits);
 [[nodiscard]] Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(AnimatedModelScene& scene,

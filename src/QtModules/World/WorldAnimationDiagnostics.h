@@ -81,4 +81,9 @@ private:
     std::unique_ptr<State> state_;
 };
 
+// 状态标签的完整诊断。动画播放时逐帧只刷新一行摘要，完整分组要遍历全部实例警告，
+// 只在悬停、日志或探针读取时按当时接收的帧生成；静态文本标签直接返回其文本。
+[[nodiscard]] QString WorldLabelDiagnostics(const QLabel& label);
+void ClearWorldLabelDiagnostics(QLabel& label);
+
 } // namespace War3Map::Modules

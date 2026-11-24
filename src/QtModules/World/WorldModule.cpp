@@ -467,8 +467,7 @@ void WorldModule::ResetSceneFacts() {
         label->setText(QStringLiteral("—")); label->setToolTip({});
     }
     if (modelStatus_) {
-        modelStatus_->setText(tr("尚未读取")); modelStatus_->setToolTip({});
-        modelStatus_->setProperty("fullDiagnostics", QString());
+        modelStatus_->setText(tr("尚未读取")); ClearWorldLabelDiagnostics(*modelStatus_);
     }
     if (sceneNotes_) { sceneNotes_->clear(); sceneNotes_->setToolTip({}); sceneNotes_->hide(); }
     if (sceneGround_) sceneGround_->setProperty("groundBudget", QVariant{});
@@ -755,7 +754,7 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
     QJsonObject model{{"exists", modelStatus_ != nullptr}};
     if (modelStatus_) {
         WorldDiagnosticJson::Text(model, "text", modelStatus_->text());
-        WorldDiagnosticJson::Text(model, "details", modelStatus_->toolTip());
+        WorldDiagnosticJson::Text(model, "details", WorldLabelDiagnostics(*modelStatus_));
     }
     if (scene_ && modelLoadStage_ == QLatin1String("prepared-static")) {
         // 静态回退场景的实际用量与未显示原因。状态提示可能被别的诊断覆盖，探针以这里为准。

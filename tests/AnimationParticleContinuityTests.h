@@ -72,8 +72,9 @@ inline void ExplicitPlaybackPolicy() {
     auto frame=Good(preview->Prepare(nullptr,first));
     Check(frame->requestVisibility.empty() && frame->animatedInstances==1 && !frame->poses[0].hidden &&
         frame->states[0].elapsedMs==500 && frame->states[0].globalMs==0 &&
-        frame->particleLinks[0].simulated && frame->timings.particleAnchorRequests==1,
-        "explicit unculled preview lost geometry, fabricated clocks or replayed history");
+        frame->particleLinks[0].simulated && frame->timings.particleAnchorRequests==0 &&
+        frame->timings.particleAnchorReuses==1,
+        "explicit unculled preview lost geometry, fabricated clocks, replayed history or re-evaluated the skeleton");
     first.deltaMs=33;
     frame=Good(preview->Prepare(frame.get(),first));
     Check(frame->particleLinks[0].resetReason.empty() && !frame->particleVertices.empty() &&
@@ -101,25 +102,31 @@ inline void Run() {
     limits.playbackPolicy=AnimationPlaybackPolicy::InteractivePreview;
     limits.particles.maxAnchorSamples=9;
     auto service=Good(ModelAnimationService::Create({7,1,"continuity-fixture"},specs,read,limits));
-    auto advance=View(-2048);auto frame=Good(service->Prepare(nullptr,advance));
-    Check(frame->particleLinks.size()==2&&frame->timings.particleAnchorRequests==1&&frame->budgetParticleInstances==1&&
+    // 发射器节点复用主姿势，锚点不再限制准入；用每帧实例软预算保留“一实例模拟、一实例冻结”的场景。
+    const auto limited=[](AnimationAdvance value) {
+        value.previewParticleBudget=AnimationParticleFrameBudget{1,kMaximumPreviewAnchorSamples};return value;
+    };
+    auto advance=limited(View(-2048));auto frame=Good(service->Prepare(nullptr,advance));
+    Check(frame->particleLinks.size()==2&&frame->timings.particleAnchorRequests==0&&frame->timings.particleAnchorReuses==1&&
+        frame->budgetParticleInstances==1&&
         frame->particleLinks[0].resetReason=="initial"&&frame->particleLinks[0].skippedTimelineMs==60000&&
         frame->particleVertices.empty(),"initial long-elapsed world state replayed or lost binding");
     const auto originalCheckpoint=frame->particleCheckpoint->instances[0];
-    advance=View();
+    advance=limited(View());
     advance.deltaMs=33;
     frame=Good(service->Prepare(frame.get(),advance));
     Check(frame->particleLinks[1].simulated&&frame->particleLinks[1].resetReason=="initial"&&
-        frame->timings.particleAnchorRequests==1,"newly admitted world state warmed up after budget omission");
+        frame->timings.particleAnchorRequests==0&&frame->timings.particleAnchorReuses==1,
+        "newly admitted world state warmed up after budget omission");
     frame=Good(service->Prepare(frame.get(),advance));
     for (unsigned iteration=0;iteration<120;++iteration) {
         advance.worldView->camera.targetX=1024+((iteration&1u) ? 0.25f : -0.25f);
         advance.deltaMs=(iteration&1u) ? 100 : 33;
         auto next=Good(service->Prepare(frame.get(),advance));
         Check(next->requestVisibility==std::vector<std::uint8_t>{1,1}&&next->budgetParticleInstances==1&&
-            next->timings.particleSimulationRequests==1&&next->timings.particleAnchorRequests<=9&&
+            next->timings.particleSimulationRequests==1&&next->timings.particleAnchorRequests==0&&
             !next->particleLinks[0].simulated&&next->particleLinks[0].frozen&&next->particleLinks[0].resetReason.empty()&&
-            next->particleLinks[0].rejectionCode=="ANIMATION_PARTICLE_ANCHOR_BUDGET"&&
+            next->particleLinks[0].rejectionCode=="ANIMATION_PARTICLE_PREVIEW_TIME_BUDGET"&&
             next->particleLinks[1].simulated&&next->particleLinks[1].resetReason.empty()&&
             next->particleLinks[1].particleCount>0&&next->particleCheckpoint->instances[0]==originalCheckpoint,
             "world priority oscillated, lost frozen pointer, warmed up or reset selected particle state");
@@ -135,7 +142,7 @@ inline void Run() {
     }
     auto slow=Good(service->Prepare(frame.get(),advance));
     Check(slow->particleLinks[1].simulated&&!slow->particleLinks[0].simulated&&
-        slow->timings.particleAnchorRequests==9&&slow->particleLinks[1].resetReason.empty()&&
+        slow->timings.particleAnchorRequests==0&&slow->timings.particleAnchorReuses==1&&slow->particleLinks[1].resetReason.empty()&&
         slow->particleLinks[1].skippedTimelineMs>=4900&&
         slow->timings.particleSkippedTimelineMs==slow->particleLinks[1].skippedTimelineMs&&
         slow->particleCheckpoint->instances[0]==originalCheckpoint,
@@ -146,7 +153,7 @@ inline void Run() {
     auto switched=Good(service->Prepare(frame.get(),advance));
     Check(switched->requestVisibility==std::vector<std::uint8_t>{1,1}&&switched->particleLinks[0].simulated&&
         switched->particleLinks[0].resetReason.empty()&&switched->particleLinks[0].simulationTimeMs==switched->states[0].elapsedMs&&
-        switched->particleLinks[0].particleCount==0&&switched->timings.particleAnchorRequests==1&&
+        switched->particleLinks[0].particleCount==0&&switched->timings.particleAnchorRequests==0&&
         switched->particleLinks[1].frozen&&switched->particleCheckpoint->instances[1]==selectedCheckpoint&&
         switched->particleCheckpoint->instances[0]->state.emitters[0].random==originalCheckpoint->state.emitters[0].random,
         "budget-frozen resume recovered, warmed up, reset RNG or did not clear expired particles");
@@ -162,10 +169,10 @@ inline void Run() {
             "out-of-view particles consumed budget/work or copied/dropped checkpoints");
         frame=std::move(next);
     }
-    advance=View();advance.deltaMs=33;
+    advance=limited(View());advance.deltaMs=33;
     auto resumed=Good(service->Prepare(frame.get(),advance));
     Check(resumed->particleLinks[1].simulated&&resumed->particleLinks[1].resetReason.empty()&&
-        resumed->timings.particleAnchorRequests==1&&resumed->particleLinks[1].particleCount==0&&
+        resumed->timings.particleAnchorRequests==0&&resumed->particleLinks[1].particleCount==0&&
         resumed->particleLinks[1].spawned==selectedCheckpoint->counts.spawned&&
         resumed->particleCheckpoint->instances[1]->state.emitters[0].random==selectedCheckpoint->state.emitters[0].random,
         "out-of-view resume recreated, warmed up, back-emitted or preserved expired particles");
@@ -221,7 +228,7 @@ inline void Run() {
             "world frame step limit outside 1..128 accepted");
     }
     std::cout<<"world_particles_initial_no_warmup=1 stable_identity_bucket_alternating33_100_120frames=1 "
-        "five_second_frame_bounded_reported=1 frozen_pointer_retained=1 budget_resume_one_anchor=1 "
+        "five_second_frame_bounded_reported=1 frozen_pointer_retained=1 budget_resume_reused_anchor=1 "
         "outside_zero_work=1 expired_aged_without_rng_reset=1 map_bindings_17000=1\n";
 }
 } // namespace AnimationParticleContinuityTest

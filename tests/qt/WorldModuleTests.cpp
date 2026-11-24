@@ -1394,7 +1394,7 @@ void WorldModuleTests::NativePlacementFrames() {
         << (afterChoose ? afterChoose->states.size() : 0)
         << "viewport" << viewport->StatusText()
         << "model" << (modelStatus ? modelStatus->text() : QStringLiteral("missing"))
-        << "detail" << (modelStatus ? modelStatus->toolTip() : QStringLiteral("missing"));
+        << "detail" << (modelStatus ? War3Map::Modules::WorldLabelDiagnostics(*modelStatus) : QStringLiteral("missing"));
     QVERIFY(afterChoose && afterChoose->states.size() == baselineInstances);
     const auto previewReady = [&](std::size_t count) {
         const auto captured = viewport->CaptureCompletedFrame(revision);

@@ -1,6 +1,7 @@
 #include "WorldAnimationPlayer.h"
 #include <QEvent>
 #include <QScopedValueRollback>
+#include <QThreadPool>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -40,6 +41,11 @@ bool SameView(const Render::AnimationView& first, const Render::AnimationView& s
 }
 bool NeedsView(const Render::AnimationFrame& frame, const Render::AnimationView& current) {
     return !frame.worldView || !SameView(*frame.worldView,current);
+}
+// 被替换的整帧可达数十 MB；唯一持有时交给后台线程析构，其他持有者仍在时只放手引用。
+void ReleaseFrameInBackground(std::shared_ptr<const Render::AnimationFrame> frame) {
+    if (!frame || frame.use_count() != 1) return;
+    QThreadPool::globalInstance()->start([frame = std::move(frame)]() mutable { frame.reset(); });
 }
 } // namespace
 std::string_view WorldAnimationTimingOutcomeName(WorldAnimationTimingOutcome outcome) noexcept {
@@ -164,6 +170,7 @@ void WorldAnimationPlayer::RecordTiming(WorldAnimationTiming timing) {
     if (timings_.size()>512) timings_.pop_front();
 }
 void WorldAnimationPlayer::PublishChanged() {
+    if (changeBatch_) { changeDeferred_ = true; return; }
     if (!timingSink_) { emit Changed(); return; }
     const auto begin=CpuStampNs();
     emit Changed();
@@ -537,7 +544,9 @@ void WorldAnimationPlayer::StartNext() {
     output->timing.sceneVersion=service->Scene()->sceneVersion; output->timing.generation=service->Scene()->generation;
     output->timing.documentRevision=service->Scene()->documentRevision;
     output->timing.previousContentVersion=previous ? previous->contentVersion : 0;
-    auto* thread = QThread::create([service, previous, source, command = std::move(command), output] {
+    auto* thread = QThread::create([service, previous, source, command = std::move(command), output]() mutable {
+        // 旧帧在后台线程放手：界面接收新帧后它通常是最后持有者，析构数十 MB 不应落在界面线程。
+        struct ReleasePrevious { std::shared_ptr<const Render::AnimationFrame>& frame; ~ReleasePrevious() { frame.reset(); } } release{previous};
         const auto begin = std::chrono::steady_clock::now();
         auto& timing=output->timing;
         timing.workerStartedNs=CpuStampNs(); timing.queueWaitNs=timing.workerStartedNs-timing.queuedNs;
@@ -585,6 +594,8 @@ void WorldAnimationPlayer::StartNext() {
         auto timing=output->timing;
         QScopedValueRollback<WorldAnimationTiming*> timingScope(timingSink_,&timing);
         timing.uiStartedNs=CpuStampNs(); timing.uiQueueWaitNs=timing.uiStartedNs-timing.workerFinishedNs;
+        ++changeBatch_;
+        std::shared_ptr<const Render::AnimationFrame> retired;
         if (serial == serial_ && service_) {
             if (!Current()) {
                 timing.outcome=WorldAnimationTimingOutcome::Stale;
@@ -615,7 +626,7 @@ void WorldAnimationPlayer::StartNext() {
                 }
             } else {
                 timing.outcome=WorldAnimationTimingOutcome::Accepted;
-                accepted_ = std::move(*output->result.value);
+                retired = std::exchange(accepted_, std::move(*output->result.value));
                 effectBudget_.SetOmissions(accepted_->budgetParticleInstances, accepted_->budgetParticleEmitters);
                 // 暂停时排出的相机/单步帧可能在用户恢复后返回；它未处理playAll=true，
                 // 不能吞掉新的恢复意图。下一次实际worker仍负责激活全部实例并消费经过时间。
@@ -637,7 +648,6 @@ void WorldAnimationPlayer::StartNext() {
                     worker_=nullptr;
                     StartNext();
                 }
-                PublishChanged(); // 先公布新目标，再发预算状态，避免控件刷新覆盖警告。
                 const auto guiMs =
                     static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                    std::chrono::steady_clock::now() - guiStarted)
@@ -650,12 +660,15 @@ void WorldAnimationPlayer::StartNext() {
                 PublishChanged();
             }
         } else timing.outcome=WorldAnimationTimingOutcome::Cancelled;
-        // Changed可以重入并启动新worker；旧完成回调只能释放自己，不能擦掉新重基/求值任务。
+        // 旧完成回调只能释放自己，不能擦掉上面重基已启动的新任务。
         if (worker_==completedWorker) worker_=nullptr;
         StartNext();
         if (playing_ && !worker_ && !pending_ && elapsed_.isValid() && elapsed_.elapsed()>=interval_)
             QTimer::singleShot(0,this,&WorldAnimationPlayer::Tick);
         PublishChanged();
+        // 本次接收的新目标、预算与忙碌状态合并为一次 Changed；接收者可重入并启动新 worker。
+        if (--changeBatch_ == 0 && std::exchange(changeDeferred_, false)) PublishChanged();
+        ReleaseFrameInBackground(std::move(retired));
         timing.uiAcceptNs=CpuStampNs()-timing.uiStartedNs;
         RecordTiming(std::move(timing));
     });

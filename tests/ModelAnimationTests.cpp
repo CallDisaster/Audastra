@@ -57,7 +57,7 @@ void LargeScene() {
         specs[i].model.position[0] = static_cast<float>(i) * 20;
     }
     AnimationLimits limits; limits.retainUnsupportedStatic = true;
-    limits.maxFrameBytes = count * (sizeof(War3RenderSkinnedModelInstanceV2) + sizeof(AnimationPoseLink)
+    limits.maxFrameBytes = count * (sizeof(War3RenderSkinnedModelInstanceV2) + kAnimationPoseLinkBudgetBytes
         + sizeof(AnimationInstanceState) + sizeof(AnimationPickBounds)) + 1024ull * 1024;
     limits.maxActivePoseBytes = 128 * 1024;
     auto service = Good(ModelAnimationService::Create({7,33,"large-synthetic"}, specs,
@@ -185,7 +185,7 @@ void VariantActions() {
     constexpr std::size_t count=4096; std::vector<AnimationInstanceSpec> many(count);
     for (std::size_t i=0;i<count;++i) { many[i]=in.specs[i%2]; many[i].identity.value=i+1; many[i].hostKey="variant:"+std::to_string(i); }
     AnimationLimits limits; limits.retainUnsupportedStatic=true; limits.maxActivePoseBytes=0;
-    limits.maxFrameBytes=count*(sizeof(War3RenderSkinnedModelInstanceV2)+sizeof(AnimationPoseLink)+
+    limits.maxFrameBytes=count*(sizeof(War3RenderSkinnedModelInstanceV2)+kAnimationPoseLinkBudgetBytes+
         sizeof(AnimationInstanceState)+sizeof(AnimationPickBounds))+128*1024;
     auto shared=Good(ModelAnimationService::Create({7,33,"variant-cache"},many,[&](auto p,auto n){return in.Read(p,n);},limits));
     auto cached=Good(shared->Prepare(nullptr));
@@ -216,7 +216,7 @@ void RequestGeometryBudget() {
         frame->geosetIssues.empty() && frame->materialIssues.empty() && frame->collisionMatrices.empty(),
         "owned geometry budget fixture unexpectedly acquired another charged workspace");
     const auto payloadBytes=std::uint64_t(frame->instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
-        sizeof(AnimationPoseLink)+sizeof(AnimationPickBounds))+std::uint64_t(frame->states.size())*sizeof(AnimationInstanceState)+
+        kAnimationPoseLinkBudgetBytes+sizeof(AnimationPickBounds))+std::uint64_t(frame->states.size())*sizeof(AnimationInstanceState)+
         std::uint64_t(frame->groups.size())*sizeof(War3RenderGroupMatrixV2)+
         std::uint64_t(frame->alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2));
     const auto geometryBytes=std::uint64_t(probe->Scene()->requestGeometryRequired.capacity())*sizeof(std::uint8_t);
@@ -367,7 +367,7 @@ void MaterialLayers() {
     AnimationLimits limits;limits.retainUnsupportedStatic=true;limits.maxActivePoseBytes=512;
     std::vector<AnimationInstanceSpec> many(256,input.specs[0]);
     for (std::size_t i=0;i<many.size();++i) {many[i].identity.value=i+1;many[i].hostKey=std::to_string(i);}
-    limits.maxFrameBytes=many.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+sizeof(AnimationPoseLink)+sizeof(AnimationInstanceState)+
+    limits.maxFrameBytes=many.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+kAnimationPoseLinkBudgetBytes+sizeof(AnimationInstanceState)+
         sizeof(AnimationPickBounds)+sizeof(War3RenderMaterialLayerSliceV2))+32768;
     const auto shared=Good(ModelAnimationService::Create({7,33,"shared-material"},many,[&](auto p,auto n){return input.Read(p,n);},limits));
     const auto stand=Good(shared->Prepare(nullptr));

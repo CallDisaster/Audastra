@@ -652,7 +652,7 @@ void Budgets() {
                 }
             }
             const auto actualFramePayload=std::uint64_t(child.instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
-                sizeof(AnimationPoseLink)+sizeof(AnimationPickBounds))+std::uint64_t(child.states.size())*sizeof(AnimationInstanceState)+
+                kAnimationPoseLinkBudgetBytes+sizeof(AnimationPickBounds))+std::uint64_t(child.states.size())*sizeof(AnimationInstanceState)+
                 std::uint64_t(child.groups.size())*sizeof(War3RenderGroupMatrixV2)+
                 std::uint64_t(child.alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2))+
                 std::uint64_t(child.layerAlphas.size())*sizeof(float)+

@@ -1108,7 +1108,7 @@ void NativeWorkbenchTests::NativeWorldAnimationProducesCompletedFrames() {
         const QJsonObject failure{{"scope", "windows-production-world-animation-first-frame-failure"}, {"source", map},
             {"source_sha256", QString::fromStdString(*inputSha.value)}, {"wait_ms", readyWait.elapsed()},
             {"terminal_scene_failure", terminalSceneFailure}, {"model_status", modelStatus->text()},
-            {"model_status_tooltip", modelStatus->toolTip()}, {"player_ready", player->Ready()},
+            {"model_status_tooltip", War3Map::Modules::WorldLabelDiagnostics(*modelStatus)}, {"player_ready", player->Ready()},
             {"player_playing", player->Playing()}, {"player_busy", player->Busy()},
             {"scene_present", bool(scene)}, {"scene_animated_instances", scene ? int(scene->animatedInstances) : 0},
             {"frame_present", bool(frame)}, {"frame_animated_instances", frame ? int(frame->animatedInstances) : 0},
@@ -1119,7 +1119,7 @@ void NativeWorkbenchTests::NativeWorldAnimationProducesCompletedFrames() {
             {"terrain_vertices", QString::number(viewport->VertexCount())}, {"window_image", failureImagePath},
             {"window_image_saved", failureImageSaved}, {"window_images_composited", false},
             {"project_diagnostics", diagnostics}, {"project_diagnostic_rows_omitted", std::max(0, diagnosticCount - 128)}};
-        qInfo().noquote() << "World animation first-frame failure:" << modelStatus->text() << modelStatus->toolTip()
+        qInfo().noquote() << "World animation first-frame failure:" << modelStatus->text() << War3Map::Modules::WorldLabelDiagnostics(*modelStatus)
             << "wait_ms" << readyWait.elapsed() << "player ready/playing/busy" << player->Ready() << player->Playing() << player->Busy();
         const auto failurePath = QDir(evidence).filePath("world-animation-first-frame-failure.json");
         if (!WriteText(failurePath, QJsonDocument(failure).toJson(QJsonDocument::Indented)))

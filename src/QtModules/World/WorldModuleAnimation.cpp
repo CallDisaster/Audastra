@@ -120,6 +120,25 @@ QString DiagnosticToolTip(const QString& text) {
         QLatin1Char('\n'), QStringLiteral("<br/>")) + QStringLiteral("</div></qt>");
 }
 
+// 按需生成的完整诊断，挂在标签下；替换为静态文本或清空时一并移除。
+class DiagnosticDetails final : public QObject {
+public:
+    DiagnosticDetails(QObject* parent, std::function<QString()> build) : QObject(parent), build_(std::move(build)) {}
+    void Reset(std::function<QString()> build) { build_ = std::move(build); }
+    [[nodiscard]] QString Build() const { return build_ ? build_() : QString{}; }
+private:
+    std::function<QString()> build_;
+};
+DiagnosticDetails* FindDetails(const QLabel& label) {
+    for (auto* child : label.children())
+        if (auto* details = dynamic_cast<DiagnosticDetails*>(child)) return details;
+    return nullptr;
+}
+void SetDetails(QLabel& label, std::function<QString()> build) {
+    if (auto* details = FindDetails(label)) details->Reset(std::move(build));
+    else new DiagnosticDetails(&label, std::move(build));
+}
+
 // 单击诊断标签时显示完整文本。只读窗口，不改变地图或渲染状态。
 class DiagnosticViewer final : public QObject {
 public:
@@ -127,11 +146,20 @@ public:
         : QObject(parent), openModels_(std::move(openModels)) {}
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::ToolTip) {
+            auto* label = qobject_cast<QLabel*>(watched);
+            const auto* details = label ? FindDetails(*label) : nullptr;
+            if (!details) return false;
+            const auto tip = DiagnosticToolTip(details->Build());
+            if (tip.isEmpty()) QToolTip::hideText();
+            else QToolTip::showText(static_cast<QHelpEvent*>(event)->globalPos(), tip, label);
+            return true;
+        }
         if (event->type() != QEvent::MouseButtonRelease) return false;
         auto* label = qobject_cast<QLabel*>(watched);
         if (!label || static_cast<QMouseEvent*>(event)->button() != Qt::LeftButton) return false;
         if (openModels_) { openModels_(); return true; }
-        const QString text = label->property("fullDiagnostics").toString();
+        const QString text = WorldLabelDiagnostics(*label);
         if (text.isEmpty()) return false;
         if (!dialog_) {
             dialog_ = new QDialog(label->window());
@@ -159,6 +187,7 @@ private:
 };
 
 void SetDiagnostics(QLabel& label, const QString& text) {
+    if (auto* details = FindDetails(label)) delete details;
     label.setProperty("fullDiagnostics", text);
     label.setToolTip(DiagnosticToolTip(text));
     if (!label.property("diagnosticViewer").toBool()) {
@@ -236,14 +265,12 @@ QStringList FrameDetails(const Render::AnimatedModelScene& scene, const Render::
     details.append(grouped.rows);
     return details;
 }
-void ShowFrameStatus(QLabel& label, std::shared_ptr<const Render::AnimatedModelScene> ownedScene,
-    const Render::AnimationFrame& frame, WorldAnimationDiagnostics& diagnostics, const QString& notice={}) {
+QString FrameStatusDetails(const QLabel& label, const std::shared_ptr<const Render::AnimatedModelScene>& ownedScene,
+    const Render::AnimationFrame& frame, WorldAnimationDiagnostics& diagnostics, const QString& notice) {
     const auto& scene = *ownedScene;
-    label.setTextFormat(Qt::PlainText);
     const auto coverage = Render::QueryAnimationParticleCoverage(scene, frame);
     const auto* counts = coverage.Succeeded() ? &*coverage.value : nullptr;
-    label.setText(FrameSummary(scene,frame,counts)+(notice.isEmpty()?QString{}:QStringLiteral(" · ")+notice));
-    auto details=FrameDetails(scene,frame,counts,diagnostics.Summarize(std::move(ownedScene),frame));
+    auto details=FrameDetails(scene,frame,counts,diagnostics.Summarize(ownedScene,frame));
     details.prepend(QObject::tr("统计对应已接收场景 %1 / 帧 %2；界面统计最多每 250 ms 更新一次。").arg(frame.sceneVersion).arg(frame.contentVersion));
     if (!coverage.Succeeded()) details << WorldDiagnosticText(coverage.diagnostics);
     details.prepend(QObject::tr("%1 个未解析摆放").arg(label.property("animationUnresolvedPlacements").toULongLong()));
@@ -252,9 +279,39 @@ void ShowFrameStatus(QLabel& label, std::shared_ptr<const Render::AnimatedModelS
     if (!splats.isEmpty()) details.prepend(splats);
     const auto prem = label.property("premPreview").toString();
     if (!prem.isEmpty()) details.prepend(prem);
-    SetDiagnostics(label, details.join(QLatin1Char('\n')));
+    return details.join(QLatin1Char('\n'));
+}
+// 摘要行随帧刷新；完整分组诊断按读取时播放器已接收的帧生成，不在每次接收帧时遍历全部实例警告。
+void ShowFrameStatus(QLabel& label, WorldAnimationPlayer& player,
+    const std::shared_ptr<WorldAnimationDiagnostics>& diagnostics, const QString& notice={}) {
+    const auto ownedScene = player.Scene();
+    const auto frame = player.Frame();
+    if (!ownedScene || !frame) return;
+    label.setTextFormat(Qt::PlainText);
+    const auto coverage = Render::QueryAnimationParticleCoverage(*ownedScene, *frame);
+    const auto* counts = coverage.Succeeded() ? &*coverage.value : nullptr;
+    label.setText(FrameSummary(*ownedScene,*frame,counts)+(notice.isEmpty()?QString{}:QStringLiteral(" · ")+notice));
+    label.setProperty("fullDiagnostics", QString());
+    if (!label.toolTip().isEmpty()) label.setToolTip({});
+    SetDetails(label, [label=QPointer<QLabel>(&label), player=QPointer<WorldAnimationPlayer>(&player), diagnostics, notice] {
+        if (!label || !player) return QString{};
+        const auto scene = player->Scene();
+        const auto current = player->Frame();
+        if (!scene || !current) return QString{};
+        return FrameStatusDetails(*label, scene, *current, *diagnostics, notice);
+    });
 }
 } // namespace
+
+QString WorldLabelDiagnostics(const QLabel& label) {
+    if (const auto* details = FindDetails(label)) return details->Build();
+    return label.property("fullDiagnostics").toString();
+}
+void ClearWorldLabelDiagnostics(QLabel& label) {
+    if (auto* details = FindDetails(label)) delete details;
+    label.setProperty("fullDiagnostics", QString());
+    label.setToolTip({});
+}
 
 bool WorldModule::InstanceDiagnosticsCurrent() const {
     if (!animation_ || !viewport_ || !viewport_->HasAnimationScene()
@@ -546,7 +603,7 @@ void WorldModule::SetupAnimationControls() {
         if (!modelStatus_) return;
         modelStatus_->setProperty("buildingSplatPreview", text);
         if (animation_ && animation_->Ready() && animation_->Frame())
-            ShowFrameStatus(*modelStatus_, animation_->Scene(), *animation_->Frame(), *diagnostics);
+            ShowFrameStatus(*modelStatus_, *animation_, diagnostics);
         else SetDiagnostics(*modelStatus_, modelStatus_->property("fullDiagnostics").toString() + QStringLiteral("\n") + text);
     });
     connect(animationPlay_,&QPushButton::clicked,this,[this]{animation_->SetPlaying(true);});
@@ -588,7 +645,7 @@ void WorldModule::SetupAnimationControls() {
         lastFrame=frame->contentVersion;
         const auto now=StatusStampMs();
         const bool refreshStatus=newScene || !animation_->Playing() || now-lastStatusMs>=250;
-        if (refreshStatus && modelStatus_) ShowFrameStatus(*modelStatus_,animation_->Scene(),*frame,*diagnostics);
+        if (refreshStatus && modelStatus_) ShowFrameStatus(*modelStatus_,*animation_,diagnostics);
         if (scene_==animation_->Picking()) {
             // Player 的同修订门已复核地图身份；每帧只重定位主选，无需重新 Bind/Snapshot 整份选择上下文。
             if (newScene) ValidateSelection();
@@ -604,7 +661,7 @@ void WorldModule::SetupAnimationControls() {
     });
     connect(animation_,&WorldAnimationPlayer::Message,this,[this,diagnostics](const QString& text) {
         if (!page_ || !modelStatus_) return;
-        if (const auto frame=animation_->Frame()) ShowFrameStatus(*modelStatus_,animation_->Scene(),*frame,*diagnostics,text);
+        if (animation_->Frame() && animation_->Scene()) ShowFrameStatus(*modelStatus_,*animation_,diagnostics,text);
         else {
             const auto note = viewport_->ModelPresentationCurrent() ? text : text + tr(" · 旧画面已冻结（只读）");
             modelStatus_->setText(note); SetDiagnostics(*modelStatus_, note);

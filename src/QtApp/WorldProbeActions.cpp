@@ -648,7 +648,7 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
     log << QStringLiteral("camera-after=%1").arg(QString::fromUtf8(after));
     snapshot(QStringLiteral("end"));
     if (auto* label = page->findChild<QLabel*>(QStringLiteral("worldModelStatus")))
-        log << QStringLiteral("model-details=%1").arg(label->toolTip().replace(QLatin1Char('\n'), QStringLiteral(" / ")));
+        log << QStringLiteral("model-details=%1").arg(War3Map::Modules::WorldLabelDiagnostics(*label).replace(QLatin1Char('\n'), QStringLiteral(" / ")));
     if (const auto frame = viewport->AnimationTarget()) {
         std::map<std::string, int> codes; int simulated = 0;
         for (const auto& link : frame->particleLinks) {

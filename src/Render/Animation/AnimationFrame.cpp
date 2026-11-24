@@ -130,7 +130,7 @@ Status ModelAnimationService::PrepareStandStorage(State& s, std::uint64_t frameB
         }
         const auto [found,inserted]=variants.try_emplace(std::make_pair(model,sequence),static_cast<std::uint32_t>(representatives.size()));
         if (inserted) {
-            const auto metadataBytes=variants.size()*(3*sizeof(AnimationPoseLink)+2*sizeof(AnimationPickBounds)+3*sizeof(std::uint32_t));
+            const auto metadataBytes=variants.size()*(3*kAnimationPoseLinkBudgetBytes+2*sizeof(AnimationPickBounds)+3*sizeof(std::uint32_t));
             if (metadataBytes>(frameBudget-s.frameBytes)/2)
                 return fail("ANIMATION_FRAME_BUDGET","实际Stand变体缓存元数据超过帧预算；未混用其他形态。");
             representatives.push_back(request); poseModels.push_back(model); poseSequences.push_back(sequence);
@@ -262,7 +262,7 @@ Status ModelAnimationService::PrepareStandStorage(State& s, std::uint64_t frameB
         stand->collisionMatrices.size()*sizeof(AnimationCollisionMatrix)+stand->geosetIssues.size()*sizeof(AnimationGeosetIssue)+
         stand->layerAlphas.size()*sizeof(float)+stand->layerSlices.size()*sizeof(War3RenderMaterialLayerSliceV2)+stand->materialIssues.size()*sizeof(AnimationMaterialIssue)+
         stand->materialStates.size()*sizeof(War3RenderMaterialStateV2)+stand->materialStateSlices.size()*sizeof(War3RenderMaterialLayerSliceV2)+
-        s.standPoses.size()*(3*sizeof(AnimationPoseLink)+2*sizeof(AnimationPickBounds)+3*sizeof(std::uint32_t))+
+        s.standPoses.size()*(3*kAnimationPoseLinkBudgetBytes+2*sizeof(AnimationPickBounds)+3*sizeof(std::uint32_t))+
         scene.models.size()*sizeof(std::vector<std::uint32_t>);
     if (standBytes>(frameBudget-s.frameBytes)/2) return fail("ANIMATION_FRAME_BUDGET","全量身份与共享 Stand 真实内存超过预算；未截断实例。");
     s.frameBytes+=2*standBytes; // 缓存与候选 owned 副本一起核算。
@@ -285,7 +285,7 @@ Status ModelAnimationService::PrepareStandStorage(State& s, std::uint64_t frameB
             std::uint64_t(base.collisionMatrices.count)*sizeof(AnimationCollisionMatrix)+std::uint64_t(geosets)*sizeof(AnimationGeosetIssue)+
             std::uint64_t(base.materialAlphas.count)*sizeof(float)+(scene.dynamicMaterialAlphas ? sizeof(AnimationMaterialIssue) : 0)+
             (scene.dynamicMaterialStates ? std::uint64_t(base.materialAlphas.count)*sizeof(War3RenderMaterialStateV2)+sizeof(AnimationMaterialIssue) : 0)+
-            2*sizeof(AnimationPoseLink)+sizeof(std::uint32_t)+2*sizeof(std::pair<double,std::uint32_t>);
+            2*kAnimationPoseLinkBudgetBytes+sizeof(std::uint32_t)+2*sizeof(std::pair<double,std::uint32_t>);
         if (bytes>activeBudget-activeBytes || bytes>frameBudget-s.frameBytes ||
             base.groupCount>1048576-s.sharedGroupCount || base.alphaCount>1048576-s.sharedAlphaCount ||
             base.collisionMatrices.count>1048576-s.maxCollisionMatrices || geosets>1048576-s.maxGeosetIssues) continue;
@@ -342,6 +342,9 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         return {std::nullopt,std::move(visibility.diagnostics)};
     frame->timings.visibilityNs=frame->worldView ? ElapsedNs(visibilityStarted) : 0;
     const auto poseStarted=TimingClock::now();
+    // 交互预览的粒子直接复用本帧主姿势的发射器节点；严格回放仍由粒子自己逐步求值。
+    const bool captureParticleAnchors=s.particles && s.particles->playbackPolicy==AnimationPlaybackPolicy::InteractivePreview;
+    if (captureParticleAnchors) BeginAnimationParticleAnchors(*s.particles,scene.specs.size(),s.assets);
     frame->sharedPoseRanges=s.sharedPoseRanges;
     frame->dynamicMaterialAlphas=scene.dynamicMaterialAlphas; frame->dynamicColors=scene.dynamicColors;
     frame->dynamicMaterialStates=scene.dynamicMaterialStates;
@@ -539,6 +542,10 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 !status.Succeeded()) return status;
             link.animated=true;
             ++frame->animatedInstances;
+            if (captureParticleAnchors && s.requests[k].hasCamera) {
+                const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
+                CaptureAnimationParticleAnchors(*s.particles,link.requestIndex,assetIndex,s.assets[assetIndex],s.evaluator->Nodes(k));
+            }
             const auto groups=s.evaluator->Groups(k); const auto alphas=s.evaluator->Alphas(k); const auto colors=s.evaluator->Colors(k);
             const auto& pick=scene.pickModels[frame->instances[i].instance.model];
             if (pick.collisionNodes) {

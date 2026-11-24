@@ -596,9 +596,13 @@ inline void ReusablePlansKeepFrozenParticleWorkspacesIndependent() {
     AnimationLimits limits;limits.enableParticles=true;limits.retainUnsupportedStatic=true;
     limits.playbackPolicy=AnimationPlaybackPolicy::InteractivePreview;limits.particles.maxAnchorSamples=9;
     auto service=Good(ModelAnimationService::Create({7,1,"frozen-source"},specs,read,limits));
-    auto view=AnimationParticleContinuityTest::View(-2048);auto frame=Good(service->Prepare(nullptr,view));
+    // 发射器节点复用主姿势，锚点不再限制准入；用每帧实例软预算保留“一实例获准、一实例冻结”。
+    const auto limited=[](AnimationAdvance value) {
+        value.previewParticleBudget=AnimationParticleFrameBudget{1,kMaximumPreviewAnchorSamples};return value;
+    };
+    auto view=limited(AnimationParticleContinuityTest::View(-2048));auto frame=Good(service->Prepare(nullptr,view));
     const auto frozen=frame->particleCheckpoint->instances[0];
-    view=AnimationParticleContinuityTest::View();view.deltaMs=33;frame=Good(service->Prepare(frame.get(),view));
+    view=limited(AnimationParticleContinuityTest::View());view.deltaMs=33;frame=Good(service->Prepare(frame.get(),view));
     Check(frozen && frame->particleCheckpoint->instances[0]==frozen && frame->particleCheckpoint->frozen[0],
         "delta fixture did not establish an actual frozen checkpoint");
     const auto catalog=Good(service->CaptureInstanceCatalog());
@@ -639,7 +643,7 @@ inline void ReusablePlansKeepFrozenParticleWorkspacesIndependent() {
         first.frame->particleCheckpoint->frozen[0] && second.frame->particleCheckpoint->frozen[0] &&
         first.frame->particleLinks[0].resetReason.empty() && second.frame->particleLinks[0].resetReason.empty(),
         "repeated plan consumed shared mutable workspaces, reset frozen RNG or rebased to an old clock");
-    auto resume=AnimationParticleContinuityTest::View(-2048);resume.deltaMs=33;
+    auto resume=limited(AnimationParticleContinuityTest::View(-2048));resume.deltaMs=33;
     const auto flowing=Good(first.service->Prepare(first.frame.get(),resume));
     view.deltaMs=33;const auto stillFrozen=Good(second.service->Prepare(second.frame.get(),view));
     const auto oldStillPlaying=Good(service->Prepare(frame.get(),view));

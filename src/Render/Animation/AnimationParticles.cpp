@@ -41,7 +41,8 @@ bool SameCamera(const std::optional<LocalCamera>& a, const std::optional<LocalCa
     return a.has_value() == b.has_value() && (!a || (a->eye == b->eye && a->up == b->up));
 }
 std::uint64_t StateBytes(const AnimationParticleState& state) {
-    std::uint64_t bytes=sizeof(state)+state.state.emitters.capacity()*sizeof(Particles::EmitterState);
+    std::uint64_t bytes=sizeof(state)+state.state.emitters.capacity()*sizeof(Particles::EmitterState)
+        +state.anchors.capacity()*sizeof(Particles::Anchor);
     for (const auto& emitter:state.state.emitters)
         bytes+=emitter.particles.capacity()*sizeof(Particles::Particle)+emitter.segments.capacity()*sizeof(Particles::Segment);
     return bytes;
@@ -71,6 +72,41 @@ void HideModel(AnimationFrame& frame, std::uint32_t rendered, const std::string&
         ++frame.hiddenInstances;
     }
 }
+void WriteAnchor(Particles::Anchor& anchor, const War3RenderCore::NodePose& node) noexcept {
+    anchor.pivot = node.pivot;
+    for (std::size_t row = 0; row < 3; ++row) for (std::size_t column = 0; column < 4; ++column)
+        anchor.model[row * 4 + column] = node.worldMatrix[column * 4 + row];
+}
+}
+
+void BeginAnimationParticleAnchors(AnimationParticleHost& host, std::size_t requestCount,
+    std::span<const AnimationAsset> assets) {
+    host.requestBindings.assign(requestCount, UINT32_MAX);
+    host.anchorOffsets.resize(host.bindings.size());
+    host.anchorSerials.resize(host.bindings.size(), 0);
+    std::size_t total = 0;
+    for (std::uint32_t b = 0; b < host.bindings.size(); ++b) {
+        const auto& binding = host.bindings[b];
+        if (binding.requestIndex < requestCount) host.requestBindings[binding.requestIndex] = b;
+        host.anchorOffsets[b] = static_cast<std::uint32_t>(total);
+        if (binding.assetIndex < assets.size()) total += assets[binding.assetIndex].emitterNodes.size();
+    }
+    host.frameAnchors.resize(total);
+    ++host.anchorSerial; // 上一帧写下的序号自然失效，不需要逐绑定清零。
+}
+
+void CaptureAnimationParticleAnchors(AnimationParticleHost& host, std::uint32_t request, std::uint32_t assetIndex,
+    const AnimationAsset& asset, std::span<const War3RenderCore::NodePose> nodes) {
+    if (request >= host.requestBindings.size()) return;
+    const auto b = host.requestBindings[request];
+    if (b == UINT32_MAX || b >= host.bindings.size() || host.bindings[b].assetIndex != assetIndex) return;
+    const auto offset = static_cast<std::size_t>(host.anchorOffsets[b]);
+    const auto count = asset.emitterNodes.size();
+    if (count > host.frameAnchors.size() - std::min(offset, host.frameAnchors.size())) return;
+    // 任一节点越界都不写：粒子回到单独求值路径，由它报告映射错误。
+    if (std::any_of(asset.emitterNodes.begin(), asset.emitterNodes.end(), [&](auto node) { return node >= nodes.size(); })) return;
+    for (std::size_t i = 0; i < count; ++i) WriteAnchor(host.frameAnchors[offset + i], nodes[asset.emitterNodes[i]]);
+    host.anchorSerials[b] = host.anchorSerial;
 }
 
 Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedModelScene& scene,
@@ -89,6 +125,12 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
     // 新预算是显式交互合同；旧/严格调用保持原6000锚样。其余帧内存、节点/几何硬限不变。
     const auto maximumAnchors=preview ? preview->maxAnchorSamples : host.limits.maxAnchorSamples;
     const auto outside=[&](std::uint32_t r) { return !frame.requestVisibility.empty() && frame.requestVisibility[r]==0; };
+    // 本帧开始时登记、主姿势求值写下的节点；序号不等即不属于本帧。
+    const auto anchorsReused=[&](std::size_t b) {
+        return world && host.anchorSerial && b<host.anchorSerials.size() && host.anchorSerials[b]==host.anchorSerial
+            && b<host.anchorOffsets.size();
+    };
+    struct CloseAnchors { AnimationParticleHost& host; ~CloseAnchors() { ++host.anchorSerial; } } closeAnchors{host};
     for (std::uint32_t r=0;r<scene.particleCapabilities.size();++r) {
         const auto& capability=scene.particleCapabilities[r];
         if (outside(r) && (capability.particle2Count || capability.ribbonCount || capability.premCount))
@@ -187,7 +229,8 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
                 plan.code="ANIMATION_PARTICLE_PREVIEW_TIME_BUDGET";continue;
             }
             // 固定时间成本与显示帧间隔无关；慢帧也不改变同一可见集合的准入胜者。
-            plan.anchors=1+host.limits.maxWorldFrameSteps;
+            // 固定步在前后两帧节点之间插值；本帧主姿势已给出节点时不再单独求骨架，否则只求当前一次。
+            plan.anchors=anchorsReused(b) ? 0 : 1;
             plan.nodes=plan.anchors*asset.compiled.NodeCount();
             if (plan.anchors>maximumAnchors-reservedAnchors ||
                 plan.nodes>host.limits.maxAnchorNodeVisits-reservedNodes) {
@@ -195,7 +238,8 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             }
             const auto* old=checkpoint->instances[b].get();
             std::uint64_t particles=0,segments=0;
-            plan.stateBytes=sizeof(AnimationParticleState)+asset.particles->emitters.size()*sizeof(Particles::EmitterState);
+            plan.stateBytes=sizeof(AnimationParticleState)+asset.particles->emitters.size()*sizeof(Particles::EmitterState)
+                +asset.emitterNodes.size()*sizeof(Particles::Anchor);
             for (std::size_t e=0;e<asset.particles->emitters.size();++e) {
                 const auto& emitter=asset.particles->emitters[e];
                 const auto quota=old ? old->state.emitters[e].quota : ExpectedQuota(emitter,host.limits.maxPerEmitter);
@@ -364,10 +408,47 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             return {};
         };
         // 即使 t=0 不发射，也验证实际当前节点/GEOA；不能让纯粒子绕过核心门禁。
+        // 交互预览：同一请求、同一相机的主姿势已通过核心求值，直接用它的节点。
         std::vector<Particles::Anchor> currentAnchors(asset.emitterNodes.size());
-        auto status = sampler(current.elapsedMs, currentAnchors);
-        if (status.Succeeded()) status = Particles::Advance(*asset.particles, candidate.state, timeline,
-            current.elapsedMs, sampler, host.simulation);
+        auto status = Status::Ok();
+        if (anchorsReused(b)) {
+            const auto first = host.frameAnchors.begin() + host.anchorOffsets[b];
+            std::copy(first, first + static_cast<std::ptrdiff_t>(currentAnchors.size()), currentAnchors.begin());
+            ++frame.timings.particleAnchorReuses;
+        } else status = sampler(current.elapsedMs, currentAnchors);
+        // 交互预览的固定步在上一帧与本帧节点之间线性插值（预览近似），不逐步重求骨架；
+        // 没有连续的上一帧节点（初次、重置、动作切换）时保持当前节点。严格回放仍逐步求值。
+        const std::vector<Particles::Anchor>* previousAnchors = nullptr;
+        std::uint64_t previousElapsed = 0;
+        if (world && link.resetReason.empty() && old && old->anchors.size() == currentAnchors.size()
+            && old->anchorElapsedMs < current.elapsedMs) {
+            previousAnchors = &old->anchors; previousElapsed = old->anchorElapsedMs;
+        }
+        const auto interpolated = [&](std::uint64_t elapsed, std::span<Particles::Anchor> anchors) -> Status {
+            sampledElapsed = elapsed;
+            const auto global = Particles::GlobalTimeAt(timeline, elapsed);
+            if (!global.Succeeded()) return {global.diagnostics};
+            sampledGlobal = *global.value;
+            if (anchors.size() != currentAnchors.size()) return AnimationFailure("ANIMATION_PARTICLE_MAPPING", "发射器锚点数量不一致。");
+            if (!previousAnchors || elapsed >= current.elapsedMs) {
+                std::copy(currentAnchors.begin(), currentAnchors.end(), anchors.begin());
+                return {};
+            }
+            if (elapsed <= previousElapsed) {
+                std::copy(previousAnchors->begin(), previousAnchors->end(), anchors.begin());
+                return {};
+            }
+            const auto t = static_cast<float>(double(elapsed - previousElapsed) / double(current.elapsedMs - previousElapsed));
+            for (std::size_t i = 0; i < anchors.size(); ++i) {
+                const auto& from = (*previousAnchors)[i]; const auto& to = currentAnchors[i];
+                for (std::size_t j = 0; j < to.model.size(); ++j) anchors[i].model[j] = from.model[j] + (to.model[j] - from.model[j]) * t;
+                anchors[i].pivot = to.pivot;
+            }
+            return {};
+        };
+        if (status.Succeeded()) status = world
+            ? Particles::Advance(*asset.particles, candidate.state, timeline, current.elapsedMs, interpolated, host.simulation)
+            : Particles::Advance(*asset.particles, candidate.state, timeline, current.elapsedMs, sampler, host.simulation);
         const auto reject = [&](const std::vector<Diagnostic>& diagnostics) -> Status {
             const auto error = std::find_if(diagnostics.begin(), diagnostics.end(),
                 [](const auto& d) { return d.severity == DiagnosticSeverity::Error; });
@@ -439,6 +520,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             frame.particleMaterialFlags.push_back(materialFlags);
         }
         link.geometryHash = geometryHash.value;
+        if (world) { candidate.anchors = std::move(currentAnchors); candidate.anchorElapsedMs = current.elapsedMs; }
         candidate.counts=counts;candidate.stateHash=link.stateHash;candidate.storageBytes=StateBytes(candidate);
         checkpoint->stateBytes-=old ? old->storageBytes : 0;checkpoint->stateBytes+=candidate.storageBytes;
         checkpoint->instances[b]=std::make_shared<const AnimationParticleState>(std::move(candidate));

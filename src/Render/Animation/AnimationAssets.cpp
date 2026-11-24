@@ -986,7 +986,7 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
         if (a != UINT32_MAX && state.assets[a].parsed) state.maxCollisionMatrices+=state.assets[a].parsed->collisionShapes.size();
     }
     const auto baseFrameBytes=AnimationRequestGeometryBytes(catalog)+AnimationParticleMaterialOwnerBytes(state.assets.capacity())+
-        g.instances.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+sizeof(AnimationPoseLink))+
+        g.instances.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+kAnimationPoseLinkBudgetBytes)+
         scene.specs.size()*sizeof(AnimationInstanceState)+g.instances.size()*sizeof(AnimationPickBounds)+
         (scene.dynamicMaterialAlphas ? g.instances.size()*sizeof(War3RenderMaterialLayerSliceV2) : 0)+
         (scene.dynamicMaterialStates ? g.instances.size()*sizeof(War3RenderMaterialLayerSliceV2) : 0);
