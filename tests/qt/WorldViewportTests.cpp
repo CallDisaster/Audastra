@@ -1246,6 +1246,23 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     const auto hiddenFrame = player.Frame();
     QVERIFY(hiddenFrame->poses.front().hidden);
     QCOMPARE(hiddenFrame->poses.front().rejection.code, War3RenderCore::Code::PoseInheritanceSingular);
+    {
+        // 后台预先整理的点选列表与界面线程原地计算逐项相同；占位快照绑定同一帧。
+        const auto scene = (*service.value)->Scene();
+        WorldViewport::AnimationFramePreparation prepared;
+        WorldViewport::PrepareAnimationFrame(scene, *hiddenFrame, prepared);
+        WorldModelScene inPlace; AnimationPickingInstances(*scene, *hiddenFrame, inPlace);
+        QVERIFY(prepared.scene == scene);
+        QCOMPARE(prepared.picking.instanceRequests, inPlace.instanceRequests);
+        QCOMPARE(prepared.picking.skippedInstances, inPlace.skippedInstances);
+        QCOMPARE(prepared.picking.instances.size(), inPlace.instances.size());
+        QVERIFY(std::equal(prepared.picking.instances.begin(), prepared.picking.instances.end(), inPlace.instances.begin(),
+            [](const auto& a, const auto& b) { return std::memcmp(&a, &b, sizeof(a)) == 0; }));
+        QVERIFY(prepared.bugSnapshot && prepared.bugSnapshot->Succeeded());
+        QCOMPARE(prepared.bugSnapshot->value->contentVersion, hiddenFrame->contentVersion);
+        WorldViewport::PrepareAnimationFrame(nullptr, *hiddenFrame, prepared);
+        QVERIFY(!prepared.scene && !prepared.bugSnapshot); // 没有场景时不准备，界面线程照常计算。
+    }
     QVERIFY(!viewport.UpdateAnimationFrame(hiddenFrame, picking)); // 旧内容版本仍被拒绝。
 
     edit.elapsedMs = 500;

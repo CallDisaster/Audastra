@@ -156,6 +156,7 @@ bool WorldViewport::SubmitAnimation(std::shared_ptr<const Render::AnimatedModelS
         animationFailure_ = Status::Failure("World.Animation.Submit", code, message); return false;
     };
     auto bridge=std::make_unique<Render::AnimationRenderer>(api_,renderer_);
+    bridge->SetPreparedSubmit(preparedSubmit_);
     EditorVisibilityBuffers buffers;
     const bool presented = HasEditorVisibilitySupport();
     if ((presented || instanceVisible_) && !BuildEditorVisibility(nullptr, frame.get(), buffers))
@@ -204,8 +205,23 @@ bool WorldViewport::SetAnimationScene(std::shared_ptr<const Render::AnimatedMode
     if (measurementEnabled_) emit MeasurementFrameAccepted();
     return true;
 }
+std::optional<std::pair<Render::AnimationPreparedMode, std::uint64_t>> WorldViewport::AnimationPrepareMode() const {
+    if (!renderer_ || !animationRenderer_ || !preparedSubmit_ || pendingInstanceRoster_ || !HasEditorVisibilitySupport())
+        return std::nullopt;
+    const auto mode = animationRenderer_->PreparedMode();
+    if (!mode) return std::nullopt;
+    return std::pair{*mode, prepareEpoch_};
+}
+void WorldViewport::PrepareAnimationFrame(const std::shared_ptr<const Render::AnimatedModelScene>& scene,
+    const Render::AnimationFrame& frame, AnimationFramePreparation& output) {
+    output = {};
+    if (!scene || frame.poses.size() != frame.instances.size()) return;
+    output.scene = scene;
+    Render::AnimationPickingInstances(*scene, frame, output.picking);
+    output.bugSnapshot = Services::CaptureWorldModelBugPlaceholderFrame(scene, frame);
+}
 bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::AnimationFrame> frame,
-    const std::shared_ptr<Render::WorldModelScene>& picking) try {
+    const std::shared_ptr<Render::WorldModelScene>& picking, AnimationFramePreparation* prepared) try {
     using Clock = std::chrono::steady_clock;
     const auto nanoseconds = [](auto begin) {
         return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
@@ -222,7 +238,14 @@ bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::Animation
     // 先准备过滤后的轻量点选场景；上传被拒绝时不改旧选择、请求映射或实例变换。
     timing.sceneVersion = frame->sceneVersion; timing.contentVersion = frame->contentVersion;
     const auto pickingStarted = Clock::now();
-    Render::AnimationPickingInstances(*animationScene_,*frame,animationPickingScratch_);
+    if (prepared && prepared->scene != animationScene_) prepared = nullptr; // 不属于当前场景：整份重算。
+    timing.preparedPicking = prepared != nullptr;
+    if (prepared) {
+        animationPickingScratch_.instances.swap(prepared->picking.instances);
+        animationPickingScratch_.instanceRequests.swap(prepared->picking.instanceRequests);
+        animationPickingScratch_.requestedInstances = prepared->picking.requestedInstances;
+        animationPickingScratch_.skippedInstances = prepared->picking.skippedInstances;
+    } else Render::AnimationPickingInstances(*animationScene_,*frame,animationPickingScratch_);
     auto& next=animationPickingScratch_;
     std::optional<std::uint32_t> selected;
     if (selectedInstance_ && models_ && *selectedInstance_<models_->instanceRequests.size()) {
@@ -248,8 +271,12 @@ bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::Animation
         const auto masks = buffers.Describe(editorPresentationRevision_ + 1);
         timing.visibilityNs = nanoseconds(visibilityStarted);
         const auto submitStarted = Clock::now();
-        auto updated = animationRenderer_->Update(frame, presented ? &masks : nullptr);
+        // 后台为同一渲染器预备过这一帧时凭票提交；插件核对不上会照常完整复制。
+        const auto ticket = presented && prepared && prepared->renderTicket && prepared->renderEpoch == prepareEpoch_
+            ? prepared->renderTicket : 0;
+        auto updated = animationRenderer_->Update(frame, presented ? &masks : nullptr, ticket);
         timing.submitNs = nanoseconds(submitStarted);
+        timing.preparedUpload = animationRenderer_->LastUpdateUsedPrepared();
         if (!updated.Succeeded()) { animationFailure_ = std::move(updated); return false; }
         editorPresentationTarget_.reset(); editorVisibilityDirty_ = false;
         if (presented) {
@@ -262,7 +289,7 @@ bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::Animation
     picking->instanceRequests.swap(next.instanceRequests);
     picking->skippedInstances=next.skippedInstances;
     models_=picking; animationFrame_=std::move(frame);
-    RetainAnimationPickFrame();
+    RetainAnimationPickFrame(prepared);
     NotifyAcceptedAnimationFrame();
     MarkRenderActivity();
     const bool hiddenSelection=selectedInstance_.has_value() && !selected.has_value();

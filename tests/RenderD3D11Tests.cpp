@@ -2067,6 +2067,49 @@ void TestEditorVisibility(const War3RenderPluginApiV2* api, const War3RenderCrea
                 "atomic pose reuploaded assets or fabricated particle upload");
             update.modelPose=&fixture.pose.base; update.particleFrame=&fixture.frame; update.expected=target; update.presentationRevision=8;
             Require(api->submitEditorVisibility(renderer.handle,&update)!=0 && capture(7)==posed,"mutually exclusive dynamic inputs replaced frame");
+            // 预备/凭票提交：凭票提交与直接提交结果相同；票据用过即失效、内容版本不同时照常完整复制。
+            const auto plugin=GetModuleHandleW(L"war3-render-d3d11.dll");
+            const auto prepare=reinterpret_cast<War3Map::Render::War3PrepareEditorUpdateV1>(
+                GetProcAddress(plugin,War3Map::Render::kPrepareEditorUpdateExportV1));
+            const auto submitPrepared=reinterpret_cast<War3Map::Render::War3SubmitPreparedEditorVisibilityV1>(
+                GetProcAddress(plugin,War3Map::Render::kSubmitPreparedEditorVisibilityExportV1));
+            Require(prepare && submitPrepared,"prepared update exports missing");
+            const bool particleMode=mode==WAR3_EDITOR_PRESENTATION_PARTICLES;
+            // 与编辑器相同：预备时用新建的描述结构副本，数组仍是同一份；提交用另一份描述。
+            War3RenderDynamicColoredSkinUpdateV2 poseCopy{}; War3RenderParticleUpdateV2 particleCopy{};
+            const auto dynamicOnly=[&] {
+                poseCopy=fixture.pose; particleCopy=fixture.frame; particleCopy.modelPose=&poseCopy.base;
+                War3RenderEditorVisibilityUpdateV2 input{}; input.structSize=sizeof(input);
+                if (particleMode) input.particleFrame=&particleCopy; else input.modelPose=&poseCopy.base;
+                return input;
+            };
+            std::uint32_t used=7;
+            std::uint64_t ticket=99;
+            Require(prepare(renderer.handle,&update,&ticket)!=0 && ticket==0,"prepare accepted two dynamic inputs");
+            update.modelPose=particleMode ? nullptr : &fixture.pose.base; update.particleFrame=particleMode ? &fixture.frame : nullptr;
+            fixture.skin.groups[1].values[9]=600; fixture.Bind(11,22);
+            auto input=dynamicOnly();
+            Require(prepare(renderer.handle,&input,&ticket)==0 && ticket!=0,"prepare rejected");
+            Require(api->getEditorPresentationTarget(renderer.handle,&target)==0 && target.contentVersion==21,"prepare changed the target");
+            update.expected=target; update.presentationRevision=8;
+            const auto uploads=receipt.skin.matrixUploadCount;
+            Require(submitPrepared(renderer.handle,&update,ticket,&used)==0 && used==1,"prepared commit rejected or copied again");
+            Require(api->getEditorPresentationTarget(renderer.handle,&target)==0 && target.contentVersion==22,"prepared content target wrong");
+            RequireWorldColor(capture(8),receipt.frame.view,600,0,{0,255,0},1);
+            Require(receipt.skin.matrixUploadCount==uploads+1,"prepared commit upload count wrong");
+            fixture.skin.groups[1].values[9]=500; fixture.Bind(11,23); update.expected=target; update.presentationRevision=9;
+            Require(submitPrepared(renderer.handle,&update,ticket,&used)==0 && used==0,"consumed ticket did not fall back to a full copy");
+            RequireWorldColor(capture(9),receipt.frame.view,500,0,{0,255,0},1);
+            fixture.skin.groups[1].values[9]=400; fixture.Bind(11,24); input=dynamicOnly();
+            Require(prepare(renderer.handle,&input,&ticket)==0 && ticket!=0,"second prepare rejected");
+            fixture.skin.groups[1].values[9]=300; fixture.Bind(11,25); update.expected=target; update.presentationRevision=10;
+            Require(submitPrepared(renderer.handle,&update,ticket,&used)==0 && used==0,"other-version ticket did not fall back to a full copy");
+            Require(api->getEditorPresentationTarget(renderer.handle,&target)==0 && target.contentVersion==25,"fallback content target wrong");
+            const auto fallback=capture(10); RequireWorldColor(fallback,receipt.frame.view,300,0,{0,255,0},1);
+            input=dynamicOnly(); Require(prepare(renderer.handle,&input,&ticket)==0 && ticket!=0,"same-version prepare rejected");
+            update.expected=target; update.presentationRevision=11;
+            Require(submitPrepared(renderer.handle,&update,ticket,&used)!=0 && used==0 && capture(10)==fallback,
+                "prepared stale content replaced the frame");
         } else {
             instances[1].transform[3]=700; visible={0,1}; update.expected=target;
             update.presentationRevision=7; update.staticInstances=instances.data(); const auto epoch=target.modelEpoch;

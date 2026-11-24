@@ -135,6 +135,23 @@ std::uint32_t Count32(std::size_t size) {
     if (size > UINT32_MAX) throw std::length_error("asset suffix count exceeds ABI range");
     return static_cast<std::uint32_t>(size);
 }
+// 一帧交给插件的姿势/粒子描述，只借用帧内数组；界面线程提交与后台预备共用，两边身份必然一致。
+struct UpdateDescriptors {
+    War3RenderSkinUpdateV2 update;
+    War3RenderDynamicColoredSkinUpdateV2 colored;
+    War3RenderMaterialSkinUpdateV2 material;
+    War3RenderMaterialStateSkinUpdateV2 state;
+    const War3RenderSkinUpdateV2* pose;
+    AnimationParticleDescriptor particles;
+    UpdateDescriptors(const AnimatedModelScene& scene, const AnimationFrame& frame, bool particleMaterial) noexcept
+        : update(frame.Describe()), colored(frame.DescribeColored()), material(frame.DescribeMaterial()),
+          state(frame.DescribeMaterialState()),
+          pose(scene.dynamicMaterialStates ? &state.base.base.base : scene.dynamicMaterialAlphas ? &material.base.base
+              : scene.dynamicColors ? &colored.base : &update),
+          particles(frame, pose, particleMaterial) {}
+    UpdateDescriptors(const UpdateDescriptors&) = delete;
+    UpdateDescriptors& operator=(const UpdateDescriptors&) = delete;
+};
 War3RenderEditorVisibilityUpdateV2 DescribeVisibility(const War3RenderEditorPresentationTargetV2& target,
     const EditorVisibilityMasks& masks) {
     return {sizeof(War3RenderEditorVisibilityUpdateV2), static_cast<std::uint32_t>(masks.instances.size()),
@@ -400,19 +417,33 @@ Status AnimationRenderer::Submit(std::shared_ptr<const AnimatedModelScene> scene
     scene_=std::move(scene); frame_=std::move(frame);
     return particleWarning;
 } catch (const std::exception&) { return Failure("ANIMATION_SUBMIT_FAILED","动画提交失败，未宣称上传成功。"); }
-Status AnimationRenderer::Update(std::shared_ptr<const AnimationFrame> frame, const EditorVisibilityMasks* visibility) {
+std::optional<AnimationPreparedMode> AnimationRenderer::PreparedMode() const {
+    if (!handle_ || !scene_ || !frame_ || pendingRosterTicket_ || !presentationTarget_) return std::nullopt;
+    return AnimationPreparedMode{particleMode_, particleMode_ && AnimationParticleMaterialSupported(api_,handle_)};
+}
+std::uint64_t AnimationRenderer::PrepareUpdate(War3PrepareEditorUpdateV1 prepare, War3RendererHandle handle,
+    const AnimatedModelScene& scene, const AnimationFrame& frame, AnimationPreparedMode mode) noexcept {
+    if (!prepare || !handle || (scene.dynamicColors && frame.colors.size()!=frame.alphas.size())) return 0;
+    const UpdateDescriptors descriptors(scene,frame,mode.particleMaterial);
+    War3RenderEditorVisibilityUpdateV2 input{}; input.structSize=sizeof(input);
+    if (mode.particleMode) input.particleFrame=descriptors.particles.Get();
+    else input.modelPose=descriptors.pose;
+    std::uint64_t ticket=0;
+    return prepare(handle,&input,&ticket)==0 ? ticket : 0;
+}
+Status AnimationRenderer::Update(std::shared_ptr<const AnimationFrame> frame, const EditorVisibilityMasks* visibility,
+    std::uint64_t preparedTicket) {
+    lastUpdateUsedPrepared_ = false;
     if (pendingRosterTicket_) return Failure("ANIMATION_ROSTER_PENDING", "实例事务尚未完成，旧Target保持。");
     if (!frame_ || !frame || frame->sceneVersion!=frame_->sceneVersion || frame->contentVersion<=frame_->contentVersion ||
         frame->documentRevision!=frame_->documentRevision) return Failure("ANIMATION_FRAME_STALE","动态更新的场景、修订或版本无效。");
     if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene_,*frame); !status.Succeeded()) return status;
-    auto update=frame->Describe();
-    auto colored=frame->DescribeColored(); auto material=frame->DescribeMaterial(); auto state=frame->DescribeMaterialState();
     if (scene_->dynamicColors && frame->colors.size()!=frame->alphas.size())
         return Failure("ANIMATION_COLOR_MAPPING","动态RGB和透明度数量不符。");
-    const auto* pose=scene_->dynamicMaterialStates ? &state.base.base.base : scene_->dynamicMaterialAlphas ? &material.base.base : scene_->dynamicColors ? &colored.base : &update;
     const bool particleMaterial=particleMode_ && AnimationParticleMaterialSupported(api_,handle_);
     auto particleWarning=particleMode_ ? AnimationParticleMaterialWarning(*scene_,particleMaterial) : Status::Ok();
-    const AnimationParticleDescriptor particles(*frame,pose,particleMaterial);
+    const UpdateDescriptors descriptors(*scene_,*frame,particleMaterial);
+    const auto* pose=descriptors.pose; const auto& particles=descriptors.particles;
     if (visibility) {
         War3RenderEditorPresentationTargetV2 target{};
         if (!PresentationSupported(api_) || !ReadPresentationTarget(api_, handle_, target))
@@ -422,7 +453,12 @@ Status AnimationRenderer::Update(std::shared_ptr<const AnimationFrame> frame, co
         auto mask = DescribeVisibility(target, *visibility);
         if (particleMode_) mask.particleFrame = particles.Get();
         else mask.modelPose = pose;
-        if (api_->submitEditorVisibility(handle_, &mask) != 0)
+        // 有票据时走插件的凭票提交：检查与结果同直接提交，只省去界面线程上的整份复制。
+        std::uint32_t used = 0;
+        const auto submitted = preparedTicket && preparedSubmit_ ? preparedSubmit_(handle_, &mask, preparedTicket, &used)
+            : api_->submitEditorVisibility(handle_, &mask);
+        lastUpdateUsedPrepared_ = submitted == 0 && used == 1;
+        if (submitted != 0)
             return Failure("ANIMATION_UPDATE_REJECTED", "渲染插件拒绝姿势与显隐组合更新，旧目标保留。");
         target.contentVersion = frame->contentVersion; target.particleDrawCount = static_cast<std::uint32_t>(frame->particleDraws.size());
         presentationTarget_ = target; presentationRevision_ = visibility->presentationRevision;

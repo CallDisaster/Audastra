@@ -25,6 +25,8 @@ struct WorldAnimationTiming {
     std::uint64_t queuedNs = 0, workerStartedNs = 0, workerFinishedNs = 0, uiStartedNs = 0;
     std::uint64_t queueWaitNs = 0, workerTotalNs = 0, sourceBeforeNs = 0, sourceAfterNs = 0;
     std::uint64_t uiQueueWaitNs = 0, uiAcceptNs = 0, changedSlotsNs = 0;
+    std::uint64_t acceptPreparationNs = 0; // 后台为界面接收预先整理点选列表与占位快照的耗时
+    std::uint64_t renderPreparationNs = 0; // 后台为插件预先复制姿势/粒子的耗时（插件支持时）
     std::uint64_t animatedInstances = 0, retainedStaticInstances = 0, hiddenInstances = 0;
     std::uint64_t budgetStaticInstances = 0, budgetParticleInstances = 0;
     std::uint64_t offscreenInstances = 0, offscreenPoseInstances = 0, offscreenParticleInstances = 0;

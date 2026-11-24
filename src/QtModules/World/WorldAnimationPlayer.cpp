@@ -7,6 +7,7 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <shared_mutex>
 
 namespace War3Map::Modules {
 namespace {
@@ -536,13 +537,18 @@ void WorldAnimationPlayer::StartNext() {
         Result<std::shared_ptr<const Render::AnimationFrame>> result;
         std::uint64_t milliseconds = 0;
         WorldAnimationTiming timing;
+        WorldViewport::AnimationFramePreparation prepared; // 点选列表与占位快照在后台算好，界面线程只交换
     };
+    auto scene = service->Scene();
+    // 渲染器可预备时，worker 借用它把插件复制挪到后台；代次不同或渲染器已收回则跳过。
+    auto lease = viewport_.AnimationPrepareLease();
+    const auto prepareMode = viewport_.AnimationPrepareMode();
     auto output = std::make_shared<Work>();
     output->timing.attemptSerial=++attemptSerial_; output->timing.queuedNs=queuedNs;
     output->timing.sceneVersion=service->Scene()->sceneVersion; output->timing.generation=service->Scene()->generation;
     output->timing.documentRevision=service->Scene()->documentRevision;
     output->timing.previousContentVersion=previous ? previous->contentVersion : 0;
-    auto* thread = QThread::create([service, previous, source, command = std::move(command), output]() mutable {
+    auto* thread = QThread::create([service, scene, lease, prepareMode, previous, source, command = std::move(command), output]() mutable {
         // 旧帧在后台线程放手：界面接收新帧后它通常是最后持有者，析构数十 MB 不应落在界面线程。
         struct ReleasePrevious { std::shared_ptr<const Render::AnimationFrame>& frame; ~ReleasePrevious() { frame.reset(); } } release{previous};
         const auto begin = std::chrono::steady_clock::now();
@@ -571,6 +577,21 @@ void WorldAnimationPlayer::StartNext() {
                 if (!valid.Succeeded()) {
                     output->result = {std::nullopt, valid.diagnostics};
                     timing.outcome=WorldAnimationTimingOutcome::SourceRejected;
+                }
+            }
+            if (output->result.Succeeded()) {
+                const auto started=CpuStampNs();
+                WorldViewport::PrepareAnimationFrame(scene, **output->result.value, output->prepared);
+                timing.acceptPreparationNs=CpuStampNs()-started;
+                if (lease && prepareMode && scene) {
+                    const auto renderStarted=CpuStampNs();
+                    std::shared_lock lock(lease->mutex);
+                    if (lease->handle && lease->prepare && lease->epoch==prepareMode->second) {
+                        output->prepared.renderTicket=Render::AnimationRenderer::PrepareUpdate(lease->prepare, lease->handle,
+                            *scene, **output->result.value, prepareMode->first);
+                        output->prepared.renderEpoch=lease->epoch;
+                    }
+                    timing.renderPreparationNs=CpuStampNs()-renderStarted;
                 }
             }
         } catch (const std::exception&) {
@@ -610,7 +631,7 @@ void WorldAnimationPlayer::StartNext() {
                     SetPlaying(false);
                     emit Message(text);
                 }
-            } else if (!viewport_.UpdateAnimationFrame(*output->result.value, picking_)) {
+            } else if (!viewport_.UpdateAnimationFrame(*output->result.value, picking_, &output->prepared)) {
                 timing.outcome=WorldAnimationTimingOutcome::ViewportRejected;
                 timing.diagnosticCode=DiagnosticCode(viewport_.LastAnimationFailure().diagnostics);
                 const auto& candidate = **output->result.value;

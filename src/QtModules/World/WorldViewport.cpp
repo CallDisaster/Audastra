@@ -191,6 +191,7 @@ void WorldViewport::EnsureRenderer() {
             (void)SubmitEnvironment();
             (void)SubmitOverlay();
             SubmitCamera();
+            PublishPrepareLease();
             SetStatus(tr("D3D11 正在初始化"));
             frameTimer_.start();
             Tick();
@@ -210,7 +211,25 @@ bool WorldViewport::LoadPluginApi() {
     return ValidApi(api_);
 }
 
+void WorldViewport::PublishPrepareLease() {
+    // 两个导出都在才启用；测试注入的后端没有预备导出，照常在界面线程完整提交。
+    const auto prepare = injected_ ? nullptr
+        : reinterpret_cast<Render::War3PrepareEditorUpdateV1>(library_.resolve(Render::kPrepareEditorUpdateExportV1));
+    const auto submit = injected_ ? nullptr
+        : reinterpret_cast<Render::War3SubmitPreparedEditorVisibilityV1>(library_.resolve(Render::kSubmitPreparedEditorVisibilityExportV1));
+    preparedSubmit_ = prepare && submit ? submit : nullptr;
+    if (!preparedSubmit_) return;
+    std::unique_lock lock(prepareLease_->mutex);
+    prepareLease_->handle = renderer_; prepareLease_->prepare = prepare; prepareLease_->epoch = ++prepareEpoch_;
+}
+
 void WorldViewport::DestroyRenderer() {
+    {
+        // 先收回后台借用：正在预备的线程结束后才继续销毁渲染器。
+        std::unique_lock lock(prepareLease_->mutex);
+        prepareLease_->handle = nullptr; prepareLease_->prepare = nullptr;
+    }
+    preparedSubmit_ = nullptr;
     ++measurementRendererEpoch_;
     animationPickHistory_.clear();
     bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
@@ -591,7 +610,7 @@ void WorldViewport::ClearSelectionOutline() {
     (void)SubmitOverlay();
 }
 
-void WorldViewport::RetainBugPreparationFrame() try {
+void WorldViewport::RetainBugPreparationFrame(AnimationFramePreparation* prepared) try {
     if (!animationScene_ || !animationFrame_ || !editorPresentationTarget_ || !animationPickingCurrent_) return;
     if (!bugPreparationHistory_.empty()) {
         const auto& last = bugPreparationHistory_.back();
@@ -599,7 +618,10 @@ void WorldViewport::RetainBugPreparationFrame() try {
             && last.policyRevision == pickPolicyRevision_ && last.contentVersion == animationFrame_->contentVersion
             && last.sceneVersion == animationFrame_->sceneVersion && last.presentationRevision == editorPresentationRevision_) return;
     }
-    auto captured = Services::CaptureWorldModelBugPlaceholderFrame(animationScene_, *animationFrame_);
+    // 后台已对同一场景与这一帧取得的快照直接采用；否则在此计算。
+    auto captured = prepared && prepared->scene == animationScene_ && prepared->bugSnapshot
+        ? std::move(*std::exchange(prepared->bugSnapshot, std::nullopt))
+        : Services::CaptureWorldModelBugPlaceholderFrame(animationScene_, *animationFrame_);
     if (!captured.Succeeded()) {
         bugPreparationHistory_.clear(); bugPreparationFailure_ = {std::move(captured.diagnostics)}; return;
     }
@@ -621,9 +643,9 @@ void WorldViewport::RetainBugPreparationFrame() try {
         "无法拥有有界占位来源快照，未借用几何拾取历史或伪造完成帧。");
 }
 
-void WorldViewport::RetainAnimationPickFrame() try {
+void WorldViewport::RetainAnimationPickFrame(AnimationFramePreparation* prepared) try {
     if (!animationScene_ || !animationFrame_ || !editorPresentationTarget_ || !animationPickingCurrent_) return;
-    RetainBugPreparationFrame(); // 独立稀疏来源；完整几何历史超预算不能阻止CPU占位准备。
+    RetainBugPreparationFrame(prepared); // 独立稀疏来源；完整几何历史超预算不能阻止CPU占位准备。
     const auto& source = *animationFrame_;
     if (!animationPickHistory_.empty() && animationPickHistory_.back().frame->contentVersion == source.contentVersion &&
         animationPickHistory_.back().frame->sceneVersion == source.sceneVersion &&

@@ -26,7 +26,8 @@
 #include <functional>
 #include <map>
 #include <deque>
-
+#include <optional>
+#include <shared_mutex>
 #include <vector>
 
 namespace War3Map::Modules {
@@ -88,8 +89,28 @@ public:
     [[nodiscard]] bool HasBugPlaceholderPicking(const std::shared_ptr<const Services::WorldModelBugPlaceholderPlan>& plan) const;
     bool SetAnimationScene(std::shared_ptr<const Render::AnimatedModelScene> scene,
         std::shared_ptr<const Render::AnimationFrame> frame, std::shared_ptr<Render::WorldModelScene> picking);
+    // 后台线程为待接收帧预先算好的界面数据，只依赖“场景 + 帧”，与界面线程原地计算的结果相同。
+    // 场景已不是当前动画场景时界面线程忽略它并照常重算。
+    struct AnimationFramePreparation {
+        std::shared_ptr<const Render::AnimatedModelScene> scene;
+        Render::WorldModelScene picking; // 只填可见实例与请求映射，不复制模型/包围盒
+        std::optional<Result<Services::WorldModelBugPlaceholderFrameSnapshot>> bugSnapshot;
+        std::uint64_t renderTicket = 0, renderEpoch = 0; // 插件预备票据及其渲染器代次；0 = 未预备
+    };
+    // 后台线程借用当前渲染器预备插件更新；销毁渲染器前独占锁清空，epoch 区分前后两个渲染器。
+    struct RenderPrepareLease {
+        std::shared_mutex mutex;
+        War3RendererHandle handle = nullptr;
+        Render::War3PrepareEditorUpdateV1 prepare = nullptr;
+        std::uint64_t epoch = 0;
+    };
+    [[nodiscard]] std::shared_ptr<RenderPrepareLease> AnimationPrepareLease() const noexcept { return prepareLease_; }
+    // 当前动画目标可在后台预备时返回提交方式与渲染器代次；否则为空，界面线程照常完整提交。
+    [[nodiscard]] std::optional<std::pair<Render::AnimationPreparedMode, std::uint64_t>> AnimationPrepareMode() const;
+    static void PrepareAnimationFrame(const std::shared_ptr<const Render::AnimatedModelScene>& scene,
+        const Render::AnimationFrame& frame, AnimationFramePreparation& output);
     bool UpdateAnimationFrame(std::shared_ptr<const Render::AnimationFrame> frame,
-        const std::shared_ptr<Render::WorldModelScene>& picking);
+        const std::shared_ptr<Render::WorldModelScene>& picking, AnimationFramePreparation* prepared = nullptr);
     [[nodiscard]] bool HasInstanceRosterSupport() const noexcept;
     [[nodiscard]] Result<std::uint64_t> QueueAnimationRoster(std::shared_ptr<const Render::AnimatedModelScene> scene,
         std::shared_ptr<const Render::AnimationFrame> frame, std::shared_ptr<Render::WorldModelScene> picking,
@@ -109,6 +130,7 @@ public:
     struct AnimationReceiveTiming {
         std::uint64_t sceneVersion = 0, contentVersion = 0;
         std::uint64_t pickingNs = 0, visibilityNs = 0, submitNs = 0, installNs = 0, observerNs = 0;
+        bool preparedPicking = false, preparedUpload = false; // 是否直接用上了后台预备的点选列表 / 插件副本
     };
     [[nodiscard]] std::optional<AnimationReceiveTiming> ReceiveTiming(std::uint64_t scene, std::uint64_t content) const;
     void SetMeasurementEnabled(bool enabled) noexcept { measurementEnabled_ = enabled; }
@@ -321,8 +343,9 @@ private:
     bool SubmitOverlay();
     void UpdateSelectionOutline(QPointF point);
     void ClearSelectionOutline();
-    void RetainAnimationPickFrame();
-    void RetainBugPreparationFrame();
+    void PublishPrepareLease();
+    void RetainAnimationPickFrame(AnimationFramePreparation* prepared = nullptr);
+    void RetainBugPreparationFrame(AnimationFramePreparation* prepared = nullptr);
     friend class WorldViewportPickHistoryTestAccess;
     struct ModelPickPolicy {
         std::uint64_t generation = 0, sceneVersion = 0;
@@ -425,6 +448,9 @@ private:
     Status groundFailure_;
     bool animationPickingCurrent_ = true;
     std::unique_ptr<Render::AnimationRenderer> animationRenderer_;
+    std::shared_ptr<RenderPrepareLease> prepareLease_ = std::make_shared<RenderPrepareLease>();
+    Render::War3SubmitPreparedEditorVisibilityV1 preparedSubmit_ = nullptr;
+    std::uint64_t prepareEpoch_ = 0;
     struct PendingInstanceRoster {
         std::uint64_t ticket = 0;
         std::shared_ptr<const Render::AnimatedModelScene> scene;

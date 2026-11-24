@@ -116,7 +116,9 @@ QJsonObject AttemptJson(const WorldAnimationTiming& t) {
         {"source_before_ns", Number(t.sourceBeforeNs)}, {"source_after_ns", Number(t.sourceAfterNs)},
         {"source_before_result", static_cast<int>(t.sourceBefore)}, {"source_after_result", static_cast<int>(t.sourceAfter)},
         {"ui_queue_wait_ns", Number(t.uiQueueWaitNs)}, {"ui_accept_ns", Number(t.uiAcceptNs)},
-        {"changed_slots_ns", Number(t.changedSlotsNs)}, {"animated_instances", Number(t.animatedInstances)},
+        {"changed_slots_ns", Number(t.changedSlotsNs)}, {"accept_preparation_ns", Number(t.acceptPreparationNs)},
+        {"render_preparation_ns", Number(t.renderPreparationNs)},
+        {"animated_instances", Number(t.animatedInstances)},
         {"retained_static_instances", Number(t.retainedStaticInstances)}, {"hidden_instances", Number(t.hiddenInstances)},
         {"budget_static_instances", Number(t.budgetStaticInstances)}, {"budget_particle_instances", Number(t.budgetParticleInstances)},
         {"offscreen_instances", Number(t.offscreenInstances)}, {"offscreen_pose_instances", Number(t.offscreenPoseInstances)},
@@ -585,7 +587,8 @@ void WorldFrameRecorder::Drain(bool final) {
             }
             if (const auto receive = viewport->ReceiveTiming(completed.skin.sceneVersion, completed.skin.contentVersion)) {
                 json.insert("ui_receive_parts", QJsonObject{{"picking_ns", Number(receive->pickingNs)}, {"visibility_ns", Number(receive->visibilityNs)},
-                    {"submit_ns", Number(receive->submitNs)}, {"install_ns", Number(receive->installNs)}, {"measurement_observer_ns", Number(receive->observerNs)}});
+                    {"submit_ns", Number(receive->submitNs)}, {"install_ns", Number(receive->installNs)}, {"measurement_observer_ns", Number(receive->observerNs)},
+                    {"prepared_picking", receive->preparedPicking}, {"prepared_upload", receive->preparedUpload}});
             }
             state_->CheckCaptureInterval(sample);
             state_->analyzer.AddCompletedFrame(sample); state_->Write(state_->frames, json); state_->cursor = view.frameCount;
