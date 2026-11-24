@@ -51,6 +51,7 @@ struct AnimationParticleHost {
     std::uint32_t maxDynamicVertices = 0, maxDynamicDraws = 0;
     bool retainUnsupportedStatic = false;
     AnimationPlaybackPolicy playbackPolicy = AnimationPlaybackPolicy::StrictReplay;
+    std::uint32_t workers = 0; // 1：交互预览粒子也逐实例串行，用于并行一致性对照；其余用共用动画线程池。
     bool omitRejectedLinks = false; // 逐实例原因仍在不可变 capability/query；不为无模拟实例超额分配帧回执。
     // 交互预览：本帧主姿势求值顺带写下发射器节点，粒子直接复用，不再为当前时刻单独求骨架。
     std::vector<std::uint32_t> requestBindings; // 请求→绑定；无绑定为 UINT32_MAX。每帧按当前绑定表重建。

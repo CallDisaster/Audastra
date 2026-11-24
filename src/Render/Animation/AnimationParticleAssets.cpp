@@ -186,6 +186,7 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
     host->limits = p; host->maxFrameBytes = limits.maxFrameBytes; host->fixedFrameBytes = fixedFrameBytes;
     host->retainUnsupportedStatic = limits.retainUnsupportedStatic;
     host->playbackPolicy = limits.playbackPolicy;
+    host->workers = limits.poseWorkers;
     host->simulation = {p.maxParticles, p.maxRibbonSegments, p.maxPerEmitter, p.maxAnchorSamples};
     std::unordered_map<std::string, std::uint32_t> textures;
     std::unordered_map<std::string, std::string> objectTexturePaths;

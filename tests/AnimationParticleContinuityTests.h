@@ -84,8 +84,62 @@ inline void ExplicitPlaybackPolicy() {
     Check(!ModelAnimationService::Create({7,1,"explicit-policy"},std::span(&spec,1),read,limits).Succeeded(),
         "unknown playback policy accepted");
 }
+inline void ParallelParticles() {
+    // 交互预览粒子按实例并行：单线程与并行的顶点、绘制、回执与检查点逐位相同，并行数只影响快慢。
+    const auto model=Model(),texture=Texture();
+    const auto read=[&](std::string_view path,std::uint64_t) {
+        return Result<AnimationResource>::Success({path=="continuity.mdx" ? model : texture,
+            "parallel-particle-fixture",std::string(64,'c')});
+    };
+    constexpr std::size_t count=96;
+    std::vector<AnimationInstanceSpec> specs(count);
+    for (std::size_t i=0;i<count;++i) {
+        auto& spec=specs[i];spec.identity={i+1,7};spec.hostKey="parallel-particle:"+std::to_string(i);
+        spec.model.modelPath="continuity.mdx";
+        spec.model.position={static_cast<float>(i%12)*256,static_cast<float>(i/12)*256,0};
+        spec.sequenceIndex=0;spec.elapsedMs=500+37*i;spec.globalMs=0;spec.playing=true;
+    }
+    const auto run=[&](std::uint32_t workers) {
+        AnimationLimits limits;limits.enableParticles=true;limits.retainUnsupportedStatic=true;
+        limits.playbackPolicy=AnimationPlaybackPolicy::InteractivePreview;limits.poseWorkers=workers;
+        auto service=Good(ModelAnimationService::Create({7,5,"parallel-particles"},specs,read,limits));
+        AnimationAdvance advance;advance.worldCamera=AnimationWorldCamera(View(0).worldView->camera);
+        auto first=Good(service->Prepare(nullptr,advance));
+        std::vector<decltype(first)> frames{first};
+        advance.deltaMs=33;
+        for (int i=0;i<3;++i) frames.push_back(Good(service->Prepare(frames.back().get(),advance)));
+        return frames;
+    };
+    const auto serial=run(1),parallel=run(4);
+    std::size_t simulated=0;
+    for (std::size_t f=0;f<serial.size();++f) {
+        const auto& a=*serial[f];const auto& b=*parallel[f];
+        Check(a.particleVertices.size()==b.particleVertices.size() && a.particleDraws.size()==b.particleDraws.size() &&
+            a.particleMaterialFlags==b.particleMaterialFlags && a.particleLinks.size()==b.particleLinks.size(),
+            "parallel particles changed output sizes");
+        Check(std::memcmp(a.particleVertices.data(),b.particleVertices.data(),
+                a.particleVertices.size()*sizeof(a.particleVertices[0]))==0 &&
+            std::memcmp(a.particleDraws.data(),b.particleDraws.data(),a.particleDraws.size()*sizeof(a.particleDraws[0]))==0,
+            "parallel particles changed geometry");
+        for (std::size_t i=0;i<a.particleLinks.size();++i) {
+            const auto& x=a.particleLinks[i];const auto& y=b.particleLinks[i];
+            Check(x.requestIndex==y.requestIndex && x.simulated==y.simulated && x.stateHash==y.stateHash &&
+                x.geometryHash==y.geometryHash && x.firstVertex==y.firstVertex && x.vertexCount==y.vertexCount &&
+                x.firstDraw==y.firstDraw && x.drawCount==y.drawCount && x.resetReason==y.resetReason &&
+                x.particleCount==y.particleCount && x.budgetLimited==y.budgetLimited &&
+                x.skippedTimelineMs==y.skippedTimelineMs,"parallel particles changed receipts");
+            simulated+=x.simulated ? 1 : 0;
+        }
+        Check(a.timings.particleSimulationRequests==b.timings.particleSimulationRequests &&
+            a.timings.particleAnchorReuses==b.timings.particleAnchorReuses &&
+            a.particleCheckpoint->stateBytes==b.particleCheckpoint->stateBytes,"parallel particles changed work counts");
+    }
+    Check(simulated>count && !serial.back()->particleVertices.empty(),"parallel particle fixture did not simulate");
+    std::cout<<"parallel_particle_instances="<<count<<" frames="<<serial.size()<<" simulated="<<simulated<<" identical=1\n";
+}
 inline void Run() {
     ExplicitPlaybackPolicy();
+    ParallelParticles();
     const auto model=Model(),texture=Texture();
     const auto read=[&](std::string_view path,std::uint64_t) {
         return Result<AnimationResource>::Success({path=="continuity.mdx" ? model : texture,
