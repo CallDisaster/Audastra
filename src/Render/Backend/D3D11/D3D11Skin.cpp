@@ -1,13 +1,61 @@
 #include "D3D11Scene.h"
 #include "SkinVS.h"
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstring>
 #include <cmath>
 #include <limits>
 #include <new>
 #include <stdexcept>
 
 namespace War3Map::Render {
+namespace {
+// 记录与本槽已上传副本不同的元素区段。相隔不足 4 KiB 的区段合并成一次提交；区段过多或变化
+// 超过一半时整份提交副本。无论哪种方式，GPU 最终内容都与副本逐字节相同。
+template <class T>
+class ChangedRanges {
+public:
+    explicit ChangedRanges(std::size_t count) noexcept : count_(count) {}
+    void Mark(std::size_t index) noexcept {
+        if (open_ && index <= last_ + kGap) { last_ = index + 1; return; }
+        Close(); first_ = index; last_ = index + 1; open_ = true;
+    }
+    void Upload(ID3D11DeviceContext& context, ID3D11Buffer& buffer, const T* shadow) noexcept {
+        Close();
+        if (!rangeCount_) return;
+        if (whole_ || changed_ * 2 > count_) { context.UpdateSubresource(&buffer, 0, nullptr, shadow, 0, 0); return; }
+        for (std::size_t index = 0; index < rangeCount_; ++index) {
+            const auto& range = ranges_[index];
+            const D3D11_BOX box{static_cast<UINT>(range.first * sizeof(T)), 0, 0, static_cast<UINT>(range.last * sizeof(T)), 1, 1};
+            context.UpdateSubresource(&buffer, 0, &box, shadow + range.first, 0, 0);
+        }
+    }
+private:
+    static constexpr std::size_t kGap = (std::max)(std::size_t{1}, std::size_t{4096} / sizeof(T));
+    static constexpr std::size_t kMaximumRanges = 64;
+    struct Range { std::size_t first = 0, last = 0; };
+    void Close() noexcept {
+        if (!open_) return;
+        open_ = false; changed_ += last_ - first_;
+        if (rangeCount_ < kMaximumRanges) ranges_[rangeCount_++] = {first_, last_};
+        else whole_ = true;
+    }
+    std::array<Range, kMaximumRanges> ranges_{};
+    std::size_t count_ = 0, rangeCount_ = 0, changed_ = 0, first_ = 0, last_ = 0;
+    bool open_ = false, whole_ = false;
+};
+// 按字节比较（与整份上传同一口径，-0/+0 与 NaN 位型都算变化），只把变化区段写回副本并提交。
+template <class T>
+void UploadChanged(ID3D11DeviceContext& context, ID3D11Buffer& buffer, std::vector<T>& shadow, const T* values) noexcept {
+    ChangedRanges<T> changed(shadow.size());
+    for (std::size_t index = 0; index < shadow.size(); ++index) {
+        if (std::memcmp(&shadow[index], &values[index], sizeof(T)) == 0) continue;
+        std::memcpy(&shadow[index], &values[index], sizeof(T)); changed.Mark(index);
+    }
+    changed.Upload(context, buffer, shadow.data());
+}
+}
 HRESULT D3D11Scene::InitializeMaterialStateSamplers() {
     if (materialStateSamplers_[0]) return S_OK;
     if (!modelSampler_) return E_FAIL;
@@ -129,16 +177,20 @@ HRESULT D3D11Scene::CreateSkinBuffers(const SkinPose& pose, SkinGpuBuffers& buff
     hr = structured(pose.groups.data(), static_cast<UINT>(pose.groups.size()), sizeof(War3RenderGroupMatrixV2),
         buffers.groups, buffers.groupView);
     if (FAILED(hr)) return hr;
+    buffers.groupData = pose.groups;
     hr = structured(pose.alphas.data(), static_cast<UINT>(pose.alphas.size()), sizeof(float), buffers.alphas, buffers.alphaView);
     if (FAILED(hr)) return hr;
+    buffers.alphaData = pose.alphas;
     if (!pose.colors.empty()) {
         hr = structured(pose.colors.data(), static_cast<UINT>(pose.colors.size()), sizeof(War3RenderMeshColorV2), buffers.colors, buffers.colorView);
         if (FAILED(hr)) return hr;
+        buffers.colorData = pose.colors;
     }
     if (pose.dynamicMaterialAlphas) {
         if (!pose.layerAlphas.empty()) {
             hr = structured(pose.layerAlphas.data(), static_cast<UINT>(pose.layerAlphas.size()), sizeof(float), buffers.layerAlphas, buffers.layerAlphaView);
             if (FAILED(hr)) return hr;
+            buffers.layerAlphaData = pose.layerAlphas;
         }
 #ifdef WAR3_RENDER_TEST_FAULTS
         if (ConsumeTestFault(7)) return E_FAIL;
@@ -336,28 +388,32 @@ HRESULT D3D11Scene::SetSkinPose(const SkinPose& pose) {
     auto& buffer = skinBuffers_[next];
     if (!pose.instances.empty()) {
         if (!buffer.instances || !buffer.groups || !buffer.alphas || (skinDynamicColors_ && !buffer.colors)
-            || buffer.instanceData.size() != pose.instances.size()
-            || (skinLayerAlphaCount_ && (!buffer.layerAlphas || !buffer.layerAlphaView))
+            || buffer.instanceData.size() != pose.instances.size() || buffer.groupData.size() != pose.groups.size()
+            || buffer.alphaData.size() != pose.alphas.size() || (skinDynamicColors_ && buffer.colorData.size() != pose.colors.size())
+            || (skinLayerAlphaCount_ && (!buffer.layerAlphas || !buffer.layerAlphaView || buffer.layerAlphaData.size() != pose.layerAlphas.size()))
             || (skinMaterialStateCount_ && (!buffer.materialStates || !buffer.materialStateView || buffer.materialStateData.size() != pose.materialStates.size()))) return E_FAIL;
-        for (std::size_t index = 0; index < pose.instances.size(); ++index)
-            buffer.instanceData[index] = {pose.instances[index], skinDynamicMaterialAlphas_ ? pose.layerSlices[index].first : 0,
-                skinDynamicMaterialStates_ ? pose.materialStateSlices[index].first : 0};
         // DEFAULT资源由D3D11跟踪正在使用的旧内容；不重新建静态资源，也不借用宿主指针跨调用。
-        context_->UpdateSubresource(buffer.instances.Get(), 0, nullptr, buffer.instanceData.data(), 0, 0);
-        context_->UpdateSubresource(buffer.groups.Get(), 0, nullptr, pose.groups.data(), 0, 0);
-        context_->UpdateSubresource(buffer.alphas.Get(), 0, nullptr, pose.alphas.data(), 0, 0);
-        if (skinDynamicColors_) context_->UpdateSubresource(buffer.colors.Get(), 0, nullptr, pose.colors.data(), 0, 0);
+        // 每个数组先更新本槽副本再立即提交对应区段，中途失败时副本仍与已排队的 GPU 内容一致。
+        ChangedRanges<SkinGpuInstance> instances(pose.instances.size());
+        for (std::size_t index = 0; index < pose.instances.size(); ++index) {
+            const SkinGpuInstance value{pose.instances[index], skinDynamicMaterialAlphas_ ? pose.layerSlices[index].first : 0,
+                skinDynamicMaterialStates_ ? pose.materialStateSlices[index].first : 0};
+            if (std::memcmp(&buffer.instanceData[index], &value, sizeof(value)) == 0) continue;
+            std::memcpy(&buffer.instanceData[index], &value, sizeof(value)); instances.Mark(index);
+        }
+        instances.Upload(*context_.Get(), *buffer.instances.Get(), buffer.instanceData.data());
+        UploadChanged(*context_.Get(), *buffer.groups.Get(), buffer.groupData, pose.groups.data());
+        UploadChanged(*context_.Get(), *buffer.alphas.Get(), buffer.alphaData, pose.alphas.data());
+        if (skinDynamicColors_) UploadChanged(*context_.Get(), *buffer.colors.Get(), buffer.colorData, pose.colors.data());
         if (skinDynamicMaterialAlphas_) {
-            if (skinLayerAlphaCount_) context_->UpdateSubresource(buffer.layerAlphas.Get(), 0, nullptr, pose.layerAlphas.data(), 0, 0);
+            if (skinLayerAlphaCount_) UploadChanged(*context_.Get(), *buffer.layerAlphas.Get(), buffer.layerAlphaData, pose.layerAlphas.data());
 #ifdef WAR3_RENDER_TEST_FAULTS
             if (ConsumeTestFault(7)) return E_FAIL;
 #endif
         }
         if (skinDynamicMaterialStates_) {
-            if (skinMaterialStateCount_) {
-                std::copy(pose.materialStates.begin(), pose.materialStates.end(), buffer.materialStateData.begin());
-                context_->UpdateSubresource(buffer.materialStates.Get(), 0, nullptr, buffer.materialStateData.data(), 0, 0);
-            }
+            if (skinMaterialStateCount_)
+                UploadChanged(*context_.Get(), *buffer.materialStates.Get(), buffer.materialStateData, pose.materialStates.data());
 #ifdef WAR3_RENDER_TEST_FAULTS
             if (ConsumeTestFault(8)) return E_FAIL;
 #endif

@@ -173,8 +173,12 @@ private:
     struct SkinGpuBuffers {
         Ptr<ID3D11Buffer> instances, groups, alphas, colors, layerAlphas, materialStates;
         Ptr<ID3D11ShaderResourceView> groupView, alphaView, colorView, layerAlphaView, materialStateView;
+        // 以下 CPU 副本与本槽 GPU 内容逐字节相同：热更新只比较并上传变化的区段，结果与整份上传一致。
         std::vector<SkinGpuInstance> instanceData; // 随两槽分配，热更新不再分配转换暂存。
         std::vector<War3RenderMaterialStateV2> materialStateData; // 驻留CPU状态用于连续run绑定，不读资产。
+        std::vector<War3RenderGroupMatrixV2> groupData;
+        std::vector<float> alphaData, layerAlphaData;
+        std::vector<War3RenderMeshColorV2> colorData;
     };
     struct GeometryPage {
         Ptr<ID3D11Buffer> vertices, indices;

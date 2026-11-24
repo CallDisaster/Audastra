@@ -107,6 +107,17 @@ void TestSkinnedModels(const War3RenderPluginApiV2* api, const War3RenderCreateI
             "slot switch reuploaded static geometry or captured wrong frame");
         RequireWorldColor(pixels,sharedFrame.frame.view,-500,0,{255,0,0},1);
         RequireWorldColor(pixels,sharedFrame.frame.view,750,0,{0,255,0},1);
+        // 两个缓冲槽轮换：内容回到该槽上次已有的值时只跳过上传，画面仍须与提交内容一致。
+        for (std::uint32_t round = 0; round < 2; ++round) {
+            const std::uint32_t slot = round == 0 ? 0u : 1u;
+            sharedFixture.instances[1].firstGroup = sharedFixture.instances[1].firstAlpha = slot;
+            ++sharedPose.contentVersion;
+            Require(api->updateSkinMatrices(sharedRenderer.handle,&sharedPose) == 0, "repeated slot content rejected");
+            Require(api->captureSkinnedFrameRgba(sharedRenderer.handle,pixels.data(),pixels.size(),&sharedFrame) == 0
+                && sharedFrame.skin.contentVersion == sharedPose.contentVersion, "repeated slot content captured wrong frame");
+            RequireWorldColor(pixels,sharedFrame.frame.view,-500,0,{255,0,0},1);
+            RequireWorldColor(pixels,sharedFrame.frame.view,slot ? 750.0f : 500.0f,0,{0,255,0},1);
+        }
     }
     std::cout << "skin WARP: shared geometry / independent groups, upload counters, exact-version capture and rejected preservation passed\n";
 }
