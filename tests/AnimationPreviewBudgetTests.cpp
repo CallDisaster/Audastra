@@ -143,8 +143,10 @@ void Admission() {
     AnimationAdvance advance; advance.deltaMs = 33; advance.playAll = true;
     advance.worldCamera = War3RenderCore::LocalCamera{{0, 0, 100}, {0, 0, 1}};
     auto baseline = Good(service->Prepare(nullptr, advance));
-    Check(baseline->budgetParticleInstances > 0 && baseline->timings.particleSimulationRequests < count,
-        "fixture failed to reproduce original world anchor admission omissions");
+    // 锚点取自本帧主姿势、不再逐步求骨骼后，原先的全图锚样瓶颈在默认预算下不再出现。
+    Check(baseline->budgetParticleInstances == 0 && baseline->timings.particleSimulationRequests == count &&
+        baseline->timings.particleAnchorRequests == 0 && baseline->timings.particleAnchorReuses == count,
+        "main-pose anchors still hit the old anchor-sample bottleneck under the default budget");
     advance.previewParticleBudget = AnimationParticleFrameBudget{2, 18};
     auto limited = Good(service->Prepare(baseline.get(), advance));
     Check(limited->timings.particleSimulationRequests == 2 && limited->budgetParticleInstances == count - 2 &&
@@ -203,7 +205,7 @@ void Admission() {
     const auto flatFrame = Good(flat->Prepare(nullptr, tinyAdvance));
     Check(flatFrame->instances.size() == 2 && flatFrame->animatedInstances >= 1,
         "a zero-scale placement failed the whole preview frame");
-    std::cout << "admission: original anchor bottleneck, model retention, frozen checkpoint, full recovery and hard/strict gates\n";
+    std::cout << "admission: main-pose anchors clear the old bottleneck, model retention, frozen checkpoint, full recovery and hard/strict gates\n";
 }
 } // namespace
 int main(int argc, char** argv) try {

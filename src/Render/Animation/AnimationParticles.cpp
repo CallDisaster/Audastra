@@ -231,7 +231,9 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             // 固定时间成本与显示帧间隔无关；慢帧也不改变同一可见集合的准入胜者。
             // 固定步在前后两帧节点之间插值；本帧主姿势已给出节点时不再单独求骨架，否则只求当前一次。
             plan.anchors=anchorsReused(b) ? 0 : 1;
-            plan.nodes=plan.anchors*asset.compiled.NodeCount();
+            // 节点安全上限按每个模拟实例的整副骨骼计，节点取自主姿势时也计入，
+            // 一帧模拟的骨骼规模始终受同一上限约束。
+            plan.nodes=asset.compiled.NodeCount();
             if (plan.anchors>maximumAnchors-reservedAnchors ||
                 plan.nodes>host.limits.maxAnchorNodeVisits-reservedNodes) {
                 plan.code="ANIMATION_PARTICLE_ANCHOR_BUDGET";continue;

@@ -1008,10 +1008,15 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
     if (!compiled.empty()) {
         // 至多64实例，按最大单模型预热；过大时减小批宽，不增加64MiB求值器上限。
         std::uint32_t width=64;
+        // 交互预览的粒子直接取本帧主姿势的发射器节点，主求值器须输出完整节点。
+        bool particleNodes=false;
+        if (limits.enableParticles && limits.playbackPolicy==AnimationPlaybackPolicy::InteractivePreview)
+            for (const auto& asset:state.assets)
+                if (asset.compiled.Valid() && asset.particles && !asset.particles->emitters.empty()) { particleNodes=true; break; }
         const auto create=[&](std::uint32_t batchWidth) {
             BatchLimits batch;
             batch.maxInstances=batchWidth; batch.maxNodes=maxNodes*batchWidth; batch.maxGroups=maxGroups*batchWidth;
-            batch.maxGeosets=maxGeosets*batchWidth; batch.outputMode=state.collisionNodesRequired ? PoseOutputMode::FullNodes : PoseOutputMode::GroupsAndAlphas;
+            batch.maxGeosets=maxGeosets*batchWidth; batch.outputMode=state.collisionNodesRequired || particleNodes ? PoseOutputMode::FullNodes : PoseOutputMode::GroupsAndAlphas;
             const auto policy=limits.retainUnsupportedStatic ? GeosetFailurePolicy::PreviewHideInvalidGeosets : GeosetFailurePolicy::Strict;
             const auto nodePolicy=AnimationNodeKeyPolicy(limits);
             const auto materialPolicy=scene.dynamicMaterialAlphas ? AnimationMaterialAlphaKeyPolicy(limits)
@@ -1024,7 +1029,7 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
         };
         for (;;) {
             auto evaluator=create(width);
-            const bool ownsWorkspace=state.collisionNodesRequired || state.sharedPoseRanges || scene.dynamicMaterialAlphas;
+            const bool ownsWorkspace=state.collisionNodesRequired || particleNodes || state.sharedPoseRanges || scene.dynamicMaterialAlphas;
             if (evaluator.Succeeded() && (!ownsWorkspace || evaluator.value->StorageBytes()<=limits.maxFrameBytes-state.frameBytes)) {
                 if (ownsWorkspace) state.frameBytes+=evaluator.value->StorageBytes();
                 state.evaluator=std::make_unique<PoseBatchEvaluator>(std::move(*evaluator.value));

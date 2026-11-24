@@ -642,7 +642,8 @@ void Anchors() {
     Check(frame->particleLinks.size() == 1 && frame->particleLinks[0].simulated &&
         !frame->particleLinks[0].hidden && !frame->particleLinks[0].frozen &&
         frame->particleLinks[0].rejectionCode.empty() && frame->particleLinks[0].particleCount == 0 &&
-        frame->timings.particleAnchorRequests == 1, "particle evaluator did not opt into the same current node pose");
+        frame->timings.particleAnchorRequests == 0 && frame->timings.particleAnchorReuses == 1,
+        "particles did not take emitter nodes from the same source-order main pose");
     advance.deltaMs = 33;
     frame = Good(service->Prepare(frame.get(), advance));
     RequireBody(*frame, 4.33f);
@@ -652,7 +653,8 @@ void Anchors() {
         !frame->particleLinks[0].partial && frame->particleLinks[0].resetReason.empty() &&
         frame->particleLinks[0].rejectionCode.empty() && frame->particleLinks[0].particleCount == 3 &&
         !frame->particleVertices.empty() && !frame->particleDraws.empty() &&
-        frame->timings.particleAnchorRequests == 4, "bounded continuation lost real source-order particle simulation");
+        frame->timings.particleAnchorRequests == 0 && frame->timings.particleAnchorReuses == 1,
+        "bounded continuation lost real source-order particle simulation or re-evaluated the skeleton");
     Check(frame->particleCheckpoint && frame->particleCheckpoint->instances.size() == 1 &&
         frame->particleCheckpoint->instances[0], "particle proof lacks an owned accepted checkpoint");
     const auto& emitters = frame->particleCheckpoint->instances[0]->state.emitters;
