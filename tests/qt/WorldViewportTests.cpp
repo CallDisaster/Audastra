@@ -24,6 +24,7 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QThreadPool>
 #include <QTest>
 
 #include <algorithm>
@@ -344,6 +345,7 @@ public:
         return total;
     }
     static std::size_t LastBytes(const WorldViewport& viewport) { return viewport.animationPickHistory_.back().ownedBytes; }
+    static void SetBudget(WorldViewport& viewport, std::uint64_t bytes) { viewport.animationPickHistoryBudget_ = bytes; }
     static std::shared_ptr<const Render::AnimationFrame> Borrow(const WorldViewport& viewport, std::size_t index) {
         return viewport.animationPickHistory_.at(index).frame;
     }
@@ -375,8 +377,8 @@ private slots:
     void ModelOnlyCompletedFrameKeepsSceneAndCameraBinding();
     void RejectedModelSceneKeepsCpuSceneAndSelection();
     void AnimationPauseStepAndCaptureStayBound();
-    void AnimationPickHistoryReusesOnlyRetiredUnborrowedStorage();
-    void AnimationPickHistoryChargesRetainedCapacity();
+    void AnimationPickHistorySharesAcceptedFrames();
+    void AnimationPickHistoryChargesWholeSharedFrames();
     void ModelPreviewUsesGameOrderAndSubmitsMotion();
     void ModelPreviewParticleGameOrderStaysStrictAboutInvalidData();
     void ModelPreviewRealSequences();
@@ -622,94 +624,77 @@ void WorldViewportTests::CaptureViewPendingKeepsStaleResultWithoutProgramFailure
     }
 }
 
-void WorldViewportTests::AnimationPickHistoryReusesOnlyRetiredUnborrowedStorage() {
+void WorldViewportTests::AnimationPickHistorySharesAcceptedFrames() {
     using History = WorldViewportPickHistoryTestAccess;
     BackendState state; active = &state;
     WorldViewport viewport(nullptr, &backend);
-    auto source = std::make_shared<Render::AnimationFrame>();
-    source->sceneVersion = 7; source->documentRevision = 11;
-    source->states.resize(8); source->poses.resize(8); source->particleLinks.resize(8);
-    source->particleVertices.resize(12); source->particleDraws.resize(1);
+    // 已发布的帧不可变：历史直接持有同一帧，不复制；至多三帧，同身份不重复。
+    std::vector<std::weak_ptr<const Render::AnimationFrame>> published;
     const auto append = [&](std::uint64_t version) {
-        source->contentVersion = version;
-        source->states[0].elapsedMs = version;
-        source->poses[0].rejectionMessage.assign(128, static_cast<char>('a' + version));
-        source->particleLinks[0].resetReason.assign(128, static_cast<char>('a' + version));
-        History::Append(viewport, source);
+        auto frame = std::make_shared<Render::AnimationFrame>();
+        frame->sceneVersion = 7; frame->documentRevision = 11; frame->contentVersion = version;
+        frame->states.resize(8); frame->poses.resize(8); frame->states[0].elapsedMs = version;
+        published.push_back(frame);
+        History::Append(viewport, std::move(frame));
     };
     append(1);
-    auto oldest = History::Observe(viewport, 0);
-    const auto* oldAddress = oldest.lock().get();
-    const auto* oldStates = oldest.lock()->states.data();
-    const auto* oldPoseText = oldest.lock()->poses[0].rejectionMessage.data();
-    const auto* oldParticleText = oldest.lock()->particleLinks[0].resetReason.data();
+    QCOMPARE(History::Count(viewport), std::size_t{1});
+    QCOMPARE(History::Borrow(viewport, 0).get(), published[0].lock().get());
     for (std::uint64_t version = 2; version <= 4; ++version) append(version);
-    QCOMPARE(History::Count(viewport), std::size_t{4});
-    QCOMPARE(oldest.lock()->contentVersion, std::uint64_t{1});
-    QCOMPARE(oldest.lock()->states[0].elapsedMs, std::uint64_t{1}); // 拷贝拥有，不借当前源帧。
-    append(5);
-    auto reused = History::Borrow(viewport, 3);
-    QCOMPARE(reused.get(), oldAddress);
-    QCOMPARE(reused->states.data(), oldStates);
-    QVERIFY(reused->poses[0].rejectionMessage.data() == oldPoseText);
-    QVERIFY(reused->particleLinks[0].resetReason.data() == oldParticleText);
-    QCOMPARE(reused->contentVersion, std::uint64_t{5});
-    QCOMPARE(reused->states[0].elapsedMs, std::uint64_t{5});
-    QVERIFY(reused->particleVertices.empty()); QVERIFY(reused->particleDraws.empty());
-    QVERIFY(!reused->particleCheckpoint); // 不通过保留源帧间接保留粒子状态。
-    reused.reset();
+    QCOMPARE(History::Count(viewport), std::size_t{3});
+    QCOMPARE(History::Borrow(viewport, 0)->contentVersion, std::uint64_t{2});
+    QCOMPARE(History::Borrow(viewport, 2).get(), viewport.AnimationTarget().get()); // 最新一帧就是当前绘制帧。
+    QThreadPool::globalInstance()->waitForDone();
+    QVERIFY(published[0].expired()); // 挤出的帧没有其他持有者时在后台释放，不进备用池。
 
     const auto borrowed = History::Borrow(viewport, 0); // 实际点选的 const 借用尚未归还。
-    const auto oldMessage = borrowed->poses[0].rejectionMessage;
-    append(6);
-    QCOMPARE(History::Count(viewport), std::size_t{4});
-    QVERIFY(History::Borrow(viewport, 3).get() != borrowed.get());
-    QCOMPARE(borrowed->contentVersion, std::uint64_t{2});
+    append(5);
+    QCOMPARE(History::Count(viewport), std::size_t{3});
+    QCOMPARE(History::Borrow(viewport, 0)->contentVersion, std::uint64_t{3});
+    QCOMPARE(borrowed->contentVersion, std::uint64_t{2}); // 借出的帧不受淘汰影响。
     QCOMPARE(borrowed->states[0].elapsedMs, std::uint64_t{2});
-    QCOMPARE(borrowed->poses[0].rejectionMessage, oldMessage);
-    append(6); QCOMPARE(History::Count(viewport), std::size_t{4}); // 同身份不添加重复历史。
+    append(5); QCOMPARE(History::Count(viewport), std::size_t{3}); // 同身份不添加重复历史。
+    QCOMPARE(History::Borrow(viewport, 2).get(), published[4].lock().get());
     viewport.InvalidateAnimationPicking();
     QCOMPARE(History::Count(viewport), std::size_t{0});
-    QVERIFY(oldest.expired()); // 没有脱离失效机制的备用池。
-    append(7); QCOMPARE(History::Count(viewport), std::size_t{0});
-    QCOMPARE(borrowed->contentVersion, std::uint64_t{2}); // 失效不改已借出的拥有数据。
+    QThreadPool::globalInstance()->waitForDone();
+    QVERIFY(published[2].expired()); // 没有脱离失效机制的备用池。
+    append(6); QCOMPARE(History::Count(viewport), std::size_t{0});
+    QCOMPARE(borrowed->contentVersion, std::uint64_t{2}); // 失效不改已借出的帧。
 }
 
-void WorldViewportTests::AnimationPickHistoryChargesRetainedCapacity() {
+void WorldViewportTests::AnimationPickHistoryChargesWholeSharedFrames() {
     using History = WorldViewportPickHistoryTestAccess;
     constexpr std::size_t mib = 1024 * 1024, budget = 64 * mib;
     BackendState state; active = &state;
     WorldViewport viewport(nullptr, &backend);
-    auto source = std::make_shared<Render::AnimationFrame>();
-    source->sceneVersion = 7; source->documentRevision = 11;
-    source->groups.resize(32 * mib / sizeof(War3RenderGroupMatrixV2));
-    source->poses.resize(1); source->poses[0].rejectionMessage.assign(256, 'x');
-    const auto append = [&](std::uint64_t version) { source->contentVersion = version; History::Append(viewport, source); };
-    append(1);
-    auto largeOwner = History::Observe(viewport, 0);
-    const auto oldGroupCapacity = largeOwner.lock()->groups.capacity();
-    const auto oldStringCapacity = largeOwner.lock()->poses[0].rejectionMessage.capacity();
-    source->groups.resize(1); source->poses[0].rejectionMessage.assign(1, 's');
-    for (std::uint64_t version = 2; version <= 5; ++version) append(version);
-    auto smallWithCapacity = History::Borrow(viewport, History::Count(viewport) - 1);
-    QCOMPARE(smallWithCapacity.get(), largeOwner.lock().get());
-    QCOMPARE(smallWithCapacity->groups.size(), std::size_t{1});
-    QCOMPARE(smallWithCapacity->groups.capacity(), oldGroupCapacity);
-    QCOMPARE(smallWithCapacity->poses[0].rejectionMessage.size(), std::size_t{1});
-    QCOMPARE(smallWithCapacity->poses[0].rejectionMessage.capacity(), oldStringCapacity);
-    QVERIFY(History::LastBytes(viewport) >= sizeof(Render::AnimationFrame) +
-        oldGroupCapacity * sizeof(War3RenderGroupMatrixV2) +
-        smallWithCapacity->poses.capacity() * sizeof(Render::AnimationPoseLink) + oldStringCapacity + 1);
-    smallWithCapacity.reset();
-    source->groups.resize(20 * mib / sizeof(War3RenderGroupMatrixV2));
-    append(6); append(7);
+    History::SetBudget(viewport, budget);
+    const auto make = [](std::uint64_t version, std::size_t groupBytes) {
+        auto frame = std::make_shared<Render::AnimationFrame>();
+        frame->sceneVersion = 7; frame->documentRevision = 11; frame->contentVersion = version;
+        frame->groups.resize(groupBytes / sizeof(War3RenderGroupMatrixV2));
+        frame->particleVertices.resize(1024); // 粒子等整帧内容随共享帧一起驻留，同样计费。
+        frame->poses.resize(1); frame->poses[0].rejectionMessage.assign(256, 'x');
+        return frame;
+    };
+    auto first = make(1, 32 * mib);
+    History::Append(viewport, first);
+    QCOMPARE(History::LastBytes(viewport), static_cast<std::size_t>(Render::AnimationFrameRetainedBytes(*first)));
+    QVERIFY(History::LastBytes(viewport) >= 32 * mib + 1024 * sizeof(War3RenderParticleVertexV2) + 256);
+    const std::weak_ptr<const Render::AnimationFrame> large = first;
+    first.reset();
+    History::Append(viewport, make(2, 20 * mib));
+    QCOMPARE(History::Count(viewport), std::size_t{2});
+    History::Append(viewport, make(3, 20 * mib));
+    QCOMPARE(History::Count(viewport), std::size_t{2}); // 32+20+20 MiB 超预算：挤出最旧的大帧。
     QVERIFY(History::Bytes(viewport) <= budget);
-    QVERIFY(History::Count(viewport) < 4); // 32MiB备用容量不能按当前一个矩阵漏算。
-    QVERIFY(largeOwner.expired());
-    source->groups.resize(budget / sizeof(War3RenderGroupMatrixV2) + 1);
-    append(8);
+    QCOMPARE(History::Borrow(viewport, 0)->contentVersion, std::uint64_t{2});
+    QThreadPool::globalInstance()->waitForDone();
+    QVERIFY(large.expired());
+    const auto oversized = make(4, budget + sizeof(War3RenderGroupMatrixV2));
+    History::Append(viewport, oversized);
     QCOMPARE(History::Count(viewport), std::size_t{0});
-    QCOMPARE(viewport.AnimationTarget().get(), source.get()); // 拒绝旁路历史，不丢绘制源帧。
+    QCOMPARE(viewport.AnimationTarget().get(), oversized.get()); // 拒绝旁路历史，不丢绘制源帧。
 }
 
 void WorldViewportTests::CameraAndCompletedFrameStayBound() {

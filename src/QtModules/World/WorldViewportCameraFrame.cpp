@@ -49,6 +49,7 @@ void WorldViewport::SubmitCamera() {
         ClearCoordinates(tr("视角更新失败，无法选取坐标"), true);
     }
     ScheduleHover();
+    MarkRenderActivity();
     emit MinimapCameraChanged();
     if (!pickingSuspended_ && animationScene_)
         emit AnimationCameraChanged();

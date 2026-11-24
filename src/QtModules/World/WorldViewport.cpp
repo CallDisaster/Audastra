@@ -1,5 +1,6 @@
 #include "WorldViewport.h"
 #include "WorldDiagnosticJson.h"
+#include "WorldFrameRelease.h"
 #include "WorldSelectionPresentation.h"
 #include "WorldViewportInternals.h"
 
@@ -229,6 +230,9 @@ void WorldViewport::DestroyRenderer() {
 
 void WorldViewport::Tick() {
     if (!renderer_ || !CanRender()) return;
+    // 插件提交画面不等垂直同步；活跃时上一帧完成就请求下一帧，静止时按 33 ms 刷新。
+    const bool active = renderActivity_.isValid() && renderActivity_.elapsed() < 250;
+    if (!active && frameTimer_.interval() != 33) frameTimer_.setInterval(33);
     War3RenderStatusV2 status{};
     status.structSize = sizeof(status);
     statusCallResult_ = api_->getStatus(renderer_, &status);
@@ -244,22 +248,37 @@ void WorldViewport::Tick() {
         hoverTimer_.stop(); ClearCoordinates(tr("渲染失败，无法选取地形坐标"), true);
         return;
     }
-    if (status.deviceReady && status.frameCount && status.documentRevision == revision_) {
-        if (std::string_view(status.message, sizeof(status.message)).starts_with("Model upload failed:"))
-            SetStatus(tr("模型上传失败：%1").arg(QString::fromUtf8(status.message,
-                std::find(std::begin(status.message), std::end(status.message), '\0') - std::begin(status.message))));
-        else SetStatus(status.software ? tr("D3D11 · 软件渲染") : tr("D3D11 · 硬件渲染"));
-    }
-    if (animationRenderer_) {
-        const auto skin = animationRenderer_->StatusNow();
-        if (!skin.Succeeded()) {
-            animationFailure_.diagnostics = skin.diagnostics;
-            SetStatus(tr("模型上传失败：动画 GPU 上传或绘制失败"));
-            return;
+    // 状态行、动画上传状态与悬停仍按 33 ms 节奏，不随出帧频率增加界面线程工作。
+    const bool refresh = !active || !statusRefresh_.isValid() || statusRefresh_.elapsed() >= 33;
+    if (refresh) {
+        statusRefresh_.restart();
+        if (status.deviceReady && status.frameCount && status.documentRevision == revision_) {
+            if (std::string_view(status.message, sizeof(status.message)).starts_with("Model upload failed:"))
+                SetStatus(tr("模型上传失败：%1").arg(QString::fromUtf8(status.message,
+                    std::find(std::begin(status.message), std::end(status.message), '\0') - std::begin(status.message))));
+            else SetStatus(status.software ? tr("D3D11 · 软件渲染") : tr("D3D11 · 硬件渲染"));
+        }
+        if (animationRenderer_) {
+            const auto skin = animationRenderer_->StatusNow();
+            if (!skin.Succeeded()) {
+                animationFailure_.diagnostics = skin.diagnostics;
+                SetStatus(tr("模型上传失败：动画 GPU 上传或绘制失败"));
+                return;
+            }
         }
     }
+    if (active) {
+        // 上一次请求的帧尚未完成时不重复请求；超过 100 ms 未完成仍补一次，避免卡住。
+        if (pacedRequestPending_ && status.frameCount == pacedFrameCount_ && pacedRequestClock_.elapsed() < 100) return;
+        pacedFrameCount_ = status.frameCount; pacedRequestPending_ = true; pacedRequestClock_.restart();
+    } else pacedRequestPending_ = false;
     api_->requestFrame(renderer_);
-    ScheduleHover();
+    if (refresh) ScheduleHover();
+}
+
+void WorldViewport::MarkRenderActivity() {
+    renderActivity_.restart();
+    if (frameTimer_.isActive() && frameTimer_.interval() != 1) frameTimer_.setInterval(1);
 }
 
 void WorldViewport::ReportPluginFailure(const char* operation, std::int32_t result,
@@ -593,64 +612,30 @@ void WorldViewport::RetainBugPreparationFrame() try {
 void WorldViewport::RetainAnimationPickFrame() try {
     if (!animationScene_ || !animationFrame_ || !editorPresentationTarget_ || !animationPickingCurrent_) return;
     RetainBugPreparationFrame(); // 独立稀疏来源；完整几何历史超预算不能阻止CPU占位准备。
-    constexpr std::size_t budget = 64ull * 1024 * 1024;
     const auto& source = *animationFrame_;
     if (!animationPickHistory_.empty() && animationPickHistory_.back().frame->contentVersion == source.contentVersion &&
         animationPickHistory_.back().frame->sceneVersion == source.sceneVersion &&
         animationPickHistory_.back().presentationRevision == editorPresentationRevision_) return;
-    const auto measure = [budget](const Render::AnimationFrame& candidate, bool capacity) -> std::optional<std::size_t> {
-        std::size_t bytes = sizeof(Render::AnimationFrame);
-        const auto charge = [&](const auto& values) {
-            const auto count = capacity ? values.capacity() : values.size();
-            constexpr auto stride = sizeof(typename std::decay_t<decltype(values)>::value_type);
-            if (count > (budget - bytes) / stride) return false;
-            bytes += count * stride; return true;
-        };
-        if (!charge(candidate.states) || !charge(candidate.requestVisibility) || !charge(candidate.instances) ||
-            !charge(candidate.groups) || !charge(candidate.alphas) || !charge(candidate.poses) ||
-            !charge(candidate.collisionMatrices) || !charge(candidate.pickBounds) || !charge(candidate.particleLinks)) return std::nullopt;
-        const auto chargeString = [&](const std::string& value) {
-            // 包含终止字节；SSO 也保守计费，不依赖特定 STL 的短串实现。
-            const auto count = capacity ? value.capacity() : value.size();
-            if (count >= budget - bytes) return false;
-            bytes += count + 1; return true;
-        };
-        for (const auto& pose : candidate.poses)
-            if (!chargeString(pose.rejectionCode) || !chargeString(pose.rejectionMessage)) return std::nullopt;
-        for (const auto& link : candidate.particleLinks)
-            if (!chargeString(link.rejectionCode) || !chargeString(link.rejectionMessage) || !chargeString(link.resetReason)) return std::nullopt;
-        return bytes;
+    // 已发布的动画帧不可变：历史直接共享这一帧，不再逐帧复制点选数组（最新一帧本就由 animationFrame_ 持有）。
+    // 共享帧连同粒子、材质与检查点一起驻留，按整帧实际占用计费；至多保留最近三帧。
+    const auto budget = animationPickHistoryBudget_;
+    constexpr std::size_t maximumFrames = 3;
+    const auto bytes = Render::AnimationFrameRetainedBytes(source);
+    const auto retire = [this] {
+        auto retired = std::move(animationPickHistory_.front().frame);
+        animationPickHistory_.pop_front();
+        ReleaseAnimationFrameInBackground(std::move(retired));
     };
-    // 拷贝前先拒绝本身已超预算的输入；源帧的备用容量不会被复制。
-    const auto minimum = measure(source, false);
-    if (!minimum) { animationPickHistory_.clear(); return; }
-    std::size_t retained = 0;
+    if (bytes > budget) { while (!animationPickHistory_.empty()) retire(); return; }
+    std::uint64_t retained = 0;
     for (const auto& owner : animationPickHistory_) retained += owner.ownedBytes;
-    std::shared_ptr<Render::AnimationFrame> frame;
-    while (!animationPickHistory_.empty() && (animationPickHistory_.size() >= 4 || retained > budget - *minimum)) {
-        auto retired = std::move(animationPickHistory_.front());
-        animationPickHistory_.pop_front(); retained -= retired.ownedBytes;
-        // 同一 UI 线程只在实际点选期间借用 const 帧；从历史移除后且唯一拥有才可写。
-        // 无独立退休池：所有复用容量仍计入这次候选和至多四帧的历史预算。
-        if (!frame && retired.frame.use_count() == 1) frame = std::move(retired.frame);
-    }
-    // 仅保留精确点选所需的owned姿势；粒子顶点/检查点不在历史中重复驻留。
-    if (!frame) frame = std::make_shared<Render::AnimationFrame>();
-    frame->sceneVersion = source.sceneVersion; frame->contentVersion = source.contentVersion; frame->documentRevision = source.documentRevision;
-    frame->states = source.states; frame->requestVisibility = source.requestVisibility;
-    frame->instances = source.instances; frame->groups = source.groups; frame->alphas = source.alphas; frame->poses = source.poses;
-    frame->collisionMatrices = source.collisionMatrices; frame->pickBounds = source.pickBounds; frame->particleLinks = source.particleLinks;
-    frame->sharedPoseRanges = source.sharedPoseRanges;
-    // 复用后 size 变小也可能仍保留大容量；按实际分配重新核算，不把备用容量漏算。
-    const auto bytes = measure(*frame, true);
-    if (!bytes) { animationPickHistory_.clear(); return; }
-    while (!animationPickHistory_.empty() && retained > budget - *bytes) {
-        retained -= animationPickHistory_.front().ownedBytes; animationPickHistory_.pop_front();
+    while (!animationPickHistory_.empty() && (animationPickHistory_.size() >= maximumFrames || retained > budget - bytes)) {
+        retained -= animationPickHistory_.front().ownedBytes; retire();
     }
     const AnimationCompletionIdentity identity{*editorPresentationTarget_, editorPresentationRevision_, measurementRendererEpoch_,
         pickPolicyRevision_, source.sceneVersion, source.contentVersion, source.documentRevision, source.instances.size(),
         static_cast<std::uint32_t>(source.particleVertices.size()), static_cast<std::uint32_t>(source.particleDraws.size())};
-    animationPickHistory_.push_back({identity, std::move(frame), *bytes});
+    animationPickHistory_.push_back({identity, animationFrame_, static_cast<std::size_t>(bytes)});
 } catch (...) {
     // 点选历史是有界旁路；分配失败时拒绝点选，不能中止仍有效的播放/绘制。
     animationPickHistory_.clear();

@@ -137,6 +137,7 @@ public:
         auto oversized = std::make_shared<Render::AnimationFrame>(*viewport.animationFrame_);
         oversized->groups.resize(64ull * 1024 * 1024 / sizeof(War3RenderGroupMatrixV2) + 1);
         viewport.animationFrame_ = std::move(oversized);
+        viewport.animationPickHistoryBudget_ = 64ull * 1024 * 1024; // 夹具帧只放大到旧上限，避免测试分配半 GB。
         viewport.animationPickHistory_.clear();
         viewport.bugPreparationHistory_.clear(); // 强制重建，不能借先前小帧快照掩盖预算耦合。
         viewport.RetainAnimationPickFrame();

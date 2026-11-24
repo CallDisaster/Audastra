@@ -264,6 +264,7 @@ bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::Animation
     models_=picking; animationFrame_=std::move(frame);
     RetainAnimationPickFrame();
     NotifyAcceptedAnimationFrame();
+    MarkRenderActivity();
     const bool hiddenSelection=selectedInstance_.has_value() && !selected.has_value();
     selectedInstance_=selected;
     if (hiddenSelection) CancelMove();

@@ -1,7 +1,7 @@
 #include "WorldAnimationPlayer.h"
 #include <QEvent>
 #include <QScopedValueRollback>
-#include <QThreadPool>
+#include "WorldFrameRelease.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -41,11 +41,6 @@ bool SameView(const Render::AnimationView& first, const Render::AnimationView& s
 }
 bool NeedsView(const Render::AnimationFrame& frame, const Render::AnimationView& current) {
     return !frame.worldView || !SameView(*frame.worldView,current);
-}
-// 被替换的整帧可达数十 MB；唯一持有时交给后台线程析构，其他持有者仍在时只放手引用。
-void ReleaseFrameInBackground(std::shared_ptr<const Render::AnimationFrame> frame) {
-    if (!frame || frame.use_count() != 1) return;
-    QThreadPool::globalInstance()->start([frame = std::move(frame)]() mutable { frame.reset(); });
 }
 } // namespace
 std::string_view WorldAnimationTimingOutcomeName(WorldAnimationTimingOutcome outcome) noexcept {
@@ -668,7 +663,7 @@ void WorldAnimationPlayer::StartNext() {
         PublishChanged();
         // 本次接收的新目标、预算与忙碌状态合并为一次 Changed；接收者可重入并启动新 worker。
         if (--changeBatch_ == 0 && std::exchange(changeDeferred_, false)) PublishChanged();
-        ReleaseFrameInBackground(std::move(retired));
+        ReleaseAnimationFrameInBackground(std::move(retired));
         timing.uiAcceptNs=CpuStampNs()-timing.uiStartedNs;
         RecordTiming(std::move(timing));
     });

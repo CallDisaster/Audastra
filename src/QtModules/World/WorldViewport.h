@@ -19,6 +19,7 @@
 #include <QLibrary>
 #include <QPointF>
 #include <QVector>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QWidget>
 
@@ -271,6 +272,8 @@ private:
         const War3RenderStatusV2* observed = nullptr, std::optional<std::int32_t> statusCall = std::nullopt) const;
     void DestroyRenderer();
     void Tick();
+    // 动画帧到达或镜头变化后的 250 ms 内按“上一帧完成即请求下一帧”出帧；之后回到 33 ms 刷新。
+    void MarkRenderActivity();
     bool SubmitMesh();
     bool SubmitModels();
     bool SubmitAnimation();
@@ -342,8 +345,8 @@ private:
         std::uint32_t particleVertexCount = 0, particleDrawCount = 0;
     };
     struct RetainedAnimationPickFrame : AnimationCompletionIdentity {
-        // 对外借用仍为 const；仅移出历史且没有借用者的帧可复用存储。
-        std::shared_ptr<Render::AnimationFrame> frame;
+        // 与播放器、渲染桥共享同一不可变帧，不另行复制。
+        std::shared_ptr<const Render::AnimationFrame> frame;
         std::size_t ownedBytes = 0;
     };
     struct RetainedBugPreparationFrame : AnimationCompletionIdentity {
@@ -393,6 +396,9 @@ private:
     bool pickingSuspended_ = false;
     QTimer frameTimer_;
     QTimer hoverTimer_;
+    QElapsedTimer renderActivity_, statusRefresh_, pacedRequestClock_;
+    std::uint64_t pacedFrameCount_ = 0;
+    bool pacedRequestPending_ = false;
     std::vector<War3RenderVertexV2> vertices_;
     std::vector<std::uint32_t> indices_;
     std::uint64_t revision_ = 0;
@@ -410,6 +416,7 @@ private:
     std::shared_ptr<const Render::AnimatedModelScene> animationScene_;
     std::shared_ptr<const Render::AnimationFrame> animationFrame_;
     std::deque<RetainedAnimationPickFrame> animationPickHistory_;
+    std::uint64_t animationPickHistoryBudget_ = 512ull * 1024 * 1024; // 整帧共享历史的驻留上限。
     std::deque<RetainedBugPreparationFrame> bugPreparationHistory_;
     Status bugPreparationFailure_;
     std::uint64_t pickPolicyRevision_ = 1;
