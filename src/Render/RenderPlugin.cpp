@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -120,9 +121,27 @@ bool RosterBaseMatches(const FrameState& state, const RosterCandidate& roster) n
         && state.skinPose == roster.basePose && state.particles == roster.baseParticles
         && state.particleFrame == roster.baseParticleFrame && state.visibility == roster.baseVisibility;
 }
+// 复用前清空全部数组但保留容量：核心 Copy 只在数量非零时覆盖，旧内容不能残留。
+// 结构增加字段时大小断言失败，提醒同步这里，避免漏清。
+static_assert(sizeof(SkinPose) == 24 + 8 * sizeof(std::vector<int>) + 16, "SkinPose 字段变化：同步 ResetKeepingCapacity");
+static_assert(sizeof(ParticleFrameData) == 16 + 3 * sizeof(std::vector<int>), "ParticleFrameData 字段变化：同步 ResetKeepingCapacity");
+void ResetKeepingCapacity(SkinPose& pose) noexcept {
+    pose.sceneVersion = pose.contentVersion = 0; pose.matrixFormat = WAR3_RENDER_GROUP_LOCAL_COLUMN_3X4;
+    pose.instances.clear(); pose.groups.clear(); pose.alphas.clear(); pose.colors.clear();
+    pose.layerAlphas.clear(); pose.layerSlices.clear(); pose.dynamicMaterialAlphas = false;
+    pose.materialStates.clear(); pose.materialStateSlices.clear(); pose.dynamicMaterialStates = false;
+}
+void ResetKeepingCapacity(ParticleFrameData& frame) noexcept {
+    frame.sceneVersion = frame.contentVersion = 0;
+    frame.vertices.clear(); frame.draws.clear(); frame.drawMaterialFlags.clear();
+}
 struct Renderer {
     std::mutex mutex;
     std::condition_variable changed;
+    // 编辑器显隐提交替换下来的姿势/粒子副本：已没有任何其他持有者时，下次提交复用其容量，
+    // 免得每次更新都向系统要几十 MB 新内存。最多各留两份。
+    std::deque<std::shared_ptr<const SkinPose>> retiredPoses;
+    std::deque<std::shared_ptr<const ParticleFrameData>> retiredParticles;
     std::atomic<bool> closing{false}, workerExited{false};
     bool warp = false, captureActive = false;
     FrameState state;
@@ -1422,6 +1441,20 @@ std::int32_t WAR3_RENDER_CALL GetEditorPresentationTarget(War3RendererHandle han
         return 0;
     } catch (...) { return static_cast<std::int32_t>(E_FAIL); }
 }
+// 只在回收站是唯一持有者时取出：此时渲染线程与其他调用都已放手，取出后由本次提交独占。
+template <class T> std::shared_ptr<T> TakeRetired(std::mutex& mutex, std::deque<std::shared_ptr<const T>>& retired) {
+    std::shared_ptr<T> taken;
+    {
+        std::lock_guard lock(mutex);
+        for (auto it = retired.begin(); it != retired.end(); ++it) {
+            if (it->use_count() != 1) continue;
+            taken = std::const_pointer_cast<T>(std::move(*it)); retired.erase(it); break;
+        }
+    }
+    if (taken) ResetKeepingCapacity(*taken);
+    else taken = std::make_shared<T>();
+    return taken;
+}
 std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
     const War3RenderEditorVisibilityUpdateV2* input) noexcept {
     if (!handle || !input || input->structSize != sizeof(*input) || input->reserved
@@ -1454,15 +1487,15 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
         }
         if (input->particleFrame) {
             if (!frozen.particles || !frozen.skinPose) return kInvalid;
-            auto nextParticles = std::make_shared<ParticleFrameData>();
+            auto nextParticles = TakeRetired(renderer.mutex, renderer.retiredParticles);
             if (!War3Map::Render::CopyParticleInput(*input->particleFrame,
                 frozen.particles->TextureCount(), *nextParticles)) return kInvalid;
-            auto nextPose = std::make_shared<SkinPose>();
+            auto nextPose = TakeRetired(renderer.mutex, renderer.retiredPoses);
             if (!War3Map::Render::CopySkinUpdate(*input->particleFrame->modelPose, SkinLayout(frozen), *nextPose)) return kInvalid;
             pose = std::move(nextPose); particles = std::move(nextParticles);
         } else if (input->modelPose) {
             if (!frozen.skinPose || frozen.particles) return kInvalid;
-            auto nextPose = std::make_shared<SkinPose>();
+            auto nextPose = TakeRetired(renderer.mutex, renderer.retiredPoses);
             if (!War3Map::Render::CopySkinUpdate(*input->modelPose, SkinLayout(frozen), *nextPose)) return kInvalid;
             pose = std::move(nextPose);
         }
@@ -1475,6 +1508,9 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
             + input->instanceCount + input->particleDrawCount > War3Map::Render::kMaxPoseAndParticlePayloadBytes)) return kInvalid;
         auto visibility = std::make_shared<EditorVisibility>();
         if (!War3Map::Render::CopyEditorVisibility(SkinLayout(frozen), particles.get(), target, *input, *visibility, pose.get())) return kInvalid;
+        // 挤出回收站的旧副本在解锁后才析构，不在锁内释放大块内存。
+        std::shared_ptr<const SkinPose> droppedPose;
+        std::shared_ptr<const ParticleFrameData> droppedParticles;
         {
             std::lock_guard lock(renderer.mutex);
             // CPU预检期间任何模型、姿势、静态实例覆盖或粒子槽变化均拒绝迟到请求。
@@ -1483,6 +1519,16 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
                 || renderer.state.particles != frozen.particles || renderer.state.particleFrame != frozen.particleFrame
                 || renderer.state.instances != frozen.instances
                 || input->presentationRevision <= renderer.state.lastPresentationRevision) return kInvalid;
+            if (input->modelPose || input->particleFrame) {
+                renderer.retiredPoses.push_back(renderer.state.skinPose);
+                if (renderer.retiredPoses.size() > 2) { droppedPose = std::move(renderer.retiredPoses.front()); renderer.retiredPoses.pop_front(); }
+            }
+            if (input->particleFrame && renderer.state.particleFrame) {
+                renderer.retiredParticles.push_back(renderer.state.particleFrame);
+                if (renderer.retiredParticles.size() > 2) {
+                    droppedParticles = std::move(renderer.retiredParticles.front()); renderer.retiredParticles.pop_front();
+                }
+            }
             renderer.state.skinPose = std::move(pose); renderer.state.particleFrame = std::move(particles);
             renderer.state.instances = std::move(instances); renderer.state.modelEpoch = target.modelEpoch;
             renderer.state.visibility = std::move(visibility);
