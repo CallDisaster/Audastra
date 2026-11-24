@@ -248,7 +248,8 @@ void Lifecycle() {
     CheckSlots(*scene, *frame);
     for (const auto& child : frame->prem->emission.children) {
         const float localX = 24.0f + 40.0f * static_cast<float>(child.birthElapsedMs) / 1000.0f;
-        Check(Near(child.transform[3], 108) && Near(child.transform[7], 456 + 2 * localX) && Near(child.transform[11], 813),
+        // 宿主朝向 90°、缩放 (2,3,4)：先转后沿世界轴缩放，局部 X 转到世界 Y 后乘 3，局部 Y 转到 -X 后乘 2。
+        Check(Near(child.transform[3], 113) && Near(child.transform[7], 456 + 3 * localX) && Near(child.transform[11], 813),
             "real node-at-birth/pivot/nonuniform parent rotation/translation was applied more than once");
     }
     AnimationAdvance tick; tick.deltaMs = 1000; frame = Good(service->Prepare(frame.get(), tick));
@@ -467,8 +468,8 @@ void MultipleParents() {
             Check(child.emitter && child.emitter->Binding().parentAsset == capability.parentAsset &&
                 child.emitter->Binding().parentSource == capability.parentSource &&
                 child.emitter->Binding().childSource == capability.childSource &&
-                Near(child.transform[3], spec.model.position[0] - 15) &&
-                Near(child.transform[7], spec.model.position[1] + 2 * localX) &&
+                Near(child.transform[3], spec.model.position[0] - 10) &&
+                Near(child.transform[7], spec.model.position[1] + 3 * localX) &&
                 Near(child.transform[11], spec.model.position[2] + 24),
                 "multi-parent birth matrix lost actual node motion, pivot, source or concrete owner transform");
         }

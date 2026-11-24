@@ -889,9 +889,11 @@ Result<ModelTextureRgba> DecodeModelTexture(std::string path, std::span<const st
     return result;
 }
 std::array<float, 12> ModelInstanceTransform(const ModelInstanceRequest& request) {
+    // 游戏先按朝向旋转，再沿世界 X/Y/Z 轴缩放（T·S·R）：非等比缩放的装饰物转 90° 后，
+    // 作者要对调 X/Y 缩放才得到同样的形状，地图里的摆放数据正是这样写的。
     const float c = std::cos(request.angle), s = std::sin(request.angle);
-    return {c * request.scale[0], -s * request.scale[1], 0, request.position[0],
-        s * request.scale[0], c * request.scale[1], 0, request.position[1],
+    return {request.scale[0] * c, -request.scale[0] * s, 0, request.position[0],
+        request.scale[1] * s, request.scale[1] * c, 0, request.position[1],
         0, 0, request.scale[2], request.position[2]};
 }
 

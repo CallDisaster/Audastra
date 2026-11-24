@@ -237,7 +237,7 @@ using ModelDecodedTextureProvider = std::function<std::shared_ptr<const ModelTex
 
 constexpr std::uint32_t kBakedInstance = UINT32_MAX;
 
-// 行主序 3×4 实例变换（绕 Z 旋转 × 缩放 + 平移），与场景构建一致；供拖动等局部更新复用。
+// 行主序 3×4 实例变换（平移 × 世界轴缩放 × 绕 Z 旋转，与游戏一致），与场景构建一致；供拖动等局部更新复用。
 [[nodiscard]] std::array<float, 12> ModelInstanceTransform(const ModelInstanceRequest& request);
 
 // 摆放变化后原位重排实例（移动、删除、增加已载入的模型变体），不重新读取模型与贴图。
