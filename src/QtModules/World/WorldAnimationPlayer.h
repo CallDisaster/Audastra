@@ -8,10 +8,12 @@
 #include <QTimer>
 #include <deque>
 #include <atomic>
+#include <memory>
 #include <string_view>
 
 namespace War3Map::Modules {
 class WorldAnimationAssetPrefetch;
+class WorldAnimationJobThread;
 // 世界实例的局部 Stand 相位；不改变共享的全局序列时钟。
 [[nodiscard]] std::uint64_t WorldStandStartMs(std::string_view hostKey, std::uint64_t duration) noexcept;
 enum class WorldAnimationTimingOutcome { Installed, Accepted, Cancelled, Stale, SourceRejected, PrepareRejected, ViewportRejected };
@@ -108,7 +110,9 @@ private:
     void SetPlayback(bool value);
     void Tick();
     void Queue(Render::AnimationAdvance command, bool advancePlayback = false);
-    void StartNext();
+    // base 为空时以已接收帧为基；稳定播放时可传入刚算完、尚未接收的帧，使下一帧计算与界面接收重叠。
+    void StartNext(std::shared_ptr<const Render::AnimationFrame> base = {});
+    [[nodiscard]] int PlaybackIntervalMs() const;
     bool StartInstanceWork();
     void PollInstanceWork();
     void FinishInstanceWork(bool accepted, Status status);
@@ -124,7 +128,9 @@ private:
     WorldViewport& viewport_;
     QTimer timer_;
     QElapsedTimer elapsed_;
-    QPointer<QThread> worker_;
+    // 在途求值的身份：常驻线程上的姿势作业是一个令牌对象，实例重基仍是独立线程；非空即忙。
+    QPointer<QObject> worker_;
+    std::unique_ptr<WorldAnimationJobThread> jobs_; // 首次求值时建立，之后常驻。
     QPointer<QThread> catalogWorker_;
     std::shared_ptr<std::atomic<bool>> catalogFinished_; // 只读就绪提示；结果仍由Qt完成回调发布。
     std::optional<InstanceChange> instanceChange_;
@@ -166,7 +172,6 @@ private:
     bool installing_ = false;
     QString lastDiagnostic_;
     int interval_ = 33;
-    std::uint64_t recentCostMs_ = 33;
     Render::AnimationPreviewBudgetController effectBudget_;
     std::uint64_t effectMetricsCursor_ = 0;
 };

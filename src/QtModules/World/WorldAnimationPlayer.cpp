@@ -1,15 +1,70 @@
 #include "WorldAnimationPlayer.h"
 #include <QEvent>
 #include <QScopedValueRollback>
+#include <QScreen>
 #include "WorldFrameRelease.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <mutex>
 #include <shared_mutex>
 
 namespace War3Map::Modules {
+// 常驻动画计算线程：串行执行界面线程投递的求值作业，不再每帧新建线程。
+// 线程只持有共享队列；播放器析构时通知退出、丢弃未开始的作业，不等待在途作业，线程结束后自行回收。
+// 完成通知投递给线程自带的界面线程对象，它在线程结束后才删除，所以在途作业总能安全投递；
+// 通知本身再判断播放器是否还在。
+class WorldAnimationJobThread final {
+public:
+    WorldAnimationJobThread() : state_(std::make_shared<State>()) {
+        state_->receiver = new QObject;
+        auto* thread = QThread::create([state = state_] { Run(*state); });
+        QObject::connect(thread, &QThread::finished, state_->receiver, &QObject::deleteLater);
+        QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        thread->start(QThread::LowPriority);
+    }
+    ~WorldAnimationJobThread() {
+        std::deque<std::function<void()>> dropped; // 未开始作业持有的帧在锁外释放
+        { std::lock_guard lock(state_->mutex); state_->stop = true; dropped.swap(state_->jobs); }
+        state_->wake.notify_all();
+    }
+    WorldAnimationJobThread(const WorldAnimationJobThread&) = delete;
+    WorldAnimationJobThread& operator=(const WorldAnimationJobThread&) = delete;
+    // job 在常驻线程执行；之后 done 回到界面线程执行。
+    void Post(std::function<void()> job, std::function<void()> done) {
+        auto task = [job = std::move(job), done = std::move(done), receiver = state_->receiver]() mutable {
+            job();
+            QMetaObject::invokeMethod(receiver, std::move(done), Qt::QueuedConnection);
+        };
+        { std::lock_guard lock(state_->mutex); state_->jobs.push_back(std::move(task)); }
+        state_->wake.notify_one();
+    }
+private:
+    struct State {
+        std::mutex mutex;
+        std::condition_variable wake;
+        std::deque<std::function<void()>> jobs;
+        QObject* receiver = nullptr;
+        bool stop = false;
+    };
+    static void Run(State& state) noexcept {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock lock(state.mutex);
+                state.wake.wait(lock, [&] { return state.stop || !state.jobs.empty(); });
+                if (state.stop) return;
+                job = std::move(state.jobs.front()); state.jobs.pop_front();
+            }
+            try { job(); } catch (...) {} // 作业自行把失败写进结果；这里只保证线程不因异常退出。
+        }
+    }
+    std::shared_ptr<State> state_;
+};
 namespace {
 std::uint64_t CpuStampNs() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -99,8 +154,21 @@ void WorldAnimationPlayer::SetTemporaryFullEffects(bool enabled) {
     if (TemporaryFullEffects() == enabled) return;
     effectBudget_.SetTemporaryFull(enabled); RefreshEffectBudget();
 }
+int WorldAnimationPlayer::PlaybackIntervalMs() const {
+    const auto status = effectBudget_.Status();
+    auto interval = static_cast<int>(status.minimumIntervalMs);
+    // 省电档保持其最低间隔；其余档按所在屏幕的刷新节奏出姿势，不再按计算耗时拉长间隔。
+    // 计算慢于刷新时由“算完即接下一帧”决定实际更新率。
+    if (status.quality != Render::AnimationPreviewQuality::PowerSaving || status.temporaryFull) {
+        const auto* screen = viewport_.screen();
+        const double rate = screen ? screen->refreshRate() : 60.0;
+        if (std::isfinite(rate) && rate >= 30.0)
+            interval = std::min(interval, std::max(4, static_cast<int>(std::floor(1000.0 / rate))));
+    }
+    return interval;
+}
 void WorldAnimationPlayer::RefreshEffectBudget() {
-    interval_ = static_cast<int>(std::clamp<std::uint64_t>(recentCostMs_, effectBudget_.Status().minimumIntervalMs, 250));
+    interval_ = PlaybackIntervalMs();
     timer_.setInterval(interval_);
     if (Current()) { Render::AnimationAdvance refresh; refresh.playAll = playing_; Queue(std::move(refresh)); }
     PublishChanged();
@@ -225,8 +293,7 @@ bool WorldAnimationPlayer::Install(std::shared_ptr<Render::ModelAnimationService
     isCurrent_ = std::move(current);
     lastDiagnostic_.clear();
     effectBudget_.SetOmissions(accepted_->budgetParticleInstances, accepted_->budgetParticleEmitters);
-    interval_ = static_cast<int>(effectBudget_.Status().minimumIntervalMs);
-    recentCostMs_ = static_cast<std::uint64_t>(interval_);
+    interval_ = PlaybackIntervalMs();
     PublishChanged();
     if (playRequested_) SetPlayback(true);
     if (Current() && accepted_ && NeedsView(*accepted_,viewport_.AnimationViewSnapshot())) {
@@ -502,7 +569,7 @@ void WorldAnimationPlayer::Queue(Render::AnimationAdvance command, bool advanceP
     ++serial_;
     StartNext();
 }
-void WorldAnimationPlayer::StartNext() {
+void WorldAnimationPlayer::StartNext(std::shared_ptr<const Render::AnimationFrame> base) {
     if (clearPending_ || !Current())
         return;
     // 资源准备只读安装时档案，可与旧pose并行；重基和普通求值仍共用唯一worker。
@@ -529,13 +596,14 @@ void WorldAnimationPlayer::StartNext() {
         command.previewParticleBudget = effectBudget_.ParticleBudget();
     inFlight_ = command;
     const bool activatesPlayback = command.playAll.value_or(false);
+    // 只有普通播放推进可在算完后立即接下一帧；编辑、单步与暂停下的相机刷新照旧等界面接收。
+    const bool chainable = advancePlayback && playing_ && command.edits.empty() && !command.stepPaused;
     const auto serial = serial_;
     auto service = service_;
-    auto previous = accepted_;
+    auto previous = base ? std::move(base) : accepted_;
     auto source = source_;
     struct Work {
         Result<std::shared_ptr<const Render::AnimationFrame>> result;
-        std::uint64_t milliseconds = 0;
         WorldAnimationTiming timing;
         WorldViewport::AnimationFramePreparation prepared; // 点选列表与占位快照在后台算好，界面线程只交换
     };
@@ -548,10 +616,9 @@ void WorldAnimationPlayer::StartNext() {
     output->timing.sceneVersion=service->Scene()->sceneVersion; output->timing.generation=service->Scene()->generation;
     output->timing.documentRevision=service->Scene()->documentRevision;
     output->timing.previousContentVersion=previous ? previous->contentVersion : 0;
-    auto* thread = QThread::create([service, scene, lease, prepareMode, previous, source, command = std::move(command), output]() mutable {
+    auto job = [service, scene, lease, prepareMode, previous, source, command = std::move(command), output]() mutable {
         // 旧帧在后台线程放手：界面接收新帧后它通常是最后持有者，析构数十 MB 不应落在界面线程。
         struct ReleasePrevious { std::shared_ptr<const Render::AnimationFrame>& frame; ~ReleasePrevious() { frame.reset(); } } release{previous};
-        const auto begin = std::chrono::steady_clock::now();
         auto& timing=output->timing;
         timing.workerStartedNs=CpuStampNs(); timing.queueWaitNs=timing.workerStartedNs-timing.queuedNs;
         try {
@@ -600,20 +667,26 @@ void WorldAnimationPlayer::StartNext() {
         }
         timing.workerFinishedNs=CpuStampNs(); timing.workerTotalNs=timing.workerFinishedNs-timing.workerStartedNs;
         if (!output->result.Succeeded()) timing.diagnosticCode=DiagnosticCode(output->result.diagnostics);
-        output->milliseconds = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin)
-                .count());
-    });
-    worker_ = thread;
+    };
+    auto* token = new QObject(this);
+    worker_ = token;
     PublishChanged();
-    connect(thread, &QThread::finished, this, [this, serial, activatesPlayback, output, completedWorker=QPointer<QThread>(thread)] {
+    auto finished = [this, serial, activatesPlayback, chainable, output, completedWorker=QPointer<QObject>(token)] {
         // GUI 接受帧期间仍保持忙碌；隐藏触发的同步拖动取消须从新接受帧恢复变换。
         inFlight_.reset();
-        const auto guiStarted = std::chrono::steady_clock::now();
         auto timing=output->timing;
         QScopedValueRollback<WorldAnimationTiming*> timingScope(timingSink_,&timing);
         timing.uiStartedNs=CpuStampNs(); timing.uiQueueWaitNs=timing.uiStartedNs-timing.workerFinishedNs;
         ++changeBatch_;
+        // 稳定播放时这一帧一算完就以它为基接着算下一帧，下一帧的计算与这里的接收、绘制重叠。
+        // 这一帧若被拒收，播放会暂停或清场景，代号随之改变，在途的下一帧作废。
+        if (chainable && serial == serial_ && service_ && output->result.Succeeded() && playing_ && !pending_ &&
+            !resumePending_ && !restartPending_ && !instanceChange_ && !instanceTicket_ && !clearPending_ &&
+            worker_ == completedWorker && elapsed_.isValid() && elapsed_.elapsed() >= interval_ && Current()) {
+            worker_ = nullptr;
+            pending_ = Render::AnimationAdvance{}; pendingAdvancePlayback_ = true; pendingQueuedNs_ = CpuStampNs();
+            StartNext(*output->result.value);
+        }
         std::shared_ptr<const Render::AnimationFrame> retired;
         if (serial == serial_ && service_) {
             if (!Current()) {
@@ -667,19 +740,12 @@ void WorldAnimationPlayer::StartNext() {
                     worker_=nullptr;
                     StartNext();
                 }
-                const auto guiMs =
-                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                   std::chrono::steady_clock::now() - guiStarted)
-                                                   .count());
-                const auto cost = output->milliseconds + guiMs;
-                // 单 worker 已禁止重叠；周期不再乘二或追加整段空等。启动慢帧的影响有界并快速衰减。
-                recentCostMs_=(recentCostMs_+std::clamp<std::uint64_t>(cost,1,250)+1)/2;
-                const auto nextInterval=static_cast<int>(std::clamp<std::uint64_t>(recentCostMs_,effectBudget_.Status().minimumIntervalMs,250));
-                if (nextInterval!=interval_) { interval_=nextInterval; timer_.setInterval(interval_); }
+                // 间隔固定跟随屏幕刷新（省电档除外），不再按计算耗时拉长；窗口换屏时在这里跟上。
+                if (const auto next = PlaybackIntervalMs(); next != interval_) { interval_ = next; timer_.setInterval(interval_); }
                 PublishChanged();
             }
         } else timing.outcome=WorldAnimationTimingOutcome::Cancelled;
-        // 旧完成回调只能释放自己，不能擦掉上面重基已启动的新任务。
+        // 旧完成回调只能释放自己，不能擦掉上面重基或接续已启动的新任务。
         if (worker_==completedWorker) worker_=nullptr;
         StartNext();
         if (playing_ && !worker_ && !pending_ && elapsed_.isValid() && elapsed_.elapsed()>=interval_)
@@ -690,8 +756,11 @@ void WorldAnimationPlayer::StartNext() {
         ReleaseAnimationFrameInBackground(std::move(retired));
         timing.uiAcceptNs=CpuStampNs()-timing.uiStartedNs;
         RecordTiming(std::move(timing));
+        if (completedWorker) completedWorker->deleteLater();
+    };
+    if (!jobs_) jobs_ = std::make_unique<WorldAnimationJobThread>();
+    jobs_->Post(std::move(job), [self = QPointer<WorldAnimationPlayer>(this), finished = std::move(finished)] {
+        if (self) finished();
     });
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-    thread->start(QThread::LowPriority);
 }
 } // namespace War3Map::Modules
