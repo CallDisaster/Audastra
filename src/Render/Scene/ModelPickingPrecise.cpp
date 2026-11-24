@@ -229,7 +229,7 @@ Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFram
         scene.geometry.meshGeosets.size()!=scene.meshes.size() || frame.poses.size()!=frame.instances.size()) return fail();
     frame.pickBounds.assign(frame.poses.size(),{});
     // 每个实例只写自己的包围盒，按固定分段并行；任一段映射不一致即整帧失败，结果与线程数无关。
-    constexpr std::size_t chunk=512;
+    constexpr std::size_t chunk=128; // 可见实例常按模型扎堆，小段才能分匀。
     const auto count=frame.poses.size();
     std::atomic<bool> failed{false};
     const std::function<void(std::uint32_t)> prepare=[&](std::uint32_t task) {

@@ -4,6 +4,7 @@
 #include "AnimationPoseWarnings.h"
 #include "AnimationVisibility.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -24,6 +25,33 @@ void AddMotionHash(std::uint64_t& hash, const void* data, std::size_t size) noex
     const auto* bytes=static_cast<const unsigned char*>(data);
     for (std::size_t i=0;i<size;++i) { hash^=bytes[i]; hash*=1099511628211ull; }
 }
+}
+std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept {
+    std::uint64_t bytes=sizeof(AnimationFrame);
+    const auto charge=[&](const auto& values) {
+        bytes+=std::uint64_t(values.capacity())*sizeof(typename std::decay_t<decltype(values)>::value_type);
+    };
+    const auto chargeString=[&](const std::string& value) { bytes+=value.capacity()+1; };
+    charge(frame.requestVisibility); charge(frame.states); charge(frame.instances); charge(frame.groups);
+    charge(frame.alphas); charge(frame.colors); charge(frame.layerAlphas); charge(frame.layerSlices);
+    charge(frame.materialStates); charge(frame.materialStateSlices); charge(frame.geosetIssues);
+    charge(frame.materialIssues); charge(frame.collisionMatrices); charge(frame.pickBounds);
+    charge(frame.particleVertices); charge(frame.particleDraws); charge(frame.particleMaterialFlags);
+    charge(frame.particleLinks); charge(frame.diagnostics);
+    // 姿势链按帧预算同一口径（含可能独占的警告记录），不逐个探查共享状态。
+    bytes+=std::uint64_t(frame.poses.capacity())*(kAnimationPoseLinkBudgetBytes-sizeof(AnimationPoseLink));
+    bytes+=std::uint64_t(frame.poses.capacity())*sizeof(AnimationPoseLink);
+    for (const auto& pose:frame.poses) { chargeString(pose.rejectionCode); chargeString(pose.rejectionMessage); }
+    for (const auto& link:frame.particleLinks) {
+        chargeString(link.rejectionCode); chargeString(link.rejectionMessage); chargeString(link.resetReason);
+    }
+    if (frame.particleCheckpoint) {
+        const auto& checkpoint=*frame.particleCheckpoint;
+        bytes+=sizeof(checkpoint)+checkpoint.stateBytes+checkpoint.frozen.capacity()+
+            std::uint64_t(checkpoint.instances.capacity())*sizeof(std::shared_ptr<const AnimationParticleState>);
+    }
+    if (frame.prem) bytes+=sizeof(AnimationPremFrame)+frame.prem->storageBytes+frame.prem->workingBytes;
+    return bytes;
 }
 War3RenderSkinUpdateV2 AnimationFrame::Describe() const noexcept {
     return {sizeof(War3RenderSkinUpdateV2),static_cast<std::uint32_t>(instances.size()),
@@ -655,8 +683,19 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (active==s.requests.size()) if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
     }
     if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
-    for (const auto& matrix:frame->groups) for (const auto f:matrix.values)
-        if (!std::isfinite(f) || std::abs(f)>1e7f) return fail("ANIMATION_GROUP_INVALID","组矩阵不满足插件有限值预算。");
+    {
+        // 按固定分段并行检查；只读，结果与线程数无关。
+        constexpr std::size_t chunk=8192;
+        const auto matrices=frame->groups.size();
+        std::atomic<bool> invalid{false};
+        const std::function<void(std::uint32_t)> check=[&](std::uint32_t task) {
+            const auto end=std::min(matrices,(std::size_t(task)+1)*chunk);
+            for (std::size_t q=std::size_t(task)*chunk;q<end;++q) for (const auto f:frame->groups[q].values)
+                if (!std::isfinite(f) || std::abs(f)>1e7f) { invalid.store(true,std::memory_order_relaxed); return; }
+        };
+        RunAnimationTasks(static_cast<std::uint32_t>((matrices+chunk-1)/chunk),check);
+        if (invalid.load()) return fail("ANIMATION_GROUP_INVALID","组矩阵不满足插件有限值预算。");
+    }
     frame->timings.posePackingNs=ElapsedNs(poseStarted)-frame->timings.poseEvaluationNs;
     frame->contentVersion=NextAnimationSerial();
     if (s.particles) {
@@ -666,17 +705,27 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (!status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
     }
     const auto fingerprintStarted=TimingClock::now();
-    for (auto& link:frame->poses) {
-        if (link.hidden || link.outsideView) link.warnings={}; // 粒子链可能在主姿势成功后隐藏整实例。
-        if (link.outsideView) continue;
-        if (s.sharedPoseRanges && !link.animated && !link.hidden) continue; // 实际缓存片段的指纹/可见度不逐实例重复计算。
-        link.noVisibleGeometry=!AnimationHasVisibleLayers(scene,*frame,link,frame->instances[link.renderedInstance].instance.model);
-        if (link.hidden) continue; // 占位矩阵/透明度没有成功姿势指纹。
-        link.matrixHash=AnimationBitsHash(frame->groups.data()+link.firstGroup,link.groupCount*sizeof(War3RenderGroupMatrixV2));
-        link.alphaHash=AnimationBitsHash(frame->alphas.data()+link.firstAlpha,link.alphaCount*sizeof(float));
-        link.colorHash=AnimationBitsHash(frame->colors.data()+link.firstAlpha,link.alphaCount*sizeof(War3RenderMeshColorV2));
-        if (scene.dynamicMaterialAlphas) link.materialAlphaHash=AnimationBitsHash(frame->layerAlphas.data()+link.materialAlphas.offset,link.materialAlphas.count*sizeof(float));
-        if (scene.dynamicMaterialStates) link.materialStateHash=AnimationBitsHash(frame->materialStates.data()+link.materialStates.offset,link.materialStates.count*sizeof(War3RenderMaterialStateV2));
+    {
+        // 逐实例指纹只写本实例的姿势链，按固定分段并行；合并哈希仍在下方按实例顺序进行。
+        constexpr std::size_t chunk=1024;
+        const auto count=frame->poses.size();
+        const std::function<void(std::uint32_t)> fingerprint=[&](std::uint32_t task) {
+            const auto end=std::min(count,(std::size_t(task)+1)*chunk);
+            for (std::size_t p=std::size_t(task)*chunk;p<end;++p) {
+                auto& link=frame->poses[p];
+                if (link.hidden || link.outsideView) link.warnings={}; // 粒子链可能在主姿势成功后隐藏整实例。
+                if (link.outsideView) continue;
+                if (s.sharedPoseRanges && !link.animated && !link.hidden) continue; // 实际缓存片段的指纹/可见度不逐实例重复计算。
+                link.noVisibleGeometry=!AnimationHasVisibleLayers(scene,*frame,link,frame->instances[link.renderedInstance].instance.model);
+                if (link.hidden) continue; // 占位矩阵/透明度没有成功姿势指纹。
+                link.matrixHash=AnimationBitsHash(frame->groups.data()+link.firstGroup,link.groupCount*sizeof(War3RenderGroupMatrixV2));
+                link.alphaHash=AnimationBitsHash(frame->alphas.data()+link.firstAlpha,link.alphaCount*sizeof(float));
+                link.colorHash=AnimationBitsHash(frame->colors.data()+link.firstAlpha,link.alphaCount*sizeof(War3RenderMeshColorV2));
+                if (scene.dynamicMaterialAlphas) link.materialAlphaHash=AnimationBitsHash(frame->layerAlphas.data()+link.materialAlphas.offset,link.materialAlphas.count*sizeof(float));
+                if (scene.dynamicMaterialStates) link.materialStateHash=AnimationBitsHash(frame->materialStates.data()+link.materialStates.offset,link.materialStates.count*sizeof(War3RenderMaterialStateV2));
+            }
+        };
+        RunAnimationTasks(static_cast<std::uint32_t>((count+chunk-1)/chunk),fingerprint);
     }
     auto& measurement=frame->timings;
     measurement.outputMotionHash=measurement.particleStateHash=14695981039346656037ull;

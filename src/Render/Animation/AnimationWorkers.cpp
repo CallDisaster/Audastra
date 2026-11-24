@@ -6,6 +6,15 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace War3Map::Render {
 namespace {
@@ -57,6 +66,10 @@ private:
         insideAnimationTask = false;
     }
     void Loop() noexcept {
+#ifdef _WIN32
+        // 与动画工作线程同级（低于普通），不抢界面与绘制线程。
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
         std::uint64_t seen = 0;
         for (;;) {
             {

@@ -325,6 +325,9 @@ struct AnimationFrame {
     [[nodiscard]] War3RenderParticleUpdateV2 DescribeParticles(const War3RenderSkinUpdateV2* modelPose) const noexcept;
     [[nodiscard]] War3RenderParticleMaterialUpdateV2 DescribeParticleMaterial(const War3RenderSkinUpdateV2* modelPose) const noexcept;
 };
+// 已发布帧实际驻留的字节：全部数组按容量、姿势链按帧预算口径（含警告记录）、字符串按容量，
+// 另加粒子检查点与 PREM 子帧的已核算存储。宿主整帧共享保留历史时据此计费。
+[[nodiscard]] std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept;
 struct AnimationUnavailableInstance {
     War3RenderCore::InstanceIdentity identity;
     War3RenderCore::AssetIdentity asset;
