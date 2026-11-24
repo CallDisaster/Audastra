@@ -240,6 +240,110 @@ void ViewAdmission() {
         "legacy unfiltered service acquired hidden view semantics");
     std::cout<<"view_admission=1 outside_pose_work=0 ground_pose_work=0 reentry_current_time=66 legacy_unfiltered=1\n";
 }
+void ResidentFrames() {
+    // 沿用上一帧数组只重写视野内与刚出视野的实例：随镜头进出视野、整片离开再回来、旧帧回收复用，
+    // 结果须与单线程逐实例重建逐位相同。
+    Input in;
+    constexpr std::size_t count=400;
+    std::vector<AnimationInstanceSpec> specs(count,in.specs[0]);
+    for (std::size_t i=0;i<count;++i) {
+        specs[i].identity.value=i+1; specs[i].hostKey="resident:"+std::to_string(i);
+        specs[i].sequenceIndex=static_cast<std::uint32_t>(i%2); specs[i].elapsedMs=29*i;
+        specs[i].model.position={static_cast<float>(i%40)*400,static_cast<float>(i/40)*400,0};
+    }
+    const auto create=[&](bool reuse,std::uint32_t workers) {
+        AnimationLimits limits; limits.reusePreviousFrame=reuse; limits.poseWorkers=workers;
+        return Good(ModelAnimationService::Create({7,33,"resident-synthetic"},specs,[&](auto p,auto n){return in.Read(p,n);},limits));
+    };
+    // 镜头沿地图移动、拉远：实例依次进入、留在、离开视野；随后整片离开再回到起点。
+    const std::array<std::array<float,3>,8> path{{{0,0,900},{2000,0,900},{6000,1200,900},{6000,1200,2500},
+        {-100000,0,900},{2000,0,900},{0,0,900},{0,0,900}}};
+    const auto command=[&](std::size_t f) {
+        AnimationAdvance advance; advance.playAll=true; advance.deltaMs=f ? 33 : 0;
+        AnimationView view; view.physicalWidth=1200; view.physicalHeight=800;
+        view.camera={sizeof(War3RenderCameraV2),path[f][0],path[f][1],0,path[f][2],0,0.8f};
+        advance.worldView=view; advance.worldCamera=AnimationWorldCamera(view.camera);
+        return advance;
+    };
+    // 返回第一处不同（空表示逐位相同），失败时直接指出数组或姿势字段与实例序号。
+    const auto difference=[&](const AnimationFrame& a,const AnimationFrame& b) -> std::string {
+        const auto bytes=[](const char* name,const auto& x,const auto& y) -> std::string {
+            if (x.size()!=y.size()) return std::string(name)+" size "+std::to_string(x.size())+"/"+std::to_string(y.size());
+            const auto* p=reinterpret_cast<const unsigned char*>(x.data()); const auto* q=reinterpret_cast<const unsigned char*>(y.data());
+            const auto element=sizeof(x[0]);
+            for (std::size_t k=0;k<x.size()*element;++k) if (p[k]!=q[k])
+                return std::string(name)+"["+std::to_string(k/element)+"] byte "+std::to_string(k%element);
+            return {};
+        };
+        for (auto text:{bytes("groups",a.groups,b.groups),bytes("alphas",a.alphas,b.alphas),bytes("colors",a.colors,b.colors),
+            bytes("layerAlphas",a.layerAlphas,b.layerAlphas),bytes("materialStates",a.materialStates,b.materialStates),
+            bytes("instances",a.instances,b.instances),bytes("layerSlices",a.layerSlices,b.layerSlices),
+            bytes("materialStateSlices",a.materialStateSlices,b.materialStateSlices)}) if (!text.empty()) return text;
+        if (a.poses.size()!=b.poses.size()) return "poses size";
+        if (a.collisionMatrices.size()!=b.collisionMatrices.size()) return "collisionMatrices size";
+        for (std::size_t i=0;i<a.poses.size();++i) {
+            const auto& x=a.poses[i]; const auto& y=b.poses[i];
+            const auto field=[&](const char* name,bool equal) { return equal ? std::string{} : "pose["+std::to_string(i)+"]."+name; };
+            for (auto text:{field("poseVersion",x.poseVersion==y.poseVersion),field("matrixHash",x.matrixHash==y.matrixHash),
+                field("alphaHash",x.alphaHash==y.alphaHash),field("colorHash",x.colorHash==y.colorHash),
+                field("materialAlphaHash",x.materialAlphaHash==y.materialAlphaHash),field("materialStateHash",x.materialStateHash==y.materialStateHash),
+                field("animated",x.animated==y.animated),field("hidden",x.hidden==y.hidden),field("outsideView",x.outsideView==y.outsideView),
+                field("noVisibleGeometry",x.noVisibleGeometry==y.noVisibleGeometry),field("identity",x.identity==y.identity),
+                field("requestIndex",x.requestIndex==y.requestIndex),field("renderedInstance",x.renderedInstance==y.renderedInstance),
+                field("groups",x.firstGroup==y.firstGroup && x.groupCount==y.groupCount),field("alphaRange",x.firstAlpha==y.firstAlpha && x.alphaCount==y.alphaCount),
+                field("materialAlphas",x.materialAlphas.offset==y.materialAlphas.offset && x.materialAlphas.count==y.materialAlphas.count),
+                field("materialStates",x.materialStates.offset==y.materialStates.offset && x.materialStates.count==y.materialStates.count),
+                field("collisionMatrices",x.collisionMatrices.offset==y.collisionMatrices.offset && x.collisionMatrices.count==y.collisionMatrices.count),
+                // 求值代号取自进程全局序号，不同服务天然不同；只比较是否有求值。
+                field("asset",x.asset==y.asset),field("evaluationEpoch",(x.evaluationEpoch!=0)==(y.evaluationEpoch!=0)),
+                field("warnings",x.warnings.count==y.warnings.count)}) if (!text.empty()) return text;
+        }
+        if (a.timings.outputMotionHash!=b.timings.outputMotionHash) return "outputMotionHash";
+        if (a.offscreenPoseInstances!=b.offscreenPoseInstances || a.timings.poseEvaluationRequests!=b.timings.poseEvaluationRequests ||
+            a.animatedInstances!=b.animatedInstances || a.hiddenInstances!=b.hiddenInstances ||
+            a.retainedStaticInstances!=b.retainedStaticInstances) return "frame counts";
+        return {};
+    };
+    const auto check=[&](const char* run,std::size_t f,const AnimationFrame& expected,const AnimationFrame& actual) {
+        if (const auto text=difference(expected,actual); !text.empty())
+            throw std::runtime_error(std::string(run)+" frame "+std::to_string(f)+" differs from a single-threaded full rebuild: "+text);
+    };
+    std::vector<std::shared_ptr<const AnimationFrame>> rebuilt;
+    {
+        auto service=create(false,1);
+        for (std::size_t f=0;f<path.size();++f)
+            rebuilt.push_back(Good(service->Prepare(f ? rebuilt.back().get() : nullptr,command(f))));
+    }
+    Require(!rebuilt[0]->sharedPoseRanges && rebuilt[1]->offscreenPoseInstances>0 && rebuilt[1]->timings.poseEvaluationRequests>0 &&
+        rebuilt[4]->timings.poseEvaluationRequests==0 && rebuilt[5]->timings.poseEvaluationRequests>0,
+        "resident test camera path did not move instances in and out of view");
+    std::size_t transitions=0;
+    for (std::size_t f=1;f<path.size();++f) for (std::size_t i=0;i<count;++i)
+        transitions+=rebuilt[f]->poses[i].outsideView!=rebuilt[f-1]->poses[i].outsideView;
+    Require(transitions>=20,"resident test did not exercise view transitions");
+    // 分开验证：多线程整帧重建、单线程沿用、多线程沿用；全部保留时每帧以刚发布的上一帧为基。
+    const auto keepAll=[&](const char* run,bool reuse,std::uint32_t workers) {
+        auto service=create(reuse,workers);
+        std::vector<std::shared_ptr<const AnimationFrame>> frames;
+        for (std::size_t f=0;f<path.size();++f) {
+            frames.push_back(Good(service->Prepare(f ? frames.back().get() : nullptr,command(f))));
+            check(run,f,*rebuilt[f],*frames[f]);
+        }
+    };
+    keepAll("parallel rebuild",false,4);
+    keepAll("serial reuse",true,1);
+    keepAll("parallel reuse",true,4);
+    {
+        // 只留上一帧：更早的帧回到回收处后带着旧内容被复用，仍须逐位相同。
+        auto service=create(true,4);
+        std::shared_ptr<const AnimationFrame> frame;
+        for (std::size_t f=0;f<path.size();++f) {
+            frame=Good(service->Prepare(frame.get(),command(f)));
+            check("recycled reuse",f,*rebuilt[f],*frame);
+        }
+    }
+    std::cout<<"resident_frames="<<path.size()<<" instances="<<count<<" view_transitions="<<transitions<<" identical=1\n";
+}
 void VariantActions() {
     std::vector<MdxSequence> names(5);
     names[0].name="Stand Upgrade Second"; names[1].name="Stand Upgrade Firstly";
@@ -1053,7 +1157,7 @@ void Submission() {
 }
 int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
-    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); ParallelPoses(2600); ParallelPoses(2600,true); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
+    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); ParallelPoses(2600); ParallelPoses(2600,true); ResidentFrames(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
     else if(which=="submission") Submission();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();

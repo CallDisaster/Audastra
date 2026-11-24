@@ -74,6 +74,8 @@ struct AnimationLimits {
     bool enablePremPreview = false;
     // 姿势求值并行数（含调用线程）；0=按本机核心自动。只影响快慢，输出与线程数无关。
     std::uint32_t poseWorkers = 0;
+    // 逐实例布局固定时沿用上一帧数组，只重写视野内与刚出视野的实例；false 时逐实例重建（测试用来对照），输出逐位相同。
+    bool reusePreviousFrame = true;
 };
 // 所有编辑器交互入口共用已核实的 1.27a 按动作原序取键政策；不能用于
 // 严格回放、保存或兼容性认证。几何、粒子、内存预算及坏模型保留仍由宿主显式选择。
