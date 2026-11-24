@@ -2099,6 +2099,7 @@ void TestEditorVisibility(const War3RenderPluginApiV2* api, const War3RenderCrea
             Require(receipt.skin.matrixUploadCount==uploads+1,"prepared commit upload count wrong");
             fixture.skin.groups[1].values[9]=500; fixture.Bind(11,23); update.expected=target; update.presentationRevision=9;
             Require(submitPrepared(renderer.handle,&update,ticket,&used)==0 && used==0,"consumed ticket did not fall back to a full copy");
+            Require(api->getEditorPresentationTarget(renderer.handle,&target)==0 && target.contentVersion==23,"full-copy content target wrong");
             RequireWorldColor(capture(9),receipt.frame.view,500,0,{0,255,0},1);
             fixture.skin.groups[1].values[9]=400; fixture.Bind(11,24); input=dynamicOnly();
             Require(prepare(renderer.handle,&input,&ticket)==0 && ticket!=0,"second prepare rejected");
