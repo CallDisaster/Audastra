@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.1.21",
+  "version": "0.1.22",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "66f3194bcd7aaf6f29af47ce2aa48e6265e0978d",
+  "commit": "92461b6859b1e0cde3da6702f75506741cc0aace",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "3dcbdaa621f24710f6cae97bc67c1d60ffd079366fddbbe1eef376c3516d977b"
+      "sha256": "156087a83e9e4f940793a5851a9b707ac9a9dbf7d737132d0480996d0dbd36ca"
     },
     {
       "path": "COPYRIGHT.md",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "47b3e006925b547a8497248652b5aa51aeb82b07e9cda2fa4598cc03054f36cc"
+      "sha256": "7c86162f37cad152a7359e04512ed930ce174c63f6b641e33dadfd15309f2914"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -142,7 +142,7 @@
     },
     {
       "path": "include/War3MapCore/RenderPluginV2.h",
-      "sha256": "068907611e5232cfe4cc1b0f9a3403f7469098cbdf8d877f1d6d9d474e8ef72c"
+      "sha256": "eb58b211a2315e02360c79d858e566fd4ad3290f95ca6f6c6b9687365c53da8b"
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
@@ -558,7 +558,7 @@
     },
     {
       "path": "tests/RenderSkinAssetAppendTests.cpp",
-      "sha256": "58cbc60bd6ff1a54835140a6c2c8d18983e9257962100ae32c303cef47dc2bae"
+      "sha256": "84b46873ef6eeac7a6304d7a39461f5990e67ae5f90651fd533ff08ad1e89c5e"
     },
     {
       "path": "tests/RenderSkinFixture.h",
@@ -566,7 +566,7 @@
     },
     {
       "path": "tests/RenderSkinInputTests.cpp",
-      "sha256": "2733e28e4535619dd5a03ed63c5e3c0cc91e7a74f665bbbec696995b26b2ca17"
+      "sha256": "8780565fdf42c5f005e2a1fa094ed9445ceff84ef4dfcd39e29cfc644d10b81d"
     },
     {
       "path": "tests/RenderSkinRosterTests.cpp",
@@ -594,7 +594,7 @@
     },
     {
       "path": "tests/StaticSamplerInputTests.cpp",
-      "sha256": "f0b3c007b381ccfd2608b1a53dd16f0ebe2b0cf62698317423b9c2ffc56fce67"
+      "sha256": "9e9bd85387be8759dfdc82ef16d85f5154a978206d77acfbb7d331ff8e568187"
     },
     {
       "path": "tests/TerrainBlightContractTests.cpp",

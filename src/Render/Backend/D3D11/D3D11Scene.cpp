@@ -479,7 +479,8 @@ void D3D11Scene::DrawTerrainBatches(bool translucent) {
         const bool textured = batch.textureIndex != WAR3_RENDER_HEIGHT_COLOR_TEXTURE;
         const bool isTranslucent = textured && (batch.textureIndex & WAR3_RENDER_TERRAIN_TRANSLUCENT) != 0;
         if (isTranslucent != translucent) continue;
-        const bool blended = isTranslucent || (textured && (batch.textureIndex & WAR3_RENDER_TERRAIN_ALPHA_BLEND) != 0);
+        // 带贴图的地表层一律按贴图 alpha 混合（基础层也是，与游戏一致；不透明贴图结果不变）。
+        const bool blended = textured;
         const auto slot = batch.textureIndex & ~(WAR3_RENDER_TERRAIN_ALPHA_BLEND | WAR3_RENDER_TERRAIN_TRANSLUCENT);
         // 每批明确复位，防止荒芜 UV 泄漏到下一帧或高度色/普通地表批次。
         TextureParameters textureParameters{};
@@ -559,7 +560,8 @@ void D3D11Scene::DrawTerrainGrid(bool translucent) {
         bind(false);
         context_->IASetIndexBuffer(terrainGridGpu_.baseIndices.Get(), DXGI_FORMAT_R32_UINT, 0);
         for (const auto& batch : terrainGridGpu_.baseBatches) {
-            material(batch.textureIndex, false, false, nullptr);
+            // 基础层同样按贴图 alpha 混合；高度色（无贴图）批次不受影响。
+            material(batch.textureIndex, batch.textureIndex != WAR3_RENDER_HEIGHT_COLOR_TEXTURE, false, nullptr);
             context_->DrawIndexed(batch.indexCount, batch.firstIndex, 0);
         }
         // transition仍是原32B VB；独立blight随后回到base虚拟角，不借transition。

@@ -196,9 +196,11 @@ float4 PSTerrain(TerrainOutput input) : SV_TARGET {
     float2 dy = ddy(input.uv) * terrainDimensions;
     float2 cell = min(floor(saturate(input.uv) * terrainCells), terrainCells - 1.0);
     float4 color = SampleTerrainBounded(input.uv, cell, dx, dy);
-    // 基础层不透明；过渡层输出遮罩 alpha，由混合状态叠在基础层上。
+    // 与游戏相同，基础层和过渡层都按贴图 alpha 混合：地图把某种地表换成全透明贴图时，
+    // 这种地表整格不画、不写深度，下面的模型会透出来。alpha 为 0 的像素直接丢弃。
     // 顶点颜色是宿主给的光照（未提供光照的宿主为白色，结果不变）。
     float alpha = terrainAlphaBlend > 0.5 ? color.a : 1.0;
+    if (alpha <= 0.0) discard;
     float3 lit = saturate(color.rgb * input.color);
     if (shadowDarkness > 0.0) {
         float2 shadowUv = (input.world.xy - shadowOrigin) * shadowScale;

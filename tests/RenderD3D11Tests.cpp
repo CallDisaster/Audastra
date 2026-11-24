@@ -417,8 +417,8 @@ std::vector<std::uint8_t> TestTerrain(const RendererOwner& renderer) {
     Require(renderer.api->resize(renderer.handle, 320, 240) == 0, "terrain initial size rejected");
     const War3RenderCameraV2 camera{sizeof(camera), 0, 0, 0, 3500, -1.5707963f, 1.5f};
     Require(renderer.api->setCamera(renderer.handle, &camera) == 0, "terrain camera rejected");
-    // 原创2x2 RGBA：上红绿、下蓝黄。不同alpha验证只显示底层RGB，不做mask混合。
-    std::vector<std::uint8_t> rgba{255,0,0,0, 0,255,0,85, 0,0,255,170, 255,255,0,255};
+    // 原创2x2 RGBA：上红绿、下蓝黄，均不透明（基础层按 alpha 混合另在后面单独核）。
+    std::vector<std::uint8_t> rgba{255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255};
     const auto originalRgba = rgba;
     War3RenderTextureRgbaV2 texture{sizeof(texture), 2, 2, rgba.size(), rgba.data()};
     std::array<War3RenderTerrainVertexV2, 4> vertices{{
@@ -517,7 +517,7 @@ std::vector<std::uint8_t> TestTerrain(const RendererOwner& renderer) {
     const auto mixedView = ReadView(renderer);
     RequireWorldColor(mixedFrame,mixedView,-500,-500,{255,0,0},1);
     RequireWorldColor(mixedFrame,mixedView,500,500,{255,0,255},1);
-    // 过渡层：同坐标第二个 quad。带混合标志时按贴图 alpha 叠在红色基础层上；不带标志时忽略 alpha 覆盖。
+    // 过渡层：同坐标第二个 quad 按贴图 alpha 叠在红色基础层上。与游戏一致，带不带过渡层标志都按 alpha 混合。
     {
         std::vector<std::uint8_t> red(16), blue(16);
         for (std::size_t i = 0; i < 4; ++i) {
@@ -537,18 +537,33 @@ std::vector<std::uint8_t> TestTerrain(const RendererOwner& renderer) {
         RequireWorldColor(blended, ReadView(renderer), 0, 0, {127,0,128}, 3);
         Require(blended[3] == 255, "overlay must keep target alpha opaque");
         layered[1].textureIndex = 1; blendScene.documentRevision = revision + 8;
-        Require(renderer.api->submitTerrainScene(renderer.handle, &blendScene) == 0, "opaque second layer rejected");
-        const auto opaque = Capture(renderer,160,120,revision+8);
-        RequireWorldColor(opaque, ReadView(renderer), 0, 0, {0,0,255}, 1);
+        Require(renderer.api->submitTerrainScene(renderer.handle, &blendScene) == 0, "unflagged second layer rejected");
+        const auto unflagged = Capture(renderer,160,120,revision+8);
+        RequireWorldColor(unflagged, ReadView(renderer), 0, 0, {127,0,128}, 3);
         layered[1].textureIndex = 2u | WAR3_RENDER_TERRAIN_ALPHA_BLEND; blendScene.documentRevision = revision + 9;
         Require(renderer.api->submitTerrainScene(renderer.handle, &blendScene) != 0, "flagged out-of-range texture accepted");
+    }
+    // 基础层也按贴图 alpha 混合（游戏如此）：全透明贴图那一格不画，透出背景清屏色；半透明按 alpha 混入背景。
+    {
+        vertices = originalVertices; batch = {0,6,0};
+        for (const auto [alpha, expected] : {std::pair<std::uint8_t, std::array<int, 3>>{0, {11,15,19}},
+                 std::pair<std::uint8_t, std::array<int, 3>>{128, {133,7,9}}}) {
+            const std::vector<std::uint8_t> uniform{255,0,0,alpha, 255,0,0,alpha, 255,0,0,alpha, 255,0,0,alpha};
+            const War3RenderTextureRgbaV2 see{sizeof(see),2,2,uniform.size(),uniform.data()};
+            input.textures = &see; input.batchCount = 1; input.batches = &batch;
+            input.documentRevision = revision + (alpha == 0 ? 11 : 12);
+            Require(renderer.api->submitTerrainScene(renderer.handle,&input) == 0, "translucent base fixture rejected");
+            const auto frame = Capture(renderer,160,120,input.documentRevision);
+            RequireWorldColor(frame, ReadView(renderer), 0, 0, expected, 2);
+        }
+        input.textures = &texture;
     }
     // 显式截图参数输出原创2x2贴图结果，方便根线程核查通道与方向。
     vertices = originalVertices; batch = {0,6,0};
     texture = {sizeof(texture),2,2,rgba.size(),rgba.data()};
-    input.batchCount = 1; input.batches = &batch; input.documentRevision = revision + 10;
+    input.batchCount = 1; input.batches = &batch; input.documentRevision = revision + 13;
     Require(renderer.api->submitTerrainScene(renderer.handle,&input) == 0, "final colored fixture rejected");
-    auto screenshot = Capture(renderer,160,120,revision+10);
+    auto screenshot = Capture(renderer,160,120,revision+13);
     std::cout << "terrain base mip0: original 2x2 RGBA, atlas UV, immutable input, invalid preservation, height switch and resize passed\n";
     return screenshot;
 }
