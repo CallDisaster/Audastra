@@ -64,7 +64,7 @@ Status EditorProject::ConfigureRealtimeTerrainPathing() {
 }
 
 void EditorProject::LoadMapDocument(bool afterMapSave) {
-    if (!afterMapSave && mapDataUndoStack_) mapDataUndoStack_->clear();
+    if (!afterMapSave) for (auto* stack : MapDataUndoStacks()) if (stack) stack->clear();
     const auto report = [this](const Diagnostic& diagnostic, bool error) {
         AddDiagnostic(error ? tr("错误") : tr("警告"), tr("地图数据"),
             QString::fromUtf8(diagnostic.code), QString::fromUtf8(diagnostic.message));

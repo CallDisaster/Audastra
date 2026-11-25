@@ -74,8 +74,9 @@ private:
 
     EditorProject& project_;
     std::array<Track, 8> tracks_;
-    QMetaObject::Connection mapConnection_;
-    const QUndoCommand* firstMapCommand_ = nullptr;
+    // 世界、地图设置、声音三个地图数据撤销栈各自报告撤销预算。
+    std::array<QMetaObject::Connection, 3> mapConnections_;
+    std::array<const QUndoCommand*, 3> firstMapCommands_{};
     std::uint64_t revision_ = 0;
     bool installing_ = false;
 };

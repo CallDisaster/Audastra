@@ -175,11 +175,12 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
             || sender() != triggerObserverStack.data()) return;
         ScheduleRecovery();
     });
-    connect(project_->mapDataUndoStack_, &QUndoStack::indexChanged, this, [this]() {
-        (void)project_->ObserveMapDataEdit("修改公共地图数据");
-        ScheduleRecovery();
-        UpdateEditDirtyFlags();
-    });
+    for (auto* stack : project_->MapDataUndoStacks())
+        connect(stack, &QUndoStack::indexChanged, this, [this]() {
+            (void)project_->ObserveMapDataEdit("修改公共地图数据");
+            ScheduleRecovery();
+            UpdateEditDirtyFlags();
+        });
     for (int i = 0; i < 7; ++i)
         connect(project_->objectUndoStacks_[i], &QUndoStack::indexChanged, this, [this, i]() {
             ObserveObjectEdit(i);

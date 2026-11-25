@@ -173,8 +173,8 @@ Status SetCatalogFloat(float& output, MapDataKind kind, std::string_view fieldId
 
 MapEntitiesModule::MapEntitiesModule(QtProject::EditorProject& project) : project_(project) {
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, &MapEntitiesModule::Refresh);
-    if (project_.mapDataUndoStack_)
-        connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, &MapEntitiesModule::Refresh);
+    for (auto* stack : {project_.mapDataUndoStack_, project_.mapSettingsUndoStack_})
+        if (stack) connect(stack, &QUndoStack::indexChanged, this, &MapEntitiesModule::Refresh);
 }
 
 MapEntitiesModule::~MapEntitiesModule() { delete page_.data(); }

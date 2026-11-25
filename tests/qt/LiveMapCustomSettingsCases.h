@@ -14,39 +14,39 @@ void LiveEditorToolsTests::CustomSettingsShareOriginalUndoAndRejectStaleCas() {
     auto edit = fixture.Context(); edit["settings_binding"] = summary.value("settings_binding"); edit["dry_run"] = true;
     edit["operations"] = QJsonArray{QJsonObject{{"section", "upgrades"}, {"op", "append"}, {"expected_count", 0},
         {"value", QJsonObject{{"player_mask", 1}, {"id_hex", "52303031"}, {"level", 1}, {"availability", 2}}}}};
-    const auto before = fixture.project.editRevision_.Revision(); const auto undo = fixture.project.mapDataUndoStack_->count();
+    const auto before = fixture.project.editRevision_.Revision(); const auto undo = fixture.project.mapSettingsUndoStack_->count();
     auto preview = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
-    QVERIFY(preview.value("has_changes").toBool()); QCOMPARE(fixture.project.editRevision_.Revision(), before); QCOMPARE(fixture.project.mapDataUndoStack_->count(), undo);
+    QVERIFY(preview.value("has_changes").toBool()); QCOMPARE(fixture.project.editRevision_.Revision(), before); QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), undo);
     edit["dry_run"] = false; auto committed = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY2(committed.value("ok").toBool(), qPrintable(Explain(committed)));
-    QCOMPARE(fixture.project.mapDataUndoStack_->count(), undo + 1); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.size(), std::size_t{1});
+    QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), undo + 1); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.size(), std::size_t{1});
     QVERIFY(!fixture.tools->Invoke("map_custom_settings_edit", edit).value("ok").toBool());
-    fixture.project.mapDataUndoStack_->undo(); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.empty());
-    fixture.project.mapDataUndoStack_->redo(); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.size(), std::size_t{1});
+    fixture.project.mapSettingsUndoStack_->undo(); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.empty());
+    fixture.project.mapSettingsUndoStack_->redo(); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.size(), std::size_t{1});
     request = fixture.Context(); request["section"] = "summary"; summary = fixture.tools->Invoke("map_custom_settings_get", request);
     auto same = fixture.Context(); same["settings_binding"] = summary.value("settings_binding"); same["dry_run"] = false;
     same["operations"] = QJsonArray{QJsonObject{{"section", "upgrades"}, {"op", "update"}, {"index", 0}, {"expected_row_key", committed.value("step_keys").toArray().first()},
         {"value", QJsonObject{{"player_mask", 1}, {"id_hex", "52303031"}, {"level", 1}, {"availability", 2}}}}};
-    const auto beforeNoOp = fixture.project.mapDataUndoStack_->count();
+    const auto beforeNoOp = fixture.project.mapSettingsUndoStack_->count();
     const auto revisionNoOp = fixture.project.editRevision_.Revision();
     auto unchanged = fixture.tools->Invoke("map_custom_settings_edit", same); QVERIFY2(unchanged.value("ok").toBool(), qPrintable(Explain(unchanged)));
-    QVERIFY(!unchanged.value("has_changes").toBool()); QCOMPARE(fixture.project.mapDataUndoStack_->count(), beforeNoOp); QCOMPARE(fixture.project.editRevision_.Revision(), revisionNoOp);
+    QVERIFY(!unchanged.value("has_changes").toBool()); QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), beforeNoOp); QCOMPARE(fixture.project.editRevision_.Revision(), revisionNoOp);
     edit = fixture.Context(); edit["settings_binding"] = summary.value("settings_binding"); edit["dry_run"] = false;
     edit["operations"] = QJsonArray{QJsonObject{{"section", "tech_restrictions"}, {"op", "append"}, {"expected_count", 0}, {"value", QJsonObject{{"player_mask", 1}, {"id_hex", "75303031"}}}},
         QJsonObject{{"section", "tech_restrictions"}, {"op", "append"}, {"expected_count", 0}, {"value", QJsonObject{{"player_mask", 1}, {"id_hex", "69303031"}}}}};
-    const auto count = fixture.project.mapDataUndoStack_->count();
+    const auto count = fixture.project.mapSettingsUndoStack_->count();
     auto rejected = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY(!rejected.value("ok").toBool()); QCOMPARE(ErrorCode(rejected), QString("SETTINGS_COUNT_STALE"));
-    QCOMPARE(fixture.project.mapDataUndoStack_->count(), count); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->techRestrictions.empty());
+    QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), count); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->techRestrictions.empty());
     if (Script::RandomMapInitializationAvailable()) {
         edit = fixture.Context(); edit["settings_binding"] = summary.value("settings_binding"); edit["dry_run"] = true;
         edit["operations"] = QJsonDocument::fromJson(QByteArray::fromStdString(C::Fixture::RandomUnitOperationsJson())).array();
         auto randomPreview = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY2(randomPreview.value("ok").toBool(), qPrintable(Explain(randomPreview)));
-        QVERIFY(randomPreview.value("can_commit").toBool()); QCOMPARE(fixture.project.mapDataUndoStack_->count(), count);
+        QVERIFY(randomPreview.value("can_commit").toBool()); QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), count);
         edit["dry_run"] = false; auto random = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY2(random.value("ok").toBool(), qPrintable(Explain(random)));
-        QCOMPARE(fixture.project.mapDataUndoStack_->count(), count + 1);
+        QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), count + 1);
         QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().number, 7);
         QVERIFY(!fixture.tools->Invoke("map_custom_settings_edit", edit).value("ok").toBool());
-        fixture.project.mapDataUndoStack_->undo(); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.empty());
-        fixture.project.mapDataUndoStack_->redo(); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows.front().chance, 30);
+        fixture.project.mapSettingsUndoStack_->undo(); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.empty());
+        fixture.project.mapSettingsUndoStack_->redo(); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows.front().chance, 30);
         auto frozen = War3Map::QtProject::CaptureProjectMapCustomSettingsValidation(fixture.project); QVERIFY(frozen.Succeeded());
         ++fixture.project.luaMapTargetGeneration_;
         const auto changedTarget = frozen.value->verify(); QVERIFY(!changedTarget.Succeeded());
@@ -56,9 +56,9 @@ void LiveEditorToolsTests::CustomSettingsShareOriginalUndoAndRejectStaleCas() {
         summary = fixture.tools->Invoke("map_custom_settings_get", request);
         edit = fixture.Context(); edit["settings_binding"] = summary.value("settings_binding"); edit["dry_run"] = true;
         edit["operations"] = QJsonDocument::fromJson(QByteArray::fromStdString(C::Fixture::RandomUnitOperationsJson())).array();
-        const auto targetUndo = fixture.project.mapDataUndoStack_->count();
+        const auto targetUndo = fixture.project.mapSettingsUndoStack_->count();
         auto blocked = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY(!blocked.value("ok").toBool());
-        QCOMPARE(ErrorCode(blocked), QString("SETTINGS_RANDOM_LUA_UNSUPPORTED")); QCOMPARE(fixture.project.mapDataUndoStack_->count(), targetUndo);
+        QCOMPARE(ErrorCode(blocked), QString("SETTINGS_RANDOM_LUA_UNSUPPORTED")); QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), targetUndo);
     }
 }
 
@@ -79,7 +79,7 @@ void LiveEditorToolsTests::SettingsPageEditsTechnologyThroughSharedService() {
     QVERIFY(page());
     auto* add = page()->findChild<QPushButton*>(QStringLiteral("techUpgradesAdd"));
     QVERIFY(add && !add->isHidden());
-    const auto undo = fixture.project.mapDataUndoStack_->count();
+    const auto undo = fixture.project.mapSettingsUndoStack_->count();
     QString formProblem;
     bool filled = false;
     QTimer driver;
@@ -110,7 +110,7 @@ void LiveEditorToolsTests::SettingsPageEditsTechnologyThroughSharedService() {
     add->click();
     QVERIFY(filled);
     QVERIFY2(formProblem.isEmpty(), qPrintable(formProblem));
-    QTRY_COMPARE(fixture.project.mapDataUndoStack_->count(), undo + 1);
+    QTRY_COMPARE(fixture.project.mapSettingsUndoStack_->count(), undo + 1);
     const auto upgrades = fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades;
     QCOMPARE(upgrades.size(), std::size_t{1});
     QCOMPARE(upgrades[0].level, 1);
@@ -137,9 +137,9 @@ void LiveEditorToolsTests::SettingsPageEditsTechnologyThroughSharedService() {
     }
     table->selectRow(0);
     page()->findChild<QPushButton*>(QStringLiteral("techUpgradesDelete"))->click();
-    QTRY_COMPARE(fixture.project.mapDataUndoStack_->count(), undo + 2);
+    QTRY_COMPARE(fixture.project.mapSettingsUndoStack_->count(), undo + 2);
     QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.empty());
-    fixture.project.mapDataUndoStack_->undo();
+    fixture.project.mapSettingsUndoStack_->undo();
     QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->upgrades.size(), std::size_t{1});
     QTRY_COMPARE(page()->findChild<QTableWidget*>(QStringLiteral("techUpgrades"))->rowCount(), 1);
 
@@ -148,11 +148,11 @@ void LiveEditorToolsTests::SettingsPageEditsTechnologyThroughSharedService() {
     QVERIFY(gameData);
     gameData->setCurrentIndex(gameData->currentIndex() == 0 ? 1 : 0);
     QVERIFY(module.HasPendingDraft());
-    const auto pendingUndo = fixture.project.mapDataUndoStack_->count();
+    const auto pendingUndo = fixture.project.mapSettingsUndoStack_->count();
     page()->findChild<QTableWidget*>(QStringLiteral("techUpgrades"))->selectRow(0);
     page()->findChild<QPushButton*>(QStringLiteral("techUpgradesDelete"))->click();
     QCoreApplication::processEvents();
-    QCOMPARE(fixture.project.mapDataUndoStack_->count(), pendingUndo);
+    QCOMPARE(fixture.project.mapSettingsUndoStack_->count(), pendingUndo);
     QVERIFY(page()->findChild<QLabel*>(QStringLiteral("formProblem"))->text().contains(QStringLiteral("未应用")));
 }
 
@@ -228,7 +228,7 @@ void LiveEditorToolsTests::SettingsPageEditsRandomTables() {
     }
 
     // 经页面表单把 Camp 第二行概率改为 35：实际提交，一个撤销记录。
-    const auto undo = fixture.project.mapDataUndoStack_->count();
+    const auto undo = fixture.project.mapSettingsUndoStack_->count();
     QString problem;
     bool driven = false;
     QTimer driver;
@@ -250,12 +250,12 @@ void LiveEditorToolsTests::SettingsPageEditsRandomTables() {
     page()->findChild<QPushButton*>(QStringLiteral("techRandomEdit"))->click();
     QVERIFY(driven);
     QVERIFY2(problem.isEmpty(), qPrintable(problem));
-    QTRY_COMPARE(fixture.project.mapDataUndoStack_->count(), undo + 1);
+    QTRY_COMPARE(fixture.project.mapSettingsUndoStack_->count(), undo + 1);
     QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows[1].chance, 35);
     QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().name, std::string("Camp"));
     QTRY_COMPARE(page()->findChild<QTreeWidget*>(QStringLiteral("techRandomTables"))->topLevelItem(0)->child(0)->child(1)->text(0),
         QStringLiteral("35%"));
-    fixture.project.mapDataUndoStack_->undo();
+    fixture.project.mapSettingsUndoStack_->undo();
     QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows[1].chance, 40);
 
     // 选了 Lua 保存目标：随机表与科技表都只读，原因在页顶。

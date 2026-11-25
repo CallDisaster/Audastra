@@ -1499,9 +1499,10 @@ void WorldModuleTests::TerrainFogFollowsMapSettingsFlag() {
     QVERIFY(settingsPage.ApplyDraft());
     QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_LINEAR});
     QCOMPARE(environmentRecord.fogEnd, 5000.0f);
-    project.mapDataUndoStack_->undo();
+    // 雾效属于地图设置撤销栈；世界页仍随之刷新环境。
+    project.mapSettingsUndoStack_->undo();
     QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_NONE});
-    project.mapDataUndoStack_->redo();
+    project.mapSettingsUndoStack_->redo();
     QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_LINEAR});
     QTest::qWait(200);
     QCOMPARE(state.terrainSubmits, terrainSubmits);

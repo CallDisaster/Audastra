@@ -7,13 +7,29 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <map>
 #include <new>
+#include <optional>
 #include <stdexcept>
+#include <string_view>
+#include <unordered_set>
 
 namespace War3Map::MapData {
 namespace {
 template<class T> Result<T> HistoryFailure(const char* code, const char* message) {
     return Result<T>::Failure("Terrain.History", code, message);
+}
+// 保存站的命令集合必须恰为线性历史的前savedIndex条。多分区交错撤销后，
+// 前缀内部可按分区线性化重排；恢复时仍逐字节核对重放出的物理保存站。
+template<class List>
+bool SavedPrefixMatches(const List& saved, const List& line, std::size_t savedIndex, std::uint64_t session) {
+    if (saved.size() != savedIndex || savedIndex > line.size()) return false;
+    std::unordered_set<std::uint64_t> expected;
+    for (const auto& command : saved)
+        if (!command || command->sessionIdentity != session || !expected.insert(command->logicalIdentity).second) return false;
+    for (std::size_t i = 0; i < savedIndex; ++i)
+        if (!line[i] || line[i]->sessionIdentity != session || !expected.contains(line[i]->logicalIdentity)) return false;
+    return true;
 }
 std::string HistoryName(std::string name) {
     std::replace(name.begin(), name.end(), '\\', '/');
@@ -33,37 +49,49 @@ Result<MapDataEditSession::TerrainHistoryLine> MapDataEditSession::CaptureTerrai
     if (!cost.Succeeded() || !cost.value) return fail("TERRAIN_HISTORY_BUDGET");
     try {
         TerrainHistoryLine line;
-        line.commands.reserve(std::min(history_.size(), std::size_t{128}));
-        std::vector<std::shared_ptr<const Command>> currentPrefix;
-        std::size_t logicalCursor = 0;
-        for (std::size_t i = 0; i < history_.size(); ++i) {
-            if (i == cursor_) currentPrefix.assign(line.commands.begin(), line.commands.begin() + logicalCursor);
-            const auto& command = history_[i];
-            if (!command || command->sessionIdentity != sessionIdentity_ || !command->logicalIdentity)
-                return fail("TERRAIN_HISTORY_BRANCH");
-            if (!command->logicalForward) {
-                if (!logicalCursor || line.commands[logicalCursor - 1]->logicalIdentity != command->logicalIdentity)
-                    return fail("TERRAIN_HISTORY_BRANCH");
-                --logicalCursor;
-            } else if (logicalCursor < line.commands.size()
-                && line.commands[logicalCursor]->logicalIdentity == command->logicalIdentity) {
-                // Qt的真实Redo追加同一logicalIdentity；保留最初正向命令供typed重放。
-                ++logicalCursor;
-            } else {
-                if (std::any_of(line.commands.begin(), line.commands.end(), [&](const auto& old) {
-                    return old->logicalIdentity == command->logicalIdentity;
-                })) return fail("TERRAIN_HISTORY_BRANCH");
-                line.commands.resize(logicalCursor);
-                if (line.commands.size() == 128) return fail("TERRAIN_HISTORY_BUDGET");
-                line.commands.push_back(command); ++logicalCursor;
+        // 单一后进先出历史：与只有一个外层撤销栈时完全相同。返回失败码或空。
+        const auto captureGlobal = [&]() -> const char* {
+            line.commands.reserve(std::min(history_.size(), std::size_t{128}));
+            std::vector<std::shared_ptr<const Command>> currentPrefix;
+            std::size_t logicalCursor = 0;
+            for (std::size_t i = 0; i < history_.size(); ++i) {
+                if (i == cursor_) currentPrefix.assign(line.commands.begin(), line.commands.begin() + logicalCursor);
+                const auto& command = history_[i];
+                if (!command || command->sessionIdentity != sessionIdentity_ || !command->logicalIdentity)
+                    return "TERRAIN_HISTORY_BRANCH";
+                if (!command->logicalForward) {
+                    if (!logicalCursor || line.commands[logicalCursor - 1]->logicalIdentity != command->logicalIdentity)
+                        return "TERRAIN_HISTORY_BRANCH";
+                    --logicalCursor;
+                } else if (logicalCursor < line.commands.size()
+                    && line.commands[logicalCursor]->logicalIdentity == command->logicalIdentity) {
+                    // Qt的真实Redo追加同一logicalIdentity；保留最初正向命令供typed重放。
+                    ++logicalCursor;
+                } else {
+                    if (std::any_of(line.commands.begin(), line.commands.end(), [&](const auto& old) {
+                        return old->logicalIdentity == command->logicalIdentity;
+                    })) return "TERRAIN_HISTORY_BRANCH";
+                    line.commands.resize(logicalCursor);
+                    if (line.commands.size() == 128) return "TERRAIN_HISTORY_BUDGET";
+                    line.commands.push_back(command); ++logicalCursor;
+                }
             }
+            if (cursor_ == history_.size()) currentPrefix.assign(line.commands.begin(), line.commands.begin() + logicalCursor);
+            if (currentPrefix.size() > line.commands.size()
+                || !std::equal(currentPrefix.begin(), currentPrefix.end(), line.commands.begin(), [](const auto& a, const auto& b) {
+                    return a->logicalIdentity == b->logicalIdentity;
+                })) return "TERRAIN_HISTORY_BRANCH";
+            line.currentIndex = currentPrefix.size();
+            return nullptr;
+        };
+        if (const auto failed = captureGlobal()) {
+            // 世界、设置、声音分区交错撤销后不再是单一后进先出；按分区线性化并核对成员字节链。
+            if (std::string_view(failed) != "TERRAIN_HISTORY_BRANCH") return fail(failed);
+            auto lanes = CaptureLaneHistoryLine();
+            if (!lanes) return fail("TERRAIN_HISTORY_BRANCH");
+            if (lanes->commands.size() > 128) return fail("TERRAIN_HISTORY_BUDGET");
+            line = std::move(*lanes);
         }
-        if (cursor_ == history_.size()) currentPrefix.assign(line.commands.begin(), line.commands.begin() + logicalCursor);
-        if (currentPrefix.size() > line.commands.size()
-            || !std::equal(currentPrefix.begin(), currentPrefix.end(), line.commands.begin(), [](const auto& a, const auto& b) {
-                return a->logicalIdentity == b->logicalIdentity;
-            })) return fail("TERRAIN_HISTORY_BRANCH");
-        line.currentIndex = currentPrefix.size();
         // 每个栈槽必须恰好对应一个真实typed命令；四说明字段可另合并，不能偷占Qt索引。
         auto prefix = ExportTerrainJournalCommands(line.commands, false, true);
         if (!prefix.Succeeded() || !prefix.value || prefix.value->strokes.size() != line.commands.size())
@@ -71,6 +99,94 @@ Result<MapDataEditSession::TerrainHistoryLine> MapDataEditSession::CaptureTerrai
         return Output::Success(std::move(line));
     } catch (const std::bad_alloc&) { return fail("TERRAIN_HISTORY_BUDGET"); }
       catch (const std::length_error&) { return fail("TERRAIN_HISTORY_BUDGET"); }
+}
+
+std::optional<MapDataEditSession::TerrainHistoryLine> MapDataEditSession::CaptureLaneHistoryLine() const {
+    // 核心自身的Undo/Redo游标不与外层分区混用。
+    if (cursor_ != history_.size()) return std::nullopt;
+    using CommandList = std::vector<std::shared_ptr<const Command>>;
+    struct Lane { CommandList commands; std::size_t cursor = 0; };
+    std::map<std::uint32_t, Lane> lanes;
+    std::unordered_set<std::uint64_t> alive;
+    for (const auto& command : history_) {
+        if (!command || command->sessionIdentity != sessionIdentity_ || !command->logicalIdentity) return std::nullopt;
+        auto& lane = lanes[CommandLane(*command)];
+        const auto identity = command->logicalIdentity;
+        if (!command->logicalForward) {
+            if (!lane.cursor || lane.commands[lane.cursor - 1]->logicalIdentity != identity) return std::nullopt;
+            --lane.cursor;
+        } else if (lane.cursor < lane.commands.size() && lane.commands[lane.cursor]->logicalIdentity == identity) {
+            ++lane.cursor; // 重做保留最初正向命令。
+        } else {
+            if (alive.contains(identity)) return std::nullopt;
+            for (auto i = lane.cursor; i < lane.commands.size(); ++i) alive.erase(lane.commands[i]->logicalIdentity);
+            lane.commands.resize(lane.cursor);
+            lane.commands.push_back(command); ++lane.cursor; alive.insert(identity);
+        }
+    }
+    CommandList applied, pending;
+    for (const auto& [identity, lane] : lanes) {
+        applied.insert(applied.end(), lane.commands.begin(), lane.commands.begin() + static_cast<std::ptrdiff_t>(lane.cursor));
+        // 被拒并移出外层栈的未应用步骤不再导出为可重做历史。
+        if (identity < MapDataEditLaneCount)
+            pending.insert(pending.end(), lane.commands.begin() + static_cast<std::ptrdiff_t>(lane.cursor), lane.commands.end());
+    }
+    // 每个分区内逻辑身份递增即分区顺序；按身份合并保持各分区顺序不变。
+    const auto byIdentity = [](const auto& a, const auto& b) { return a->logicalIdentity < b->logicalIdentity; };
+    std::sort(applied.begin(), applied.end(), byIdentity);
+    std::sort(pending.begin(), pending.end(), byIdentity);
+    const auto find = [](const CommandList& list, std::uint64_t identity) -> std::shared_ptr<const Command> {
+        const auto found = std::find_if(list.begin(), list.end(), [&](const auto& command) { return command->logicalIdentity == identity; });
+        return found == list.end() ? nullptr : *found;
+    };
+    TerrainHistoryLine line;
+    line.currentIndex = applied.size();
+    line.commands = applied;
+    line.commands.insert(line.commands.end(), pending.begin(), pending.end());
+    // 保存站与当前位置都必须是线性历史的前缀：恢复先重现物理保存站，再逆退到当前位置。
+    // 两者为包含关系时，较小的集合排在前面；各段内部按身份递增，分区顺序不变。
+    // 不是包含关系时保持“已应用在前”，导出会按分支拒绝，新的地图保存仍可冻结保存站。
+    if (terrainHistoryEpoch_ && !terrainHistoryEpoch_->savedCommands.empty()) {
+        std::unordered_set<std::uint64_t> saved;
+        for (const auto& command : terrainHistoryEpoch_->savedCommands) if (command) saved.insert(command->logicalIdentity);
+        const auto isApplied = [&](const auto& command) { return find(applied, command->logicalIdentity) != nullptr; };
+        const bool savedApplied = std::all_of(saved.begin(), saved.end(), [&](auto identity) { return find(applied, identity) != nullptr; });
+        const bool appliedSaved = std::all_of(applied.begin(), applied.end(), [&](const auto& command) {
+            return saved.contains(command->logicalIdentity);
+        }) && std::all_of(saved.begin(), saved.end(), [&](auto identity) {
+            return find(applied, identity) || find(pending, identity);
+        });
+        if (savedApplied || appliedSaved) {
+            const auto rank = [&](const auto& command) {
+                const bool inSaved = saved.contains(command->logicalIdentity), live = isApplied(command);
+                return savedApplied ? (inSaved ? 0 : live ? 1 : 2) : (live ? 0 : inSaved ? 1 : 2);
+            };
+            std::stable_sort(line.commands.begin(), line.commands.end(), [&](const auto& a, const auto& b) {
+                const auto left = rank(a), right = rank(b);
+                return left != right ? left < right : a->logicalIdentity < b->logicalIdentity;
+            });
+        }
+    }
+    // 跨分区重排只有在每个成员的字节链仍首尾相接时才可重放。
+    for (std::size_t kind = 0; kind < current_.size(); ++kind) {
+        const std::optional<std::vector<std::byte>>* running = nullptr;
+        for (const auto& command : history_) {
+            const auto found = std::find_if(command->changes.begin(), command->changes.end(),
+                [&](const auto& change) { return Index(change.kind) == kind; });
+            if (found != command->changes.end()) { running = &found->before; break; }
+        }
+        if (!running) continue;
+        for (std::size_t i = 0; i < line.commands.size(); ++i) {
+            if (i == line.currentIndex && *running != current_[kind]) return std::nullopt;
+            for (const auto& change : line.commands[i]->changes) {
+                if (Index(change.kind) != kind) continue;
+                if (change.before != *running) return std::nullopt;
+                running = &change.after;
+            }
+        }
+        if (line.currentIndex == line.commands.size() && *running != current_[kind]) return std::nullopt;
+    }
+    return line;
 }
 
 Result<MapDataEditSession::TerrainHistorySaveLease> MapDataEditSession::PrepareTerrainHistoryForSave(
@@ -162,11 +278,8 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainHistoryJournal(std
         return fail("TERRAIN_HISTORY_BUDGET", "冻结历史超过64MiB或宿主收紧的预算。");
     auto line = CaptureTerrainHistoryLine(maximumBytes - epoch.retainedBytes);
     if (!line.Succeeded() || !line.value) return {{}, line.diagnostics};
-    if (epoch.savedIndex > line.value->commands.size()
-        || epoch.savedCommands.size() != epoch.savedIndex
-        || !std::equal(epoch.savedCommands.begin(), epoch.savedCommands.end(), line.value->commands.begin(), [](const auto& a, const auto& b) {
-            return a->sessionIdentity == b->sessionIdentity && a->logicalIdentity == b->logicalIdentity;
-        })) return fail("TERRAIN_HISTORY_BRANCH", "草稿已保留；保存站所在旧分支已被新编辑截断，未伪造clean位置。");
+    if (!SavedPrefixMatches(epoch.savedCommands, line.value->commands, epoch.savedIndex, sessionIdentity_))
+        return fail("TERRAIN_HISTORY_BRANCH", "草稿已保留；保存站所在旧分支已被新编辑截断，未伪造clean位置。");
     auto journal = ExportTerrainJournalCommands(line.value->commands, true, true);
     if (!journal.Succeeded() || !journal.value) return journal;
     TerrainJournalHistory history;
@@ -215,9 +328,8 @@ std::string MapDataEditSession::TerrainHistoryStateFingerprint() const {
     if (!line.Succeeded() || !line.value)
         return "FTJE:" + (line.diagnostics.empty() ? std::string{"unavailable"} : line.diagnostics.front().code);
     const auto& epoch = *terrainHistoryEpoch_;
-    if (epoch.savedCommands.size() != epoch.savedIndex || epoch.savedIndex > line.value->commands.size()
-        || !std::equal(epoch.savedCommands.begin(), epoch.savedCommands.end(), line.value->commands.begin(),
-            [](const auto& a, const auto& b) { return a->logicalIdentity == b->logicalIdentity; })) return "FTJE:TERRAIN_HISTORY_BRANCH";
+    if (!SavedPrefixMatches(epoch.savedCommands, line.value->commands, epoch.savedIndex, sessionIdentity_))
+        return "FTJE:TERRAIN_HISTORY_BRANCH";
     // 每个ID均由本会话真实不可变Command授予，raw/source另有完整scope；
     // 此处仅做本会话CAS，不重读旧网格或把内存身份写进FTJE。
     std::string scope = "FTJE-command-scope:" + std::to_string(sessionIdentity_) + ":"

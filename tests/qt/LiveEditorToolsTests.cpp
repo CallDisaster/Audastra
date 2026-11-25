@@ -1180,15 +1180,21 @@ void LiveEditorToolsTests::AuxiliaryCrudKeepsOriginalUndoAndProjectRoundtrip() {
     // .forge 只证明工程保存恢复；源图成员仍缺席，不代替 w3x、原版编辑器或游戏验收。
     QVERIFY(!QFileInfo::exists(f.source.filePath("map/war3map.w3r")));
     QVERIFY(!QFileInfo::exists(f.source.filePath("map/war3map.w3c")));
-    for (std::size_t i = steps.size() - 1; i > 0; --i) {
+    // 作者名修改在地图设置撤销栈；区域/镜头命令全在世界栈，撤销它们不回退作者名。
+    auto* settingsUndo = f.project.mapSettingsUndoStack_;
+    QCOMPARE(settingsUndo->count(), 1); QCOMPARE(std::size_t(undo->count()), steps.size() - 2);
+    for (std::size_t i = steps.size() - 1; i > 1; --i) {
         undo->undo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), steps[i - 1]));
     }
+    QCOMPARE(session->Snapshot().Settings()->author, std::string("Earlier GUI author"));
+    settingsUndo->undo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), steps[0]));
     QCOMPARE(session->Snapshot().Member(MapDataKind::Regions).state, MapDataState::Missing);
     QCOMPARE(session->Snapshot().Member(MapDataKind::Cameras).state, MapDataState::Missing);
-    for (std::size_t i = 1; i < steps.size(); ++i) {
+    settingsUndo->redo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), steps[1]));
+    for (std::size_t i = 2; i < steps.size(); ++i) {
         undo->redo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), steps[i]));
     }
-    QCOMPARE(undo->command(0)->text(), QStringLiteral("作者已有地图命令"));
+    QCOMPARE(settingsUndo->command(0)->text(), QStringLiteral("作者已有地图命令"));
     QCOMPARE(f.project.mapDocument_.get(), document); QCOMPARE(f.project.mapEdits_.get(), session);
     QCOMPARE(f.project.mapDataUndoStack_, undo); QCOMPARE(f.Fingerprint(), triggers);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
@@ -1873,7 +1879,8 @@ void LiveEditorToolsTests::SettingsAndStringsKeepOriginalGuiUndoAndPolicy() {
     f.project.ResetEditTracking(); QVERIFY(f.project.editTrackingReady_);
     auto* originalDocument = f.project.mapDocument_.get();
     auto* originalSession = f.project.mapEdits_.get();
-    auto* originalUndo = f.project.mapDataUndoStack_;
+    // MCP改W3I与WTS按触及成员归入地图设置撤销栈。
+    auto* originalUndo = f.project.mapSettingsUndoStack_;
     QVERIFY(originalUndo != nullptr);
     const auto triggers = f.Fingerprint();
     const auto settings = [&] { return f.tools->Invoke("map_settings_get", {}); };
@@ -1939,7 +1946,8 @@ void LiveEditorToolsTests::SettingsAndStringsKeepOriginalGuiUndoAndPolicy() {
     QVERIFY(settings().value("ok").toBool());
     QCOMPARE(f.Context(), beforePolicy); QCOMPARE(originalUndo->count(), 2);
     QCOMPARE(f.project.mapDocument_.get(), originalDocument); QCOMPARE(f.project.mapEdits_.get(), originalSession);
-    QCOMPARE(f.project.mapDataUndoStack_, originalUndo); QCOMPARE(f.Fingerprint(), triggers);
+    QCOMPARE(f.project.mapSettingsUndoStack_, originalUndo); QCOMPARE(f.Fingerprint(), triggers);
+    QCOMPARE(f.project.mapDataUndoStack_->count(), 0);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
 }
 

@@ -46,12 +46,12 @@ Result<MapData::MapDataEditSession::EditReceipt> ApplyProjectMapCustomSettings(E
     const Services::PreparedMapCustomSettingsEdit& plan, const Services::MapCustomSettingsValidation& validation,
     const QString& undoLabel, const std::string& description, const MapData::MapDataPublishValidator& validator) {
     using R = Result<MapData::MapDataEditSession::EditReceipt>;
-    if (!project.mapEdits_ || !project.mapDataUndoStack_) return R::Failure("Map.CustomSettings", "SETTINGS_UNDO_UNAVAILABLE", "当前地图没有共用撤销会话。");
+    if (!project.mapEdits_ || !project.mapSettingsUndoStack_) return R::Failure("Map.CustomSettings", "SETTINGS_UNDO_UNAVAILABLE", "当前地图没有地图设置撤销栈。");
     const auto applied = Services::MapCustomSettingsEditing::Apply(*project.mapEdits_, plan, validation, validator);
     if (!applied.Succeeded()) return {{}, applied.diagnostics};
     if (!plan.HasChanges()) return R::Success({});
     const auto receipt = project.mapEdits_->LastEdit();
-    PushMapDataEdit(project, undoLabel, description);
+    PushMapDataEdit(project, MapData::MapDataEditLane::Settings, undoLabel, description);
     (void)project.ObserveMapDataEdit(description);
     emit project.MapDocumentChanged();
     return R::Success(receipt);

@@ -359,7 +359,7 @@ Shell::ModuleInfo SoundsModule::Info() const {
 }
 
 void SoundsModule::AttachHost(Shell::ModuleHost* host) { host_ = host; }
-QUndoStack* SoundsModule::UndoStack() { return project_.mapDataUndoStack_; }
+QUndoStack* SoundsModule::UndoStack() { return project_.soundUndoStack_; }
 
 QWidget* SoundsModule::Widget() {
     if (!page_) BuildPage();
@@ -995,7 +995,7 @@ Status SoundsModule::Commit(const MapData::SoundsDocument& document,
     }
     const auto status = ApplySerialized(before, *after.value);
     if (!status.Succeeded()) return status;
-    QtProject::PushMapDataEdit(project_, description, "修改声音定义");
+    QtProject::PushMapDataEdit(project_, MapData::MapDataEditLane::Sounds, description, "修改声音定义");
     Refresh(true);
     return Status::Ok();
 }
@@ -1072,7 +1072,7 @@ Status SoundsModule::CommitFields(std::size_t row,
     const auto applied = session->ApplyPreparedFields(*plan.value);
     if (!applied.Succeeded()) return applied;
     (void)project_.ObserveEditState("修改声音定义");
-    QtProject::PushMapDataEdit(project_, tr("修改声音定义"), "修改声音定义");
+    QtProject::PushMapDataEdit(project_, MapData::MapDataEditLane::Sounds, tr("修改声音定义"), "修改声音定义");
     selectedDefinition_ = static_cast<int>(row);
     Refresh(true);
     return Status::Ok();

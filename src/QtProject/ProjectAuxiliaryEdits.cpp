@@ -155,7 +155,7 @@ Status DeleteWorldObjects(EditorProject& project, const AuxiliaryEditBinding& ex
     const auto applied = Services::AuxiliaryEditing::ApplyDeletion(*project.mapEdits_, *plan.value,
         CaptureAuxiliaryReferences(project), BindingValidator(project, expected));
     if (!applied.Succeeded()) return applied;
-    auto group = std::make_unique<QUndoCommand>(label);
+    auto group = std::make_unique<MapDataEditGroupCommand>(project, label);
     auto* auxiliaryStep = new MapDataEditCommand(project, project.mapEdits_->LastEdit(), label,
         "删除区域或镜头", group.get());
     (void)project.ObserveMapDataEdit("删除区域或镜头");

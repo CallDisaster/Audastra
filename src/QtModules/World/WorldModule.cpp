@@ -280,8 +280,9 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
     });
     for (auto* stack : project_.objectUndoStacks_)
         if (stack) connect(stack, &QUndoStack::indexChanged, this, &WorldModule::Refresh);
-    if (project_.mapDataUndoStack_)
-        connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, &WorldModule::RefreshMapEdits);
+    // 地图设置页改玩家起始位置会联动单位摆放，世界视图同样要刷新；声音不影响世界。
+    for (auto* stack : {project_.mapDataUndoStack_, project_.mapSettingsUndoStack_})
+        if (stack) connect(stack, &QUndoStack::indexChanged, this, &WorldModule::RefreshMapEdits);
 }
 
 WorldModule::~WorldModule() {

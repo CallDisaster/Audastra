@@ -250,7 +250,8 @@ void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore() {
         if (descriptionFirst) QVERIFY(editDescriptions());
         QVERIFY(moveStart());
         if (!descriptionFirst) QVERIFY(editDescriptions());
-        QCOMPARE(initialUndo.count(), 2);
+        // 起点联动属于世界撤销栈，四说明属于地图设置撤销栈。
+        QCOMPARE(initialUndo.count(), 1); QCOMPARE(hot.mapSettingsUndoStack_->count(), 1);
         QCOMPARE(hot.mapEdits_->Snapshot().Units()->Serialize().value, std::optional(movedWire));
         QCOMPARE(hot.mapEdits_->Snapshot().Settings()->Serialize().value, std::optional(finalSettingsWire));
         finalDraft = TerrainJournalDraftBytes(*hot.mapEdits_);
@@ -261,7 +262,7 @@ void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore() {
         QCOMPARE(wire.value->at(3), std::byte{'A'});
         const auto journal = MapData::DecodeTerrainStrokeJournal(*wire.value); QVERIFY(journal.Succeeded());
         QCOMPARE(journal.value->strokes.size(), std::size_t{1}); QVERIFY(journal.value->strokes.front().startLocations);
-        initialUndo.clear();
+        initialUndo.clear(); hot.mapSettingsUndoStack_->clear();
     }
     auto opened = PrepareProjectOpen(forge, game); QVERIFY2(opened.Succeeded(), ReadDiagnosticText(opened).c_str());
     QVERIFY(HasReadDiagnostic(opened, "TERRAIN_JOURNAL_RESTORED"));
@@ -271,18 +272,20 @@ void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore() {
     const auto secondForge = std::filesystem::path(projectOutput.filePath("starts-descriptions-again.forge").toStdWString());
     {
         EditorProject cold; QUndoStack undo; cold.mapDataUndoStack_ = &undo;
-        QVERIFY(BindPreparedTerrainJournal(cold, **opened.value, game)); QCOMPARE(undo.count(), 2);
+        auto* settingsUndo = cold.mapSettingsUndoStack_;
+        QVERIFY(BindPreparedTerrainJournal(cold, **opened.value, game));
+        QCOMPARE(undo.count(), 1); QCOMPARE(settingsUndo->count(), 1);
         const auto scope = cold.mapEdits_->TerrainJournalStateFingerprint();
-        // 冷恢复先重放完整起点，再合并最终四说明；两者都必须是可撤销的真实事务。
-        undo.undo(); QCOMPARE(cold.mapEdits_->Snapshot().Units()->Serialize().value, std::optional(movedWire));
+        // 冷恢复先重放完整起点，再合并最终四说明；两者都必须是可撤销的真实事务，分属世界与地图设置栈。
+        settingsUndo->undo(); QCOMPARE(cold.mapEdits_->Snapshot().Units()->Serialize().value, std::optional(movedWire));
         QCOMPARE(cold.mapEdits_->Snapshot().Settings()->Serialize().value, std::optional(onlyMovedSettings));
         undo.undo(); QVERIFY(!cold.mapEdits_->IsDirty());
         QCOMPARE(cold.mapEdits_->Snapshot().Units()->Serialize().value, std::optional(member("war3mapUnits.doo")));
         QCOMPARE(cold.mapEdits_->Snapshot().Settings()->Serialize().value, std::optional(member("war3map.w3i")));
-        undo.redo(); undo.redo(); QCOMPARE(TerrainJournalDraftBytes(*cold.mapEdits_), finalDraft);
+        undo.redo(); settingsUndo->redo(); QCOMPARE(TerrainJournalDraftBytes(*cold.mapEdits_), finalDraft);
         QCOMPARE(cold.mapEdits_->TerrainJournalStateFingerprint(), scope);
         const auto saved = cold.SaveProjectToPath(secondForge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
-        QVERIFY(!HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY")); undo.clear();
+        QVERIFY(!HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY")); undo.clear(); settingsUndo->clear();
     }
     auto reopened = PrepareProjectOpen(secondForge, game); QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());
     QVERIFY(HasReadDiagnostic(reopened, "TERRAIN_JOURNAL_RESTORED"));

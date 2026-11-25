@@ -1970,7 +1970,8 @@ void NativeWorkbenchTests::RunAgentHttpDocumentProbe(bool realMap, AgentHttpProb
             return QString::fromLatin1(QCryptographicHash::hash(QByteArray(reinterpret_cast<const char*>(bytes.data()),
                 static_cast<qsizetype>(bytes.size())), QCryptographicHash::Sha256).toHex());
         };
-        auto* mapEdits = project->MapEdits(); auto* mapUndo = project->mapDataUndoStack_;
+        // 声音字段编辑进入声音撤销栈；导入分支不改地图数据。
+        auto* mapEdits = project->MapEdits(); auto* mapUndo = project->soundUndoStack_;
         auto* mapDocument = project->mapDocument_.get(); auto* triggerDocument = project->triggerDocument_.get();
         auto* triggerUndo = project->triggerUndoStack_;
         QVERIFY(mapEdits && mapUndo && mapDocument && triggerDocument && triggerUndo && project->uiCatalog_);
@@ -2148,7 +2149,7 @@ void NativeWorkbenchTests::RunAgentHttpDocumentProbe(bool realMap, AgentHttpProb
                 QCOMPARE(finalMember.sources[i].name, member.sources[i].name); QCOMPARE(finalMember.sources[i].data, member.sources[i].data);
             }
         }
-        QCOMPARE(project->MapEdits(), mapEdits); QCOMPARE(project->mapDataUndoStack_, mapUndo); QCOMPARE(mapUndo->index(), originalMapIndex);
+        QCOMPARE(project->MapEdits(), mapEdits); QCOMPARE(project->soundUndoStack_, mapUndo); QCOMPARE(mapUndo->index(), originalMapIndex);
         QCOMPARE(project->triggerDocument_.get(), triggerDocument); QCOMPARE(project->triggerUndoStack_, triggerUndo);
         QCOMPARE(triggerUndo->index(), originalTriggerIndex); QCOMPARE(triggerUndo->count(), originalTriggerCount);
         const auto triggerFinal = War3Map::Trigger::WtgWctCodec{}.Serialize(*triggerDocument, *project->uiCatalog_); QVERIFY(triggerFinal.Succeeded());
@@ -7893,7 +7894,7 @@ void NativeWorkbenchTests::ChangesPanelUsesBaselineAndSharedUndoWithoutWritingSo
     QVERIFY(title);
     title->setText(QStringLiteral("R08当前地图名"));
     QVERIFY(window.settingsModule_->ApplyDraft());
-    auto* undo = window.project_->mapDataUndoStack_;
+    auto* undo = window.project_->mapSettingsUndoStack_;
     QVERIFY(undo == window.settingsModule_->UndoStack());
     QCOMPARE(undo->count(), 1);
     window.InvalidateCommandContext();

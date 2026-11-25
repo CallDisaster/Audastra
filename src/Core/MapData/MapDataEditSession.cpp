@@ -33,6 +33,63 @@ Status StartFailure(const char* code, const char* message) {
     return Status::Failure("MapData.Edit", code, message);
 }
 
+// 世界分区拥有的W3I字段：镜头/可玩范围几何、范围标志位与玩家起始坐标；其余字段属于地图设置。
+// 只有两份设置的玩家编号序列完全相同才能逐字段搬运，否则返回false由调用方拒绝合并。
+bool CopyWorldSettingsFields(MapSettings& into, const MapSettings& from) {
+    if (into.players.size() != from.players.size()) return false;
+    for (std::size_t i = 0; i < into.players.size(); ++i)
+        if (into.players[i].number != from.players[i].number) return false;
+    into.cameraBounds = from.cameraBounds; into.cameraMargins = from.cameraMargins;
+    into.playableWidth = from.playableWidth; into.playableHeight = from.playableHeight;
+    into.flags = (into.flags & ~0x400u) | (from.flags & 0x400u);
+    for (std::size_t i = 0; i < into.players.size(); ++i) {
+        into.players[i].startX = from.players[i].startX;
+        into.players[i].startY = from.players[i].startY;
+    }
+    return true;
+}
+
+// 另一分区改过W3I后重放本事务：本事务的改动必须完全落在世界字段或完全落在设置字段，
+// 当前W3I在该侧仍等于预期，才把目标值的该侧字段搬到当前W3I上；另一侧保持当前值。
+// 三份字节都必须能被解析并逐字节写回，任何条件不满足时返回空，不猜测、不部分合并。
+std::optional<std::vector<std::byte>> MergeSettingsReplay(std::span<const std::byte> expected,
+    std::span<const std::byte> target, std::span<const std::byte> current) {
+    const auto parse = [](std::span<const std::byte> bytes) -> std::optional<MapSettings> {
+        auto parsed = MapSettings::Parse(bytes);
+        if (!parsed.Succeeded() || !parsed.value) return std::nullopt;
+        const auto wire = parsed.value->Serialize();
+        if (!wire.Succeeded() || !wire.value || !std::ranges::equal(*wire.value, bytes)) return std::nullopt;
+        return std::move(*parsed.value);
+    };
+    const auto wire = [](const MapSettings& value) -> std::optional<std::vector<std::byte>> {
+        auto bytes = value.Serialize();
+        if (!bytes.Succeeded() || !bytes.value) return std::nullopt;
+        return std::move(*bytes.value);
+    };
+    // base的世界字段换成donor的世界字段后写出。
+    const auto withWorld = [&](const MapSettings& base, const MapSettings& donor) -> std::optional<std::vector<std::byte>> {
+        auto copy = base;
+        if (!CopyWorldSettingsFields(copy, donor)) return std::nullopt;
+        return wire(copy);
+    };
+    const auto before = parse(expected), after = parse(target), now = parse(current);
+    if (!before || !after || !now) return std::nullopt;
+    const auto equals = [](const std::optional<std::vector<std::byte>>& bytes, std::span<const std::byte> other) {
+        return bytes && std::ranges::equal(*bytes, other);
+    };
+    // 预期值换上目标世界字段即等于目标：本事务只改世界字段。
+    if (equals(withWorld(*before, *after), target)) {
+        if (!equals(withWorld(*now, *before), current)) return std::nullopt; // 当前世界字段已不等于预期。
+        return withWorld(*now, *after);
+    }
+    // 目标值换上预期世界字段仍等于目标：两者世界字段相同，本事务只改设置字段。
+    if (equals(withWorld(*after, *before), target)) {
+        if (!equals(withWorld(*before, *now), current)) return std::nullopt; // 当前设置字段已不等于预期。
+        return withWorld(*after, *now);
+    }
+    return std::nullopt;
+}
+
 constexpr std::string_view kTerrainMember = "war3map.w3e";
 constexpr std::string_view kPathingMember = "war3map.wpm";
 std::atomic<std::uint64_t> nextSessionIdentity{1};
@@ -654,10 +711,21 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     for (const auto& change : source.changes) {
         const auto& expected = forward ? change.before : change.after;
         const auto& target = forward ? change.after : change.before;
-        if (current_[Index(change.kind)] != expected)
-            return Status::Failure("MapData.Edit", "MAP_EDIT_STALE",
-                "事务涉及的地图成员已由其他操作修改；未覆盖新内容");
-        command.changes.push_back({change.kind, expected, target});
+        const auto& current = current_[Index(change.kind)];
+        if (current == expected) {
+            command.changes.push_back({change.kind, expected, target});
+            continue;
+        }
+        // 世界与设置分区共用W3I：只在两侧字段互不重叠时搬运本事务的一侧。
+        if (change.kind == MapDataKind::Settings && expected && target && current) {
+            auto merged = MergeSettingsReplay(*expected, *target, *current);
+            if (merged) {
+                command.changes.push_back({change.kind, current, std::move(*merged)});
+                continue;
+            }
+        }
+        return Status::Failure("MapData.Edit", "MAP_EDIT_STALE",
+            "事务涉及的地图成员已由其他操作修改；未覆盖新内容");
     }
     if (!TerrainMatches(source, forward))
         return Status::Failure("MapData.Edit", "MAP_EDIT_STALE", "事务涉及的地形已由其他操作修改；未覆盖新内容");
@@ -696,10 +764,78 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
         command.nativePathingTouched = true;
         command.nativePathingBefore = realtimeNativePathing_;
         command.nativePathingUnavailableBefore = realtimePathingUnavailable_;
-        command.nativePathingAfter = forward ? source.nativePathingAfter : source.nativePathingBefore;
-        command.nativePathingUnavailableAfter = forward ? source.nativePathingUnavailableAfter : source.nativePathingUnavailableBefore;
+        const auto& expectedView = forward ? source.nativePathingBefore : source.nativePathingAfter;
+        const bool expectedUnavailable = forward ? source.nativePathingUnavailableBefore : source.nativePathingUnavailableAfter;
+        // 保存后查看层被清空属于正常基线变化，沿用原有恢复；其他不一致只来自另一分区之后的命令。
+        const bool savedReset = !realtimeNativePathing_ && !realtimePathingUnavailable_;
+        if (savedReset || (realtimeNativePathing_ == expectedView && realtimePathingUnavailable_ == expectedUnavailable)) {
+            command.nativePathingAfter = forward ? source.nativePathingAfter : source.nativePathingBefore;
+            command.nativePathingUnavailableAfter = forward ? source.nativePathingUnavailableAfter : source.nativePathingUnavailableBefore;
+        } else {
+            // 其他分区的命令之后才改过查看层：旧快照不再对应当前摆放，只标记不可用，不回填过期视图。
+            command.nativePathingAfter = nullptr;
+            command.nativePathingUnavailableAfter = true;
+        }
     }
     return CommitCommand(std::move(command));
+}
+
+MapDataEditLane MapDataEditSession::InferEditLane(const Command& command) noexcept {
+    if (!OrdinaryMembersOnly(command) || command.startsAfter) return MapDataEditLane::World;
+    bool settings = false, sounds = false, strings = false;
+    for (const auto& change : command.changes) {
+        switch (change.kind) {
+        case MapDataKind::Settings: settings = true; break;
+        case MapDataKind::Sounds: sounds = true; break;
+        case MapDataKind::Strings: strings = true; break;
+        default: return MapDataEditLane::World;
+        }
+    }
+    if (settings && sounds) return MapDataEditLane::World;
+    if (sounds) return MapDataEditLane::Sounds;
+    if (settings || strings) return MapDataEditLane::Settings;
+    return MapDataEditLane::World;
+}
+
+// 返回true表示命令只含普通成员改动（可另带起始位置联动与查看层），可以归入非世界分区。
+bool MapDataEditSession::OrdinaryMembersOnly(const Command& command) noexcept {
+    return command.terrain.empty() && !command.headerAfter && !command.fullTerrainAfter && !command.pathingAfter
+        && !command.restrictionAfter && !command.boundsAfter && !command.resizeAfter && !command.resizeDraftAfter
+        && !command.specialAfter && !command.terrainStroke;
+}
+
+std::uint32_t MapDataEditSession::CommandLane(const Command& command) const noexcept {
+    const auto found = editLanes_.find(command.logicalIdentity);
+    return found != editLanes_.end() ? found->second : static_cast<std::uint32_t>(InferEditLane(command));
+}
+
+Status MapDataEditSession::AssignEditLane(const EditReceipt& receipt, MapDataEditLane lane) {
+    if (receipt.session_ != this || !receipt.command_ || receipt.SessionIdentity() != sessionIdentity_)
+        return Status::Failure("MapData.Edit", "MAP_EDIT_RECEIPT_INVALID", "编辑回执不属于当前地图会话");
+    const auto value = static_cast<std::uint32_t>(lane);
+    if (value >= MapDataEditLaneCount)
+        return Status::Failure("MapData.Edit", "MAP_EDIT_LANE_INVALID", "未知的撤销分区。");
+    if (lane != MapDataEditLane::World && !OrdinaryMembersOnly(*receipt.command_))
+        return Status::Failure("MapData.Edit", "MAP_EDIT_LANE_INVALID", "含地形、通行、范围或尺寸的命令只能属于世界撤销分区。");
+    const auto [found, inserted] = editLanes_.try_emplace(receipt.command_->logicalIdentity, value);
+    if (!inserted && found->second != value)
+        return Status::Failure("MapData.Edit", "MAP_EDIT_LANE_CONFLICT", "该命令已属于另一个撤销分区。");
+    return Status::Ok();
+}
+
+Status MapDataEditSession::DetachEditLane(const EditReceipt& receipt) {
+    if (receipt.session_ != this || !receipt.command_ || receipt.SessionIdentity() != sessionIdentity_)
+        return Status::Failure("MapData.Edit", "MAP_EDIT_RECEIPT_INVALID", "编辑回执不属于当前地图会话");
+    if (nextDetachedLane_ == std::numeric_limits<std::uint32_t>::max())
+        return Status::Failure("MapData.Edit", "MAP_EDIT_LANE_EXHAUSTED", "私有撤销分区已用尽。");
+    editLanes_[receipt.command_->logicalIdentity] = nextDetachedLane_++;
+    return Status::Ok();
+}
+
+MapDataEditLane MapDataEditSession::EditLane(const EditReceipt& receipt) const noexcept {
+    if (!receipt.command_) return MapDataEditLane::World;
+    const auto lane = CommandLane(*receipt.command_);
+    return lane < MapDataEditLaneCount ? static_cast<MapDataEditLane>(lane) : InferEditLane(*receipt.command_);
 }
 
 void MapDataEditSession::Restore(const Command& command, bool forward) {
@@ -1001,11 +1137,24 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
     if (cursor_ - terrainJournalSavedCursor_ > 4096) return fail("TERRAIN_JOURNAL_BUDGET");
     std::vector<std::shared_ptr<const Command>> active;
     std::unordered_set<std::uint64_t> activeIdentities;
+    bool reordered = false;
     for (auto i = terrainJournalSavedCursor_; i < cursor_; ++i) {
         const auto& command = *history_[i];
         if (!command.logicalForward) {
-            if (active.empty() || active.back()->logicalIdentity != command.logicalIdentity)
-                return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
+            if (active.empty()) return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
+            if (active.back()->logicalIdentity != command.logicalIdentity) {
+                // 其他撤销分区的命令之后仍有效：只允许撤销本分区最后一条有效命令。
+                const auto found = std::find_if(active.begin(), active.end(),
+                    [&](const auto& entry) { return entry->logicalIdentity == command.logicalIdentity; });
+                if (found == active.end()) return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
+                const auto lane = CommandLane(**found);
+                if (std::any_of(found + 1, active.end(), [&](const auto& entry) { return CommandLane(*entry) == lane; }))
+                    return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
+                activeIdentities.erase(command.logicalIdentity);
+                active.erase(found);
+                reordered = true;
+                continue;
+            }
             activeIdentities.erase(command.logicalIdentity);
             active.pop_back();
         } else {
@@ -1015,6 +1164,23 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
         }
     }
     if (active.size() > 128) return fail("TERRAIN_JOURNAL_BUDGET");
+    if (reordered) {
+        // 跨分区撤销后剩余命令必须仍能从保存基线逐成员首尾相接地重放到当前字节。
+        for (std::size_t kind = 0; kind < current_.size(); ++kind) {
+            const std::optional<std::vector<std::byte>>* running = nullptr;
+            for (auto i = terrainJournalSavedCursor_; i < cursor_ && !running; ++i)
+                for (const auto& change : history_[i]->changes)
+                    if (Index(change.kind) == kind) { running = &change.before; break; }
+            if (!running) continue;
+            for (const auto& command : active)
+                for (const auto& change : command->changes) {
+                    if (Index(change.kind) != kind) continue;
+                    if (change.before != *running) return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+                    running = &change.after;
+                }
+            if (*running != current_[kind]) return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+        }
+    }
     return ExportTerrainJournalCommands(active, baselineLayers);
 }
 

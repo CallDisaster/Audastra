@@ -31,6 +31,10 @@ EditorProject::EditorProject()
       iconProvider_(std::make_unique<QtApp::IconProvider>()) {
     mapDataUndoStack_ = new QUndoStack(this);
     mapDataUndoStack_->setUndoLimit(128);
+    mapSettingsUndoStack_ = new QUndoStack(this);
+    mapSettingsUndoStack_->setUndoLimit(128);
+    soundUndoStack_ = new QUndoStack(this);
+    soundUndoStack_->setUndoLimit(128);
     assetUndoStack_ = new QUndoStack(this);
     assetUndoStack_->setUndoLimit(128);
     documentUndoHistory_ = std::make_unique<ProjectDocumentHistory>(*this);
@@ -62,6 +66,15 @@ EditorProject::EditorProject()
         }
         changed(path);
     });
+}
+
+QUndoStack* EditorProject::MapDataUndoStack(MapData::MapDataEditLane lane) const noexcept {
+    switch (lane) {
+    case MapData::MapDataEditLane::Settings: return mapSettingsUndoStack_;
+    case MapData::MapDataEditLane::Sounds: return soundUndoStack_;
+    case MapData::MapDataEditLane::World: break;
+    }
+    return mapDataUndoStack_;
 }
 
 EditorProject::~EditorProject() {

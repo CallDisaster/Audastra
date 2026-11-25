@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
 
 #include "War3MapCore/MapDocument.h"
+#include "War3MapCore/MapData/MapDataEditLane.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainPointQuery.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
@@ -20,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -374,7 +376,16 @@ public:
     // 最近一次真实应用（提交/Replay/Undo/Redo）；LastEdit仍供原统一撤销栈取得命令。
     [[nodiscard]] EditReceipt LastAppliedEdit() const { return lastApplied_; }
     [[nodiscard]] std::uint64_t SessionIdentity() const noexcept { return sessionIdentity_; }
+    // 按回执重放（撤销/重做）。只核对本事务触及的成员；W3I被另一分区改过时，
+    // 若本事务只改世界字段或只改设置字段且本侧仍等于预期，则只搬运本侧字段，否则拒绝。
     [[nodiscard]] Status Replay(const EditReceipt& receipt, bool forward);
+    // 发起模块登记命令所属撤销分区；未登记的命令按触及成员推断，恢复的历史同样推断。
+    // 含地形、通行、范围、尺寸或特殊模型状态的命令只能属于世界分区。
+    [[nodiscard]] Status AssignEditLane(const EditReceipt& receipt, MapDataEditLane lane);
+    // 外层拒绝重放并把该步移出撤销栈后调用：命令保持当前应用状态，改为独占私有分区，
+    // 不再参与任何外层栈的后进先出核对；未应用的被拒命令不再导出为可重做历史。
+    [[nodiscard]] Status DetachEditLane(const EditReceipt& receipt);
+    [[nodiscard]] MapDataEditLane EditLane(const EditReceipt& receipt) const noexcept;
 
     [[nodiscard]] bool CanUndo() const noexcept { return cursor_ != 0; }
     [[nodiscard]] bool CanRedo() const noexcept { return cursor_ < history_.size(); }
@@ -488,6 +499,12 @@ private:
         std::size_t currentIndex = 0;
     };
     [[nodiscard]] Result<TerrainHistoryLine> CaptureTerrainHistoryLine(std::size_t maximumBytes) const;
+    // 多分区交错撤销时的线性化：已应用命令在前、各分区顺序不变，保存站尽量保持为前缀；
+    // 跨分区重排后逐成员核对字节链，不能接续时返回空，由调用方按分支拒绝。
+    [[nodiscard]] std::optional<TerrainHistoryLine> CaptureLaneHistoryLine() const;
+    [[nodiscard]] std::uint32_t CommandLane(const Command& command) const noexcept;
+    [[nodiscard]] static MapDataEditLane InferEditLane(const Command& command) noexcept;
+    [[nodiscard]] static bool OrdinaryMembersOnly(const Command& command) noexcept;
     [[nodiscard]] std::string TerrainHistoryStateFingerprint() const;
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainJournalCommands(
         std::span<const std::shared_ptr<const Command>> commands, bool baselineLayers, bool retainOrdinary = false) const;
@@ -592,6 +609,10 @@ private:
     std::uint64_t sessionIdentity_ = 0, nextCommandIdentity_ = 1;
     std::uint64_t terrainSourceRevision_ = 0;
     EditReceipt lastApplied_;
+    // 逻辑命令身份 → 撤销分区；值小于MapDataEditLaneCount为公共分区，其余为被拒步骤的私有分区。
+    // 只描述外层栈归属，不进入快照、保存资格或工程字节。
+    std::unordered_map<std::uint64_t, std::uint32_t> editLanes_;
+    std::uint32_t nextDetachedLane_ = 64;
     // 只由真实来源构造、可信水刷更新；与Command一起撤销，保存只移动基线，不丢历史身份。
     std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialDoodads_, savedSpecialDoodads_;
     std::shared_ptr<const TerrainBoundsState> boundsState_, savedBoundsState_;

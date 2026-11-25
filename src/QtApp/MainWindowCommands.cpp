@@ -187,10 +187,12 @@ void MainWindow::SetupCommandPalette() {
     connect(objectsModule_, &War3Map::Modules::ObjectModule::DocumentEdited, this, invalidate);
     connect(objectsModule_, &War3Map::Modules::ObjectModule::DocumentsChanged, this, invalidate);
     connect(project_->triggerUndoStack_, &QUndoStack::indexChanged, this, invalidate);
-    connect(project_->mapDataUndoStack_, &QUndoStack::indexChanged, this, invalidate);
+    for (auto* stack : project_->MapDataUndoStacks()) connect(stack, &QUndoStack::indexChanged, this, invalidate);
     for (auto* stack : project_->objectUndoStacks_) connect(stack, &QUndoStack::indexChanged, this, invalidate);
     LogUndoStack(this, project_->triggerUndoStack_, "触发器");
-    LogUndoStack(this, project_->mapDataUndoStack_, "地图数据");
+    LogUndoStack(this, project_->mapDataUndoStack_, "世界");
+    LogUndoStack(this, project_->mapSettingsUndoStack_, "地图设置");
+    LogUndoStack(this, project_->soundUndoStack_, "声音");
     for (auto* stack : project_->objectUndoStacks_) LogUndoStack(this, stack, "物编");
     LogUndoStack(this, project_->AssetUndoStack(), "资源");
     if (startupMode_ == StartupMode::Normal) {
@@ -237,7 +239,8 @@ void MainWindow::InvalidateCommandContext() {
         if (qEnvironmentVariableIntValue("FORGE_INPUT_TRACE") != 0) {
             const auto* origin = sender();
             source = origin == project_.get() ? 1 : origin == objectsModule_ ? 2 :
-                origin == project_->triggerUndoStack_ ? 3 : origin == project_->mapDataUndoStack_ ? 4 : 0;
+                origin == project_->triggerUndoStack_ ? 3 : origin == project_->mapDataUndoStack_
+                || origin == project_->mapSettingsUndoStack_ || origin == project_->soundUndoStack_ ? 4 : 0;
             if (!source && origin) for (const auto* stack : project_->objectUndoStacks_) if (origin == stack) source = 5;
             const char* const names[]{"TriggerDocumentAboutToChange", "ObjectDocumentsAboutToReplace", "ObjectDocumentsReplaced",
                 "TriggerDocumentChanged", "MapDocumentChanged", "ImportsChanged", "SourceStateChanged", "WorldEditStringsChanged",

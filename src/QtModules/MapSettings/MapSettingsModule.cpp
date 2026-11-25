@@ -8,6 +8,7 @@
 #include "Widgets/WarcraftTextPreview.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/Hash.h"
+#include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapDocument.h"
@@ -172,6 +173,8 @@ private:
         const auto status = session_->Replay(receipt_, forward);
         if (!status.Succeeded()) {
             project_->AddDiagnostics(status.diagnostics);
+            // 世界页之后改过同一单位或W3I字段：地图不变，本步移出地图设置撤销栈。
+            QtProject::RefuseMapDataReplay(*project_, *this, std::span(&receipt_, 1), forward);
             return;
         }
         (void)project_->ObserveEditState("修改地图设置");
@@ -189,8 +192,9 @@ private:
 
 MapSettingsModule::MapSettingsModule(QtProject::EditorProject& project) : project_(project) {
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, &MapSettingsModule::Refresh);
-    if (project_.mapDataUndoStack_)
-        connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, &MapSettingsModule::Refresh);
+    // 世界页的起始位置、可玩范围也写W3I，两个栈的变化都要刷新显示。
+    for (auto* stack : {project_.mapDataUndoStack_, project_.mapSettingsUndoStack_})
+        if (stack) connect(stack, &QUndoStack::indexChanged, this, &MapSettingsModule::Refresh);
 }
 
 MapSettingsModule::~MapSettingsModule() {
@@ -212,7 +216,7 @@ QWidget* MapSettingsModule::Widget() {
 
 void MapSettingsModule::AttachHost(Shell::ModuleHost* host) { host_ = host; }
 
-QUndoStack* MapSettingsModule::UndoStack() { return project_.mapDataUndoStack_; }
+QUndoStack* MapSettingsModule::UndoStack() { return project_.mapSettingsUndoStack_; }
 
 bool MapSettingsModule::Reveal(const Shell::NavigationTarget& target) {
     if (target.module != "map-settings") return false;
@@ -941,8 +945,13 @@ bool MapSettingsModule::ApplyDraft() {
         self->Refresh();
         emit self->SettingsEdited();
     };
-    if (auto* stack = UndoStack())
-        stack->push(new SettingsUndoCommand(project_, *session, session->LastEdit(), notify));
+    if (auto* stack = UndoStack()) {
+        // 玩家页改起始位置会联动单位摆放；该事务仍属于地图设置页的撤销历史。
+        const auto receipt = session->LastEdit();
+        const auto assigned = session->AssignEditLane(receipt, MapData::MapDataEditLane::Settings);
+        if (!assigned.Succeeded()) project_.AddDiagnostics(assigned.diagnostics);
+        stack->push(new SettingsUndoCommand(project_, *session, receipt, notify));
+    }
     else {
         (void)project_.ObserveEditState("修改地图设置");
         notify();

@@ -158,7 +158,7 @@ void MapSettingsModuleTests::NavigationRestoresSectionAndPreservesUnappliedDraft
     const auto bookmark = module.CaptureNavigationBookmark(); QVERIFY(bookmark.has_value());
     QCOMPARE(bookmark->value("section").toString(), QStringLiteral("forces"));
     const auto before = project.MapEdits()->Snapshot().Settings()->Serialize().value;
-    const auto revision = project.MapEdits()->Revision(); const auto undoCount = project.mapDataUndoStack_->count();
+    const auto revision = project.MapEdits()->Revision(); const auto undoCount = project.mapSettingsUndoStack_->count();
     QVERIFY(module.Reveal({"map-settings", "general", {}, {}}));
     QCOMPARE(module.RestoreNavigationBookmark(*bookmark), Shell::NavigationRestoreResult::Restored);
     QCOMPARE(sections->currentRow(), 2);
@@ -173,7 +173,7 @@ void MapSettingsModuleTests::NavigationRestoresSectionAndPreservesUnappliedDraft
     QCOMPARE(module.RestoreNavigationBookmark(*bookmark), Shell::NavigationRestoreResult::Blocked);
     QVERIFY(module.HasPendingDraft()); QCOMPARE(author->text(), QStringLiteral("Unapplied Author"));
     QCOMPARE(sections->currentRow(), 2); QCOMPARE(project.MapEdits()->Revision(), revision);
-    QCOMPARE(project.mapDataUndoStack_->count(), undoCount); QCOMPARE(project.MapEdits()->Snapshot().Settings()->Serialize().value, before);
+    QCOMPARE(project.mapSettingsUndoStack_->count(), undoCount); QCOMPARE(project.MapEdits()->Snapshot().Settings()->Serialize().value, before);
 }
 
 void MapSettingsModuleTests::NewFormatIsVisibleButCannotEnterClassicSavePath() {
@@ -295,7 +295,7 @@ void MapSettingsModuleTests::DraftCancelAndInvalidInputDoNotModifyDocument() {
     dataSet->setCurrentIndex(meleeIndex);
     QVERIFY(!module.ApplyDraft());
     QVERIFY(project.MapEdits()->Replacements().empty());
-    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.mapSettingsUndoStack_->count(), 0);
 }
 
 // 同一会话的其他地图修改（如 Agent 写区域）不能抹掉未应用的设置草稿；
@@ -329,10 +329,10 @@ void MapSettingsModuleTests::DraftSurvivesUnrelatedEditsAndBlocksAfterSettingsCh
     QVERIFY(module.HasPendingDraft() && module.DraftIsStale());
     QCOMPARE(author()->text(), QStringLiteral("Second draft"));
     const auto revision = project.MapEdits()->Revision();
-    const auto undoCount = project.mapDataUndoStack_->count();
+    const auto undoCount = project.mapSettingsUndoStack_->count();
     QVERIFY(!module.ApplyDraft());
     QCOMPARE(project.MapEdits()->Revision(), revision);
-    QCOMPARE(project.mapDataUndoStack_->count(), undoCount);
+    QCOMPARE(project.mapSettingsUndoStack_->count(), undoCount);
     QCOMPARE(project.MapEdits()->Snapshot().Settings()->author, std::string("Draft author"));
     QVERIFY(module.HasPendingDraft());
 
@@ -387,7 +387,7 @@ void MapSettingsModuleTests::PlayerControllerAndRaceUseNamedPickers() {
     const auto before = project.MapEdits()->Revision();
     QVERIFY(!module.ApplyDraft());
     QCOMPARE(project.MapEdits()->Revision(), before);
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.mapSettingsUndoStack_->count(), 1);
 }
 
 void MapSettingsModuleTests::ApplyUndoRedoPreservesUneditedBytesAndOtherFields() {
@@ -411,8 +411,8 @@ void MapSettingsModuleTests::ApplyUndoRedoPreservesUneditedBytesAndOtherFields()
     players->item(0, 1)->setText(QStringLiteral("Player One"));
     forces->item(0, 0)->setText(QStringLiteral("Blue Team"));
     QVERIFY(module.ApplyDraft());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
-    QCOMPARE(module.UndoStack(), project.mapDataUndoStack_);
+    QCOMPARE(project.mapSettingsUndoStack_->count(), 1);
+    QCOMPARE(module.UndoStack(), project.mapSettingsUndoStack_);
     const auto replacements = project.MapEdits()->Replacements();
     QCOMPARE(replacements.size(), std::size_t(1));
     const auto changed = MapData::MapSettings::Parse(replacements.front().data);
@@ -426,10 +426,10 @@ void MapSettingsModuleTests::ApplyUndoRedoPreservesUneditedBytesAndOtherFields()
     QCOMPARE(changed.value->mapName, project.mapDocument_->Settings()->mapName);
     QVERIFY(changed.value->UnknownTail() == project.mapDocument_->Settings()->UnknownTail());
 
-    project.mapDataUndoStack_->undo();
+    project.mapSettingsUndoStack_->undo();
     QVERIFY(project.MapEdits()->Replacements().empty());
     QCOMPARE(page->findChild<QLineEdit*>("mapSettings_author")->text(), QStringLiteral("Creator"));
-    project.mapDataUndoStack_->redo();
+    project.mapSettingsUndoStack_->redo();
     QCOMPARE(project.MapEdits()->Snapshot().Settings()->author, std::string("New Creator"));
 }
 

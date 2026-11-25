@@ -1015,6 +1015,9 @@ private slots:
     void StartLocationsWaterJournalProjectColdRestoreAndNativeSave();
     void StartLocationsDescriptionsProjectColdRestore_data();
     void StartLocationsDescriptionsProjectColdRestore();
+    void MapDataUndoLanesKeepEachPageIndependent();
+    void MapDataUndoLaneRefusesOverlappingEdit();
+    void MapDataUndoLanesSaveUndoSaveAndRestore();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
     void InnerCornerRampProjectColdRestoreAndNativeSave_data();
@@ -1145,6 +1148,7 @@ private:
 #include "TerrainOrdinaryJournalProjectCases.h"
 #include "TerrainUnitsJournalProjectCases.h"
 #include "TerrainStartLocationsProjectCases.h"
+#include "MapDataUndoLaneProjectCases.h"
 #include "TerrainGroundPaletteAppendProjectCases.h"
 #include "TerrainCliffPaletteAppendProjectCases.h"
 #include "EditorProjectRemoveWaterCases.h"
@@ -4009,7 +4013,9 @@ void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit() {
     QVERIFY(*finalSettings.value != members[0].data);
     QVERIFY(RaiseDeclaredMinimapProject(project, 10));
     PushMapDataEdit(project, "Terrain height", "同次地图名称与地形高度编辑");
-    QCOMPARE(undo.count(), 2); QCOMPARE(undo.index(), 2);
+    // 地图名称进入地图设置撤销栈；世界栈只有地形，撤销地形不回退名称。
+    QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
+    QCOMPARE(project.mapSettingsUndoStack_->count(), 1); QCOMPARE(project.mapSettingsUndoStack_->index(), 1);
     auto raised = members[1].data;
     // radius0在(384,512)仅抬高vertex(3,4)10世界单位，原始8192变为8232。
     raised[45 + (4 * 9 + 3) * 7] = std::byte{0x28};
@@ -4021,8 +4027,8 @@ void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit() {
     expectedMarkers.Byte(3); expectedMarkers.Byte(2); expectedMarkers.Byte(1); expectedMarkers.Byte(255);
     std::optional<std::vector<std::byte>> firstMinimap;
     for (int phase = 0; phase < 3; ++phase) {
-        if (phase == 1) { undo.undo(); QCOMPARE(undo.index(), 1); QVERIFY(undo.canRedo()); }
-        else if (phase == 2) { undo.redo(); QCOMPARE(undo.index(), 2); QVERIFY(undo.canUndo()); }
+        if (phase == 1) { undo.undo(); QCOMPARE(undo.index(), 0); QVERIFY(undo.canRedo()); }
+        else if (phase == 2) { undo.redo(); QCOMPARE(undo.index(), 1); QVERIFY(undo.canUndo()); }
         const auto& expectedTerrain = phase == 1 ? members[1].data : raised;
         const auto current = project.mapEdits_->Snapshot(); QVERIFY(current.Settings());
         QCOMPARE(current.Settings()->mapName, settings.mapName);
@@ -4084,7 +4090,8 @@ void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit() {
         QVERIFY(project.mapEdits_->TerrainSourceRevision() > beforeSourceRevision);
         QVERIFY(!project.mapEdits_->IsDirty() && !project.HasUnsavedMapChanges());
         QCOMPARE(project.mapEdits_->Snapshot().Settings()->mapName, settings.mapName);
-        QCOMPARE(undo.count(), 2); QCOMPARE(undo.index(), phase == 1 ? 1 : 2);
+        QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), phase == 1 ? 0 : 1);
+        QCOMPARE(project.mapSettingsUndoStack_->index(), 1);
         if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, beforeSha.value); }
         else QCOMPARE(Sha256File(beforeSource).value, beforeSha.value);
     }
@@ -5376,7 +5383,8 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     settings = *project.mapEdits_->Snapshot().Settings(); settings.author = "description after terrain";
     QVERIFY(project.mapEdits_->EditSettings(settings).Succeeded());
     QVERIFY(project.ObserveMapDataEdit("地形后的说明修改")); PushMapDataEdit(project, "Author", "地形后的说明修改");
-    QCOMPARE(initialUndo.count(), 4);
+    // 范围与高度属于世界撤销栈，两次说明修改属于地图设置撤销栈。
+    QCOMPARE(initialUndo.count(), 2); QCOMPARE(project.mapSettingsUndoStack_->count(), 2);
     const auto finalDraft = TerrainJournalDraftBytes(*project.mapEdits_);
     const auto finalTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(finalTerrain.Succeeded());
     const auto finalSettings = settings.Serialize(); QVERIFY(finalSettings.Succeeded());
@@ -5391,20 +5399,27 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     QCOMPARE((*opened.value)->terrainReceipts.size(), std::size_t{3}); // bounds、height、合并说明均有真实撤销记录。
     EditorProject restored; QUndoStack undo; restored.mapDataUndoStack_ = &undo;
     QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, game));
-    QCOMPARE(undo.count(), 3); QCOMPARE(undo.index(), 3);
+    // 恢复的回执按触及成员分回两个栈：范围、高度在世界栈，合并说明在地图设置栈。
+    auto* restoredSettings = restored.mapSettingsUndoStack_;
+    QCOMPARE(undo.count(), 2); QCOMPARE(undo.index(), 2);
+    QCOMPARE(restoredSettings->count(), 1); QCOMPARE(restoredSettings->index(), 1);
+    const auto undoAll = [&] { restoredSettings->undo(); undo.undo(); undo.undo(); };
+    const auto redoAll = [&] { undo.redo(); undo.redo(); restoredSettings->redo(); };
     QCOMPARE(TerrainJournalDraftBytes(*restored.mapEdits_), finalDraft);
     const auto journal = Services::TerrainPathingSave::CaptureJournal(*restored.archiveSession_, *restored.mapEdits_);
     QVERIFY2(journal.Succeeded(), ReadDiagnosticText(journal).c_str());
     const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value);
     QVERIFY2(wire.Succeeded(), ReadDiagnosticText(wire).c_str());
     QCOMPARE(wire.value->at(3), std::byte{'5'});
-    undo.undo(); QCOMPARE(restored.mapEdits_->Snapshot().Settings()->author, std::string{});
+    restoredSettings->undo(); QCOMPARE(restored.mapEdits_->Snapshot().Settings()->author, std::string{});
+    QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, finalTerrain.value);
     undo.undo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, std::optional(boundsTerrain));
+    QCOMPARE(restored.mapEdits_->Snapshot().Settings()->author, std::string{});
     undo.undo();
     QVERIFY(!restored.mapEdits_->IsDirty() && restored.mapEdits_->Replacements().empty());
     QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, std::optional(fixture.members[0].data));
     QCOMPARE(restored.mapEdits_->Snapshot().Settings()->Serialize().value, std::optional(fixture.members[2].data));
-    for (int index = 0; index < 3; ++index) undo.redo();
+    redoAll();
     QCOMPARE(TerrainJournalDraftBytes(*restored.mapEdits_), finalDraft);
     const auto forgeAs = std::filesystem::path(projectFiles.filePath("bounds-copy.forge").toStdWString());
     const auto copied = restored.SaveProjectToPath(forgeAs); QVERIFY2(copied.Succeeded(), ReadDiagnosticText(copied).c_str());
@@ -5415,8 +5430,8 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     // 只替代脚本工具准备；地图写盘、派生通行、回读和提交均走正式保存链。
     const auto session = restored.mapEdits_->SessionIdentity();
     for (int state = 0; state < 3; ++state) {
-        if (state == 1) for (int index = 0; index < 3; ++index) undo.undo();
-        if (state == 2) for (int index = 0; index < 3; ++index) undo.redo();
+        if (state == 1) undoAll();
+        if (state == 2) redoAll();
         const bool inset = state != 1;
         const auto target = inPlace ? source : fixture.directory / ("bounds-saved-" + std::to_string(state) + ".w3x");
         const auto beforeSha = restored.archiveSession_->SourceSha256();
@@ -5437,7 +5452,7 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
         QVERIFY(!restored.HasUnsavedMapChanges() && restored.mapEdits_->Replacements().empty());
         if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, std::optional(beforeSha)); }
         else QCOMPARE(Sha256File(source).value, sourceSha.value);
-        QCOMPARE(undo.count(), 3);
+        QCOMPARE(undo.count(), 2); QCOMPARE(restoredSettings->count(), 1);
     }
 }
 

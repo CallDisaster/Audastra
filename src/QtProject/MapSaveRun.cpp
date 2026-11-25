@@ -630,7 +630,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         NotifyImportsChanged();
     }
     if (triggerUndoStack_) triggerUndoStack_->setClean();
-    if (mapDataUndoStack_) mapDataUndoStack_->setClean();
+    for (auto* stack : MapDataUndoStacks()) if (stack) stack->setClean();
     for (auto* stack : objectUndoStacks_) {
         if (stack) stack->setClean();
     }

@@ -141,21 +141,21 @@ void SoundModuleTests::MultiSelectDuplicateAndDeleteUseOneUndoAndReferenceGate()
     // Ctrl 多选两条后复制：一条撤销，新副本被选中，当前行为第一个副本。
     choose({0, 2});
     duplicate->click();
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     auto current = project.mapEdits_->Snapshot().Sounds();
     QCOMPARE(current->entries.size(), std::size_t{5});
     QCOMPARE(current->entries[3].name, std::string("Thunder_Copy"));
     QCOMPARE(current->entries[4].name, std::string("Wind_Copy"));
     QCOMPARE(table->selectionModel()->selectedRows().size(), qsizetype{2});
     QCOMPARE(table->currentRow(), 3);
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{3});
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{5});
 
     // 触发器来源未读取时不能证明没有引用：拒绝且不留历史。
     QVERIFY(!module.DeleteDefinitions({3, 4}).Succeeded());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
     // 区域环境音仍使用 Rain：同批任一被引用则整批不删。
     QVERIFY(!module.DeleteDefinitions({1, 3}).Succeeded());
@@ -163,16 +163,16 @@ void SoundModuleTests::MultiSelectDuplicateAndDeleteUseOneUndoAndReferenceGate()
     Trigger::ArgumentNode argument; argument.type = 1; argument.value.text = "gg_snd_Wind_Copy";
     project.triggerDocument_->argumentNodes.push_back(argument);
     QVERIFY(!module.DeleteDefinitions({3, 4}).Succeeded());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     project.triggerDocument_->argumentNodes.clear();
 
     choose({3, 4});
     remove->click();
-    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(project.soundUndoStack_->count(), 2);
     current = project.mapEdits_->Snapshot().Sounds();
     QCOMPARE(current->entries.size(), std::size_t{3});
     QCOMPARE(current->entries[2].name, std::string("Wind"));
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{5});
 
     // 未应用的属性修改仍阻止切换定义与批量操作。
@@ -186,7 +186,7 @@ void SoundModuleTests::MultiSelectDuplicateAndDeleteUseOneUndoAndReferenceGate()
     QCOMPARE(table->selectionModel()->selectedRows().size(), qsizetype{1});
     QVERIFY(!module.DuplicateDefinitions({0}).Succeeded());
     QVERIFY(!module.DeleteDefinitions({0}).Succeeded());
-    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(project.soundUndoStack_->count(), 2);
     QCOMPARE(volume->text(), QStringLiteral("42"));
     module.DiscardPendingDraft();
     QVERIFY(!module.HasPendingDraft());
@@ -209,19 +209,19 @@ void SoundModuleTests::NavigationUsesDefinitionIdentityAndBlocksDraft() {
     const auto bookmark = module.CaptureNavigationBookmark(); QVERIFY(bookmark.has_value());
     QVERIFY(bookmark->value("definition_sha256").isString()); QVERIFY(!bookmark->contains("sourceIndex"));
     QVERIFY(!bookmark->contains("definition"));
-    const auto revision = project.MapEdits()->Revision(); const auto undoCount = project.mapDataUndoStack_->count();
+    const auto revision = project.MapEdits()->Revision(); const auto undoCount = project.soundUndoStack_->count();
     QVERIFY(module.Reveal({"sounds", "sound", "Thunder", {{"sourceIndex", QStringLiteral("0")}}}));
     search->setText("nothing");
     QCOMPARE(module.RestoreNavigationBookmark(*bookmark), Shell::NavigationRestoreResult::Restored);
     QCOMPARE(table->currentRow(), 1); QCOMPARE(volume->text(), QStringLiteral("110"));
     QCOMPARE(search->text(), QStringLiteral("hit")); QCOMPARE(resources->currentRow(), 0);
-    QCOMPARE(project.MapEdits()->Revision(), revision); QCOMPARE(project.mapDataUndoStack_->count(), undoCount);
+    QCOMPARE(project.MapEdits()->Revision(), revision); QCOMPARE(project.soundUndoStack_->count(), undoCount);
     QCOMPARE(project.MapEdits()->Snapshot().Sounds()->Serialize().value, bytes.value);
     volume->setText("42"); QVERIFY(module.HasPendingDraft());
     QVERIFY(!module.PrepareNavigationLeave());
     QCOMPARE(module.RestoreNavigationBookmark(*bookmark), Shell::NavigationRestoreResult::Blocked);
     QVERIFY(module.HasPendingDraft()); QCOMPARE(volume->text(), QStringLiteral("42")); QCOMPARE(table->currentRow(), 1);
-    QCOMPARE(project.MapEdits()->Revision(), revision); QCOMPARE(project.mapDataUndoStack_->count(), undoCount);
+    QCOMPARE(project.MapEdits()->Revision(), revision); QCOMPARE(project.soundUndoStack_->count(), undoCount);
 }
 
 void SoundModuleTests::NavigationRejectsStaleRevisionAndIdenticalDefinitions() {
@@ -286,7 +286,7 @@ void SoundModuleTests::ChannelChoiceUsesGameNamesAndWritesThroughField() {
     QCOMPARE(eaxField->text(), QStringLiteral("SpellsEAX"));
     QVERIFY(module.ApplyPendingDraft());
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().eaxSetting, std::string("SpellsEAX"));
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
 
     // 表外编号原样列出，不改成别的通道；“默认”按钮对应首项。
     channel->setText(QStringLiteral("9"));
@@ -295,7 +295,7 @@ void SoundModuleTests::ChannelChoiceUsesGameNamesAndWritesThroughField() {
     page->findChild<QToolButton*>("soundDefault_channel")->click();
     QCOMPARE(choice->currentIndex(), 0);
     module.DiscardPendingDraft();
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().channel, 5);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().eaxSetting, std::string("DefaultEAXON"));
 }
@@ -336,7 +336,7 @@ void SoundModuleTests::NavigationRejectsPerDefinitionAndAggregateByteBudgets() {
         emit project.MapDocumentChanged();
         QVERIFY(!module.HasPendingDraft());
         const auto revision = project.MapEdits()->Revision(), session = project.MapEdits()->SessionIdentity();
-        const auto undoCount = project.mapDataUndoStack_->count(); const auto view = module.SaveViewState();
+        const auto undoCount = project.soundUndoStack_->count(); const auto view = module.SaveViewState();
         const auto selectedRow = table->currentRow(); const auto filter = search->text();
         QCOMPARE(selectedRow, 0); // 单条超限发生在唯一性循环，不能误称选中项或合计预算失败。
         QVERIFY(!module.CaptureNavigationBookmark().has_value());
@@ -354,7 +354,7 @@ void SoundModuleTests::NavigationRejectsPerDefinitionAndAggregateByteBudgets() {
         QCOMPARE(status->property("navigationIdentityFailure").toString(), expectedFailure);
         QCOMPARE(module.SaveViewState(), view); QCOMPARE(table->currentRow(), selectedRow); QCOMPARE(search->text(), filter);
         QCOMPARE(project.MapEdits()->Revision(), revision); QCOMPARE(project.MapEdits()->SessionIdentity(), session);
-        QCOMPARE(project.mapDataUndoStack_->count(), undoCount); QVERIFY(!module.HasPendingDraft());
+        QCOMPARE(project.soundUndoStack_->count(), undoCount); QVERIFY(!module.HasPendingDraft());
         QCOMPARE(project.MapEdits()->Snapshot().Sounds()->Serialize().value, wire.value);
     }
 }
@@ -416,7 +416,7 @@ void SoundModuleTests::ExtendedSoundsStayReadableButNumericControlsAreReadonly()
             QVERIFY(!field->text().isEmpty());
             QVERIFY(!module.EditField(0, name, "50").Succeeded());
         }
-        QCOMPARE(project.mapDataUndoStack_->count(), 0);
+        QCOMPARE(project.soundUndoStack_->count(), 0);
         QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
         QVERIFY(project.mapEdits_->Replacements().empty());
         QVERIFY(project.mapDocument_->Member(MapDataKind::Sounds).sources.front().data == wire);
@@ -439,7 +439,7 @@ void SoundModuleTests::SharedNumericInspectorUsesOneReceiptAndExactUndo() {
     fadeIn->setText("2147483647");
     fadeOut->setText(QStringLiteral("默认"));
     QVERIFY(module.ApplyPendingDraft());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{1});
     const auto receipt = project.mapEdits_->LastEdit();
     QVERIFY(receipt.CommandIdentity() != 0);
@@ -452,19 +452,19 @@ void SoundModuleTests::SharedNumericInspectorUsesOneReceiptAndExactUndo() {
     QCOMPARE(edited->entries[0].fadeOutRate, -1);
     const auto afterBytes = edited->Serialize();
     QVERIFY(afterBytes.Succeeded() && afterBytes.value);
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->LastAppliedEdit().CommandIdentity(), receipt.CommandIdentity());
     QVERIFY(project.mapEdits_->LastAppliedEdit().Restoring());
     QVERIFY(project.mapEdits_->Snapshot().Sounds()->Serialize().value == std::optional(originalBytes));
     QCOMPARE(volume->text(), QStringLiteral("90"));
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->LastAppliedEdit().CommandIdentity(), receipt.CommandIdentity());
     QVERIFY(project.mapEdits_->Snapshot().Sounds()->Serialize().value == afterBytes.value);
     QCOMPARE(fadeOut->text(), QStringLiteral("默认"));
     const auto revision = project.mapEdits_->Revision();
     QVERIFY(module.EditField(0, "fadeOutRate", "默认").Succeeded());
     QCOMPARE(project.mapEdits_->Revision(), revision);
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
 }
 
 void SoundModuleTests::SharedNumericRejectsInvalidMixedDraftWithoutHistory() {
@@ -477,7 +477,7 @@ void SoundModuleTests::SharedNumericRejectsInvalidMixedDraftWithoutHistory() {
         QVERIFY(!module.EditField(0, "fadeInRate", value).Succeeded());
         QVERIFY(!module.EditField(0, "fadeOutRate", value).Succeeded());
         QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
-        QCOMPARE(project.mapDataUndoStack_->count(), 0);
+        QCOMPARE(project.soundUndoStack_->count(), 0);
         QVERIFY(project.mapEdits_->Snapshot().Sounds()->Serialize().value == initial);
     }
     auto* volume = page->findChild<QLineEdit*>("soundField_volume");
@@ -491,18 +491,18 @@ void SoundModuleTests::SharedNumericRejectsInvalidMixedDraftWithoutHistory() {
     QVERIFY(module.HasPendingDraft());
     QVERIFY(project.mapEdits_->Snapshot().Sounds()->Serialize().value == initial);
     QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
-    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.soundUndoStack_->count(), 0);
     fade->setText("10");
     QVERIFY(module.ApplyPendingDraft());
     QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{1});
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     const auto receipt = project.mapEdits_->LastEdit();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].pitch, 1.5f);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].volume, 75);
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->LastAppliedEdit().CommandIdentity(), receipt.CommandIdentity());
     QVERIFY(project.mapEdits_->Snapshot().Sounds()->Serialize().value == initial);
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->LastAppliedEdit().CommandIdentity(), receipt.CommandIdentity());
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].fadeOutRate, 10);
 }
@@ -513,20 +513,20 @@ void SoundModuleTests::ExistingFullSoundEditsRemainOutsideMcpFreezeScope() {
     Modules::SoundsModule module(project);
     QVERIFY(module.EditField(0, "pitch", "1.75").Succeeded());
     QVERIFY(module.EditField(0, "volume", "40").Succeeded());
-    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(project.soundUndoStack_->count(), 2);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].pitch, 1.75f);
     const auto current = MapData::ProjectMapData(*project.mapDocument_, *project.mapEdits_);
     QVERIFY(current.Succeeded() && current.value);
     const auto freeze = MapData::FreezeOriginalMapDataFields(*project.mapDocument_, *current.value);
     QVERIFY(!freeze.Succeeded()); // 旧 UI 宽属性不变成独立 MCP 字段保存资格。
     QCOMPARE(freeze.diagnostics.front().code, std::string("MAP_FIELD_PROJECTION_SCOPE"));
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].pitch, 1.75f);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].volume, 90);
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QVERIFY(!project.mapEdits_->IsDirty());
-    project.mapDataUndoStack_->redo();
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].volume, 40);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].pitch, 1.75f);
 }
@@ -563,7 +563,7 @@ void SoundModuleTests::SharedNumericRejectsAmbiguousAndChangedSources() {
         QCOMPARE(rejected.diagnostics.front().code, std::string(duplicateRawName
             ? "MAP_FIELD_SOURCE_UNSAFE" : "MAP_FIELD_SOUND_NAME_AMBIGUOUS"));
         QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
-        QCOMPARE(project.mapDataUndoStack_->count(), 0);
+        QCOMPARE(project.soundUndoStack_->count(), 0);
         QVERIFY(!project.mapEdits_->CanUndo());
         QVERIFY(project.mapEdits_->Replacements().empty());
         QVERIFY(source.sources.front().data == *bytes.value);
@@ -582,7 +582,7 @@ void SoundModuleTests::SharedNumericRejectsAmbiguousAndChangedSources() {
     QCOMPARE(rejected.diagnostics.front().code, std::string("MAP_FIELD_ORIGINAL_STALE"));
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries[0].volume, 90);
     QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
-    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.soundUndoStack_->count(), 0);
 }
 
 void SoundModuleTests::InspectorRejectsStaleRevisionEvenWhenBytesMatch() {
@@ -601,7 +601,7 @@ void SoundModuleTests::InspectorRejectsStaleRevisionEvenWhenBytesMatch() {
     QVERIFY(!module.ApplyPendingDraft());
     QVERIFY(module.HasPendingDraft());
     QCOMPARE(project.mapEdits_->Revision(), revision);
-    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.soundUndoStack_->count(), 0);
 }
 
 void SoundModuleTests::IndexedRevealPreservesDuplicateIdentityAndDraft() {
@@ -637,10 +637,10 @@ void SoundModuleTests::EditsRealSoundBytesWithSharedUndo() {
     QVERIFY(list != nullptr);
     QCOMPARE(list->rowCount(), 1);
     QCOMPARE(list->item(0, 0)->text(), QStringLiteral("Thunder"));
-    QCOMPARE(module.UndoStack(), project.mapDataUndoStack_);
+    QCOMPARE(module.UndoStack(), project.soundUndoStack_);
 
     QVERIFY(module.EditField(0, "volume", "35").Succeeded());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     const auto pending = project.mapEdits_->Replacements();
     QCOMPARE(pending.size(), std::size_t{1});
     QCOMPARE(pending.front().name, std::string("war3map.w3s"));
@@ -650,18 +650,18 @@ void SoundModuleTests::EditsRealSoundBytesWithSharedUndo() {
     QCOMPARE(parsed.value->entries.front().flags, 0x80u);
     QCOMPARE(parsed.value->entries.front().filePath, std::string("Sounds\\hit.wav"));
 
-    const int count = project.mapDataUndoStack_->count();
+    const int count = project.soundUndoStack_->count();
     QVERIFY(!module.EditField(0, "pitch", "nan").Succeeded());
     QVERIFY(!module.EditField(0, "volume", "2147483648").Succeeded());
     QVERIFY(!module.EditField(0, "volume", "128").Succeeded());
     QVERIFY(!module.EditField(10, "volume", "20").Succeeded());
-    QCOMPARE(project.mapDataUndoStack_->count(), count);
+    QCOMPARE(project.soundUndoStack_->count(), count);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().volume, 35);
 
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().volume, 90);
     QVERIFY(!project.mapEdits_->IsDirty());
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().volume, 35);
     QVERIFY(project.mapEdits_->IsDirty());
 }
@@ -693,12 +693,12 @@ void SoundModuleTests::InspectorPreservesOpaqueFlagsAndRejectsInvalidDraft() {
     QVERIFY(module.HasPendingDraft());
     QVERIFY(!module.DuplicateDefinition(0).Succeeded());
     apply->click();
-    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.soundUndoStack_->count(), 0);
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().flags, 0x80u);
     pitch->setText(QStringLiteral("1.25"));
     QVERIFY(module.ApplyPendingDraft());
     QVERIFY(!module.HasPendingDraft());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     const auto snapshot = project.mapEdits_->Snapshot();
     const auto& edited = snapshot.Sounds()->entries.front();
     QCOMPARE(edited.flags, 0x82u);
@@ -713,11 +713,11 @@ void SoundModuleTests::NewSoundInMissingMemberUndoRestoresAbsence() {
     Modules::SoundsModule module(project);
     QVERIFY(module.AddDefinition("NewSound", "Sounds\\new.wav").Succeeded());
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{1});
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
-    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.soundUndoStack_->count(), 1);
+    project.soundUndoStack_->undo();
     QVERIFY(!project.mapEdits_->Snapshot().Sounds());
     QVERIFY(!project.mapEdits_->IsDirty());
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().name, std::string("NewSound"));
 
     QVERIFY(module.DuplicateDefinition(0).Succeeded());
@@ -845,7 +845,7 @@ void SoundModuleTests::DisplaysDefaultsAndPreservesTheirBitsOnUnrelatedEdit() {
     QVERIFY(fadeIn);
     fadeIn->setText(QStringLiteral("25"));
     QVERIFY(module.ApplyPendingDraft());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     const auto current = project.mapEdits_->Snapshot().Sounds();
     QVERIFY(current);
     const auto& edited = current->entries.front();
@@ -881,7 +881,7 @@ void SoundModuleTests::ExplicitDefaultButtonsCanBeUndoneAndNoOpDraftClears() {
     QCOMPARE(pitch->text(), QStringLiteral("默认"));
     QVERIFY(module.HasPendingDraft());
     module.DiscardPendingDraft();
-    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.soundUndoStack_->count(), 0);
     QVERIFY(!project.mapEdits_->IsDirty());
     const auto unchanged = project.mapEdits_->Snapshot().Sounds()->Serialize();
     QVERIFY(unchanged.Succeeded() && unchanged.value);
@@ -892,16 +892,16 @@ void SoundModuleTests::ExplicitDefaultButtonsCanBeUndoneAndNoOpDraftClears() {
     volumeDefault->click();
     pitchDefault->click();
     QVERIFY(module.ApplyPendingDraft());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
     auto current = project.mapEdits_->Snapshot().Sounds();
     QVERIFY(current);
     QCOMPARE(current->entries.front().volume, -1);
     QCOMPARE(std::bit_cast<std::uint32_t>(current->entries.front().pitch), 0x4f800000u);
     QCOMPARE(volume->text(), QStringLiteral("默认"));
     QCOMPARE(pitch->text(), QStringLiteral("默认"));
-    project.mapDataUndoStack_->undo();
+    project.soundUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().volume, 90);
-    project.mapDataUndoStack_->redo();
+    project.soundUndoStack_->redo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().volume, -1);
 
     volume->setText(QStringLiteral("50"));
@@ -909,7 +909,7 @@ void SoundModuleTests::ExplicitDefaultButtonsCanBeUndoneAndNoOpDraftClears() {
     QVERIFY(module.HasPendingDraft());
     QVERIFY(module.ApplyPendingDraft());
     QVERIFY(!module.HasPendingDraft());
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.soundUndoStack_->count(), 1);
 }
 
 void SoundModuleTests::UnbrokenPathsWrapAtActualColumnWidthWithoutChangingData() {

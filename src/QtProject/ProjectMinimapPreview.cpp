@@ -41,8 +41,9 @@ ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* pa
             emit Changed();
         }
     });
-    if (project_.mapDataUndoStack_)
-        connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, changed);
+    // 设置页移动玩家起始位置也会改单位摆放；声音不影响小地图。
+    for (auto* stack : {project_.mapDataUndoStack_, project_.mapSettingsUndoStack_})
+        if (stack) connect(stack, &QUndoStack::indexChanged, this, changed);
     for (auto* stack : project_.objectUndoStacks_)
         if (stack)
             connect(stack, &QUndoStack::indexChanged, this, changed);

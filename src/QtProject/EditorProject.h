@@ -4,6 +4,7 @@
 #include "Icons/IconProvider.h"
 
 #include "War3MapCore/EditRevision.h"
+#include "War3MapCore/MapData/MapDataEditLane.h"
 #include "War3MapCore/ObjectData/ObjectTypes.h"
 #include "War3MapCore/Types.h"
 
@@ -500,7 +501,15 @@ public:
     std::unique_ptr<MapDocument> mapDocument_;
     std::unique_ptr<MapData::MapDataEditSession> mapEdits_;
     std::string terrainJournalWarning_; // raw草稿降级说明；仅显示/持久化，不参与来源授权。
-    QUndoStack* mapDataUndoStack_ = nullptr; // 设置、实例、声音共用一次序列化编辑历史。
+    // 地图数据按页面分为三个撤销栈，共用同一编辑会话；一个栈的撤销不会回退其他栈的内容。
+    QUndoStack* mapDataUndoStack_ = nullptr; // 世界页：地形、通行、摆放、区域、镜头、范围与尺寸。
+    QUndoStack* mapSettingsUndoStack_ = nullptr; // 地图设置页（含玩家、科技、随机组）。
+    QUndoStack* soundUndoStack_ = nullptr; // 声音定义。
+    [[nodiscard]] QUndoStack* MapDataUndoStack(MapData::MapDataEditLane lane) const noexcept;
+    // 顺序与MapDataEditLane一致：世界、设置、声音。
+    [[nodiscard]] std::array<QUndoStack*, 3> MapDataUndoStacks() const noexcept {
+        return {mapDataUndoStack_, mapSettingsUndoStack_, soundUndoStack_};
+    }
     std::unique_ptr<DirectoryWorkspace> directorySnapshot_;
 
     // ── 触发器 ──

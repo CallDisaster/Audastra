@@ -131,9 +131,10 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
     const auto installedHistory = War3Map::QtProject::InstallRestoredMapDataHistory(*project_,
         std::move(candidate.terrainReceipts), candidate.terrainCurrentIndex, candidate.terrainSavedIndex);
     if (!installedHistory.Succeeded()) {
-        if (project_->mapDataUndoStack_) {
-            const QSignalBlocker historySignals(project_->mapDataUndoStack_);
-            project_->mapDataUndoStack_->clear();
+        for (auto* stack : project_->MapDataUndoStacks()) {
+            if (!stack) continue;
+            const QSignalBlocker historySignals(stack);
+            stack->clear();
         }
         candidate.terrainJournalWarning = "草稿已完整保留；地形历史无法安装到撤销栈，撤销和重做未恢复。";
         project_->terrainJournalWarning_ = candidate.terrainJournalWarning;

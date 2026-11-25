@@ -31,7 +31,8 @@ std::uint64_t EditorProject::ContentCacheEpoch() const {
             ++owner->contentCacheEpoch_;
         });
     };
-    subscribe(triggerUndoStack_); subscribe(mapDataUndoStack_);
+    subscribe(triggerUndoStack_);
+    for (auto* stack : MapDataUndoStacks()) subscribe(stack);
     for (auto* stack : objectUndoStacks_) subscribe(stack);
     return contentCacheEpoch_;
 }
@@ -53,7 +54,7 @@ std::string EditorProject::ObjectSourceStamp() const {
     }
     stamp += '|' + std::to_string(reinterpret_cast<std::uintptr_t>(mapEdits_.get())) + ':' +
         std::to_string(mapEdits_ ? mapEdits_->Revision() : 0);
-    AddStack(stamp, mapDataUndoStack_);
+    for (const auto* stack : MapDataUndoStacks()) AddStack(stamp, stack);
     for (const auto* stack : objectUndoStacks_) AddStack(stamp, stack);
     return stamp;
 }
