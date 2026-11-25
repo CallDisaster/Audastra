@@ -410,9 +410,26 @@ void StartLocationsCommitAndReplayAsOneTransaction() {
     auto settings = *edits.Snapshot().Settings();
     settings.author = "Concurrent author edit";
     Require(edits.EditSettings(settings).Succeeded(), "unrelated settings edit must succeed");
+    // 之后只改了设置字段：起点撤销只退回W3I的玩家起点与单位，后来的作者保留（世界/设置分栏撤销）。
+    Require(edits.Replay(receipt, false).Succeeded(), "start undo must merge around a later settings-only edit");
+    const auto merged = edits.Snapshot();
+    Require(merged.Units()->Serialize().value == source.Units()->Serialize().value
+        && merged.Settings()->author == "Concurrent author edit"
+        && merged.Settings()->players[0].startX == source.Settings()->players[0].startX
+        && merged.Settings()->players[0].startY == source.Settings()->players[0].startY
+        && merged.Settings()->players[1].startX == source.Settings()->players[1].startX,
+        "merged start undo restores units and start coordinates while keeping the later author");
+    Require(edits.Replay(receipt, true).Succeeded() && edits.Snapshot().Settings()->author == "Concurrent author edit"
+        && edits.Snapshot().Settings()->players[0].startX == 512.0f
+        && edits.Snapshot().Units()->units[0].position[0] == 512.0f,
+        "merged start redo keeps the later author");
+    auto movedAgain = *edits.Snapshot().Units();
+    movedAgain.units[0].position[0] = 768.0f;
+    Require(edits.EditUnits(movedAgain).Succeeded(), "a later start move must succeed");
     const auto revision = edits.Revision();
     Require(!edits.Replay(receipt, false).Succeeded() && edits.Revision() == revision
-        && edits.Snapshot().Units()->units[0].position[0] == 512.0f,
+        && edits.Snapshot().Units()->units[0].position[0] == 768.0f
+        && edits.Snapshot().Settings()->players[0].startX == 768.0f,
         "stale linked receipt must reject the entire replay before changing units");
     MapDataEditSession other(source);
     Require(!other.Replay(receipt, false).Succeeded() && !other.IsDirty(),
