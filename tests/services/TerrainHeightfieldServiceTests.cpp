@@ -1,5 +1,6 @@
 #include "../TerrainCornerRampFixtures.h"
 #include "War3MapCore/MapData/TerrainHeightfield.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 
 #include <bit>
@@ -208,6 +209,44 @@ void SessionJournalReplayRestoreAndSave() {
         && f.edits->CanUndo(), "保存后重基线保留导入的撤销历史");
 }
 
+void SentinelMapTakesHigherLevel() {
+    // 新建地图的顶点都是15号哨兵（未选悬崖材质）。整图统一换层不形成悬崖，地图边缘也一样，须能直接保存。
+    Fixture f(true); const auto resources = f.Rules();
+    const auto level = std::min<std::uint8_t>(5, resources.WaterBrushRules()->maximumCliffLevel);
+    Require(level >= 3, "实际规则允许高于第2层");
+    const auto intent = Take(ConvertTerrainHeightfield(f.edits->Terrain()->header, WholeMapSource(), {level, 0.0f})).intent;
+    Take(ApplyTerrainEdit(*f.edits, f.Document(),
+        Take(PrepareTerrainHeightfieldEdit(*f.edits, f.Document(), f.Binding(), resources, intent, false))));
+    const auto terrain = *f.edits->Terrain();
+    Require(std::all_of(terrain.vertices.begin(), terrain.vertices.end(), [&](const auto& vertex) {
+        return vertex.CliffLevel() == level && vertex.CliffTextureIndex() == 15; }), "整图换层，哨兵原样保留");
+    for (const std::size_t index : {std::size_t{0}, std::size_t{32}, std::size_t{16 * 33 + 16}, std::size_t{33 * 33 - 1}})
+        Require(IsNativeTerrainFlatSentinelLevelShift(f.grid, terrain, index), "角点、边缘与内部顶点都按平地换层核对");
+    const auto native = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+    Require(native.SaveGate().Succeeded(), "哨兵平地整体换层通过完整保存门");
+    MapSaveTask task; Require(task.FreezeArchive(*f.source).Succeeded(), "冻结实际来源");
+    task.target = f.root / "sentinel-heightfield.w3x";
+    task.replacements = f.edits->Replacements(); task.removals = f.edits->Removals();
+    Require(native.InstallPathingOutput(*f.edits, task.replacements).Succeeded(), "安装重建的通行");
+    task.beforePublish = [&] { return native.VerifyForSave(*f.edits, task.sourceSha256, task.replacements, task.removals); };
+    MapSaveService::Run(task);
+    Require(task.executed && task.succeeded, "另存为写出");
+    auto readback = Take(MapArchiveSession::Open(task.written));
+    Require(native.VerifyReadback(readback).Succeeded()
+        && Take(readback.ReadMember("war3map.w3e")) == Take(SerializeMapTerrain(terrain)), "回读地形与提交结果一致");
+
+    // 窄规则的反例：任一侧邻点形成悬崖、材质槽改变或层级未变都不适用。
+    auto cliff = terrain; cliff.vertices[16 * 33 + 17].cliffAndLayerRaw = std::uint8_t(0xf0 | (level + 1));
+    Require(!IsNativeTerrainFlatSentinelLevelShift(f.grid, cliff, 16 * 33 + 16), "新侧邻点高一层即形成悬崖");
+    auto oldCliff = f.grid; oldCliff.vertices[1].cliffAndLayerRaw = 0xf3;
+    Require(!IsNativeTerrainFlatSentinelLevelShift(oldCliff, terrain, 0), "旧侧邻点不同层同样拒绝");
+    auto painted = terrain; painted.vertices[0].cliffAndLayerRaw = std::uint8_t(level);
+    Require(!IsNativeTerrainFlatSentinelLevelShift(f.grid, painted, 0), "改为实际材质槽不走此规则");
+    Require(!IsNativeTerrainFlatSentinelLevelShift(f.grid, f.grid, 0), "层级未变不适用");
+    auto ramp = terrain; ramp.vertices[33].textureAndFlagsRaw = std::uint8_t(ramp.vertices[33].textureAndFlagsRaw | 0x10);
+    Require(!IsNativeTerrainFlatSentinelLevelShift(f.grid, ramp, 0), "邻域含坡道不适用");
+}
+
 void RejectedInputsLeaveSessionUntouched() {
     Fixture f; const auto resources = f.Rules(); const auto before = f.edits->Revision();
     TerrainHeader small; small.width = 5; small.height = 4;
@@ -238,7 +277,7 @@ void RejectedInputsLeaveSessionUntouched() {
 int main() {
     try {
         ManifestAndSamples(); ConversionReportAndDigest();
-        SessionJournalReplayRestoreAndSave(); RejectedInputsLeaveSessionUntouched();
+        SessionJournalReplayRestoreAndSave(); SentinelMapTakesHigherLevel(); RejectedInputsLeaveSessionUntouched();
         std::cout << "TerrainHeightfieldServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

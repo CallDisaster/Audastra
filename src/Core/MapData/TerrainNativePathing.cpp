@@ -500,6 +500,35 @@ bool IsNativeTerrainRemovedRampSentinelTransition(const TerrainGridSnapshot& bef
     return CliffSentinelTransition(before, after, index, true);
 }
 
+bool IsNativeTerrainFlatSentinelLevelShift(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::size_t index) noexcept {
+    const auto& header = before.header;
+    if (header.version != 11 || after.header.version != 11
+        || header.width < 2 || header.height < 2 || header.width > 2049 || header.height > 2049
+        || header.width != after.header.width || header.height != after.header.height
+        || before.vertices.size() != std::size_t(header.width) * header.height
+        || before.vertices.size() != after.vertices.size() || index >= before.vertices.size()) return false;
+    const auto& oldVertex = before.vertices[index];
+    const auto& newVertex = after.vertices[index];
+    if (oldVertex.CliffTextureIndex() != 15 || newVertex.CliffTextureIndex() != 15
+        || oldVertex.CliffVariation() != newVertex.CliffVariation() || oldVertex.CliffLevel() == newVertex.CliffLevel())
+        return false;
+    const std::size_t width = header.width, height = header.height;
+    const std::size_t x = index % width, y = index / width;
+    // 四周地格全平等价于图内3×3角点同层；边界与地图边缘顶点本就不可通行，只是不再排除。
+    const auto flat = [&](const TerrainGridSnapshot& grid, unsigned level) {
+        for (auto ny = y ? y - 1 : y; ny <= std::min(y + 1, height - 1); ++ny)
+            for (auto nx = x ? x - 1 : x; nx <= std::min(x + 1, width - 1); ++nx) {
+                const auto& v = grid.vertices[ny * width + nx];
+                if (unsigned(v.CliffLevel()) != level || v.IsRamp() || v.extendedTextureLayout || v.textureFlagsExtensionRaw
+                    || (v.groundHeightRaw & 0xc000) || v.UnknownWaterFlags() || v.CliffLevel() > 14 || v.CliffVariation() > 2)
+                    return false;
+            }
+        return true;
+    };
+    return flat(before, oldVertex.CliffLevel()) && flat(after, newVertex.CliffLevel());
+}
+
 namespace {
 Result<std::vector<std::byte>> GeneratePathing(
     const TerrainNativePathingInput& input, std::size_t maximumBytes,

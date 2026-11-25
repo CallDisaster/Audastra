@@ -45,7 +45,7 @@ inline Bytes Slk(const std::vector<std::string>& columns, std::initializer_list<
     return Text(text + "E\n");
 }
 
-inline Bytes PathingLiteral(bool created) {
+inline Bytes PathingLiteral(bool created, bool flat = false) {
     Bytes pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
     for (const auto value : {0u, 128u, 128u}) for (unsigned shift = 0; shift < 32; shift += 8)
         pathing.push_back(std::byte((value >> shift) & 255));
@@ -54,7 +54,7 @@ inline Bytes PathingLiteral(bool created) {
     // G1只打开(16,16)，新增(17,15)/(15,17)两肩；不调用产品生成器制造expected。
     for (unsigned y = 0; y < 128; ++y) for (unsigned x = 0; x < 128; ++x) {
         const auto cx = x / 4, cy = y / 4;
-        bool blocked = (cx == 16 && cy <= 16) || (cy == 16 && cx <= 16);
+        bool blocked = !flat && ((cx == 16 && cy <= 16) || (cy == 16 && cx <= 16));
         if (created && cx == 16 && cy == 16) blocked = false;
         if (created && ((cx == 17 && cy == 15) || (cx == 15 && cy == 17))) blocked = true;
         pathing[16 + y * 128 + x] = blocked ? std::byte{0xdb} : std::byte{0x51};
@@ -71,7 +71,8 @@ struct Fixture {
     std::unique_ptr<MapArchiveSession> source;
     std::unique_ptr<MapDataEditSession> edits;
     TerrainStrokePoint point{2080, 2080};
-    Fixture() {
+    // flatSentinel：全图同为第2层、悬崖材质为15号哨兵（新建地图的样子），无悬崖，通行全开。
+    explicit Fixture(bool flatSentinel = false) {
         static std::atomic<unsigned> next{0};
         root = std::filesystem::temp_directory_path() / ("Audastra-corner-service-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(next++));
@@ -84,7 +85,7 @@ struct Fixture {
         for (unsigned y = 0; y < 33; ++y) for (unsigned x = 0; x < 33; ++x) {
             auto& vertex = grid.vertices[y * 33 + x]; vertex.groundHeightRaw = 8320;
             vertex.waterHeightAndFlagsRaw = 7936; vertex.variationRaw = 3;
-            vertex.cliffAndLayerRaw = x <= 16 && y <= 16 ? 3 : 2;
+            vertex.cliffAndLayerRaw = flatSentinel ? 0xf2 : x <= 16 && y <= 16 ? 3 : 2;
         }
         RefreshTerrainDerived(grid, 0, 0, 33, 33);
         for (std::size_t row = 0; row < 3; ++row) {
@@ -96,7 +97,7 @@ struct Fixture {
         }
         MapSettings settings; settings.formatVersion = 25; settings.custom.emplace(); settings.tileset = 'L';
         settings.playableWidth = settings.playableHeight = 32; settings.flags |= 0x400;
-        members = {{"war3map.w3e", Take(SerializeMapTerrain(grid))}, {"war3map.wpm", PathingLiteral(false)},
+        members = {{"war3map.w3e", Take(SerializeMapTerrain(grid))}, {"war3map.wpm", PathingLiteral(false, flatSentinel)},
             {"war3map.w3i", Take(settings.Serialize())}, {"war3mapUnits.doo", Take(units.Serialize())},
             {"war3map.doo", Take(doodads.Serialize())}, {"war3map.j", Text("// untouched authored script\n")},
             {"TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"}, {{"Tg01", "1", "1", "1"}})},

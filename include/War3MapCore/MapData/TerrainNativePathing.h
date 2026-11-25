@@ -78,6 +78,12 @@ struct TerrainNativeRampState {
 [[nodiscard]] bool IsNativeTerrainRemovedRampSentinelTransition(
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept;
 
+// 15号哨兵顶点在平地上只改层级（如高度场整图统一悬崖层）：两侧都是15号、变体不变，且两侧各自的
+// 3×3 邻域（地图边缘只看图内邻点）与本点同层、无坡道。这样不形成悬崖，用不到材质，地图边缘与
+// 边界顶点同样适用。它只允许进入完整原版通行重建，调用方仍须完整生成并核对旧/新通行网格。
+[[nodiscard]] bool IsNativeTerrainFlatSentinelLevelShift(
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept;
+
 struct TerrainNativePathingInput {
     const TerrainGridSnapshot* terrain = nullptr;
     TerrainNativePlayableBounds playableBounds;
