@@ -116,7 +116,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     for (const auto& stroke : strokes) {
         if (stroke.textureSlot) {
             if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
-                || stroke.followDoodads || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.blockPaste)
+                || stroke.followDoodads || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.blockPaste || stroke.heightfield)
                 return Status::Failure("MapEdit.Save", "SAVE_TEXTURE_SLOT_CONFLICT", "贴图槽命令不能携带笔刷、采样点、跟随或其它结构命令。");
             const auto normalized = NormalizeTerrainTextureSlotCommand(*stroke.textureSlot);
             if (!normalized.Succeeded()) return {normalized.diagnostics};
@@ -125,13 +125,24 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
         if (stroke.resize) {
             if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty()
                 || stroke.pointSpace != MapEditPointSpace::World || stroke.followDoodads
-                || stroke.waterBrush || stroke.bounds || stroke.blockPaste || stroke.resize->algorithm != 1)
+                || stroke.waterBrush || stroke.bounds || stroke.blockPaste || stroke.heightfield || stroke.resize->algorithm != 1)
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_RESIZE_INVALID",
                     "地图扩裁只接受独立的有符号整数地格半开矩形；不能混入笔刷、采样点、水刷、可玩范围或块复制。");
             const auto valid = MapData::ValidateTerrainResizeIntent(*stroke.resize);
             if (!valid.Succeeded()) return valid;
             // 实际尺寸、内容裁切与来源资格仍由同一有序会话的准备器检查。
             // 扩裁本身没有采样点，不能用虚构点绕过普通笔刷的非空点数门。
+            continue;
+        }
+        if (stroke.heightfield) {
+            const auto& source = stroke.heightfield->source;
+            if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
+                || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.blockPaste
+                || stroke.heightfield->options.cliffLevel > 14 || !std::isfinite(stroke.heightfield->options.sink)
+                || source.heights.size() != std::size_t(source.columns) * source.rows || source.columns < 2 || source.rows < 2)
+                return Status::Failure("MapEdit.Save", "SAVE_TERRAIN_HEIGHTFIELD_REQUEST_INVALID",
+                    "高度场导入需要一个独立命令和完整装入的数据，不能同时指定笔刷、采样点、水刷、可玩范围或块复制；悬崖层为 0..14。");
+            // 网格对齐、截断与实际规则由同一换算/准备器在读取实际W3E后检查。
             continue;
         }
         if (stroke.blockPaste) {

@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/TerrainPointQuery.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
+#include "War3MapCore/MapData/TerrainHeightfield.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainBoundsEditing.h"
 #include "War3MapCore/MapData/TerrainResizeEditing.h"
@@ -17,6 +18,8 @@
 #include <memory>
 #include <limits>
 #include <optional>
+#include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -113,6 +116,7 @@ public:
         [[nodiscard]] const TerrainWaterBrush* WaterBrush() const noexcept { return waterBrush_ ? &*waterBrush_ : nullptr; }
         [[nodiscard]] const TerrainWaterBrushResult* WaterResult() const noexcept { return waterResult_ ? &*waterResult_ : nullptr; }
         [[nodiscard]] const TerrainBlockPasteIntent* BlockPasteIntent() const noexcept { return blockPaste_ ? &*blockPaste_ : nullptr; }
+        [[nodiscard]] const TerrainHeightfieldIntent* HeightfieldIntent() const noexcept { return heightfield_ ? &*heightfield_ : nullptr; }
         // 协议宿主须保留本次实际准备的算法，不能按当前默认值重建历史。
         [[nodiscard]] TerrainCornerRampAlgorithm CornerRampAlgorithm() const noexcept { return cornerRampAlgorithm_; }
         [[nodiscard]] TerrainStraightRampAlgorithm StraightRampAlgorithm() const noexcept { return straightRampAlgorithm_; }
@@ -146,6 +150,7 @@ public:
         TerrainCornerRampAlgorithm cornerRampAlgorithm_ = TerrainCornerRampAlgorithm::DryOnly;
         TerrainStraightRampAlgorithm straightRampAlgorithm_ = TerrainStraightRampAlgorithm::Independent;
         std::optional<TerrainBlockPasteIntent> blockPaste_;
+        std::optional<TerrainHeightfieldIntent> heightfield_;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
         std::size_t waterPreparationLimit_ = TerrainWaterBrushLimits{}.maximumCandidateBytes;
@@ -315,6 +320,11 @@ public:
         TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(const TerrainPathingResources& resources,
         const TerrainBlockPasteIntent& intent, bool followDoodads = false,
+        const TerrainWaterBrushLimits& limits = {}) const;
+    // 整图高度场导入：载荷来自ConvertTerrainHeightfield，规则须为固定enforceWaterLimits=true的实际owner。
+    // 与地形块相同地走统一候选、撤销、通行与对象联动；作为一笔typed命令记入工程历史。
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainHeightfieldEdit(const TerrainPathingResources& resources,
+        const TerrainHeightfieldIntent& intent, bool followDoodads = false,
         const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
@@ -503,6 +513,17 @@ private:
         TerrainStraightRampAlgorithm straightAlgorithm = TerrainStraightRampAlgorithm::Independent) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
+    struct AbsoluteTerrainEditText {
+        const char* limitsCode;
+        const char* ruleOwnerCode;
+        const char* budgetCode;
+        std::string_view noun;
+    };
+    using AbsoluteTerrainCandidateFactory = std::function<Result<TerrainBlockStrokeCandidate>(const TerrainGridSnapshot&,
+        const TerrainWaterLoadedRules&, std::span<const TerrainWaterSpecialDoodadShape>, const TerrainWaterBrushLimits&)>;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareAbsoluteTerrainEdit(const TerrainPathingResources& resources,
+        bool followDoodads, const TerrainWaterBrushLimits& limits, std::size_t intentBytes,
+        const AbsoluteTerrainEditText& text, const AbsoluteTerrainCandidateFactory& candidateFor) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(
         std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,

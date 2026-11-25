@@ -634,6 +634,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         && request.triggerTransaction->Document().VerifyCodeIdentityAuthorization(request.triggerTransaction->Document()).Succeeded())
         return Result<MapEditSaveReceipt>::Failure("Trigger.CodeIdentity", "TRIGGER_CODE_LUA_UNSUPPORTED", "此事务的代码身份编辑绑定JASS，不能在保存时切换为Lua。");
     bool written = false;
+    std::vector<MapData::TerrainHeightfieldReport> heightfieldReports;
     try {
         const bool fieldRequest = !request.fieldEdits.empty();
         const bool customRequest = request.settingsCustomEdits.has_value();
@@ -883,6 +884,16 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!advanced.Succeeded()) return Forward(advanced.diagnostics);
                     MapData::TerrainStrokeIntent intent;
                     intent.resize = stroke.resize;
+                    intents.push_back(std::move(intent));
+                    continue;
+                }
+                if (stroke.heightfield) {
+                    auto converted = MapData::ConvertTerrainHeightfield(pointFrame, stroke.heightfield->source, stroke.heightfield->options);
+                    if (!converted.Succeeded() || !converted.value) return Forward(converted.diagnostics);
+                    heightfieldReports.push_back(std::move(converted.value->report));
+                    MapData::TerrainStrokeIntent intent;
+                    intent.heightfield = std::move(converted.value->intent);
+                    intent.followDoodads = stroke.followDoodads;
                     intents.push_back(std::move(intent));
                     continue;
                 }
@@ -1288,6 +1299,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 manifest.outputBlpSha256, mip0.decodedRgbaSha256, manifest.manifestSha256,
                 manifest.encodedBlpBytes, mip0.width, mip0.height, manifest.encodedMipCount, manifest.rangePolicy};
         }
+        result.value->heightfieldReports = std::move(heightfieldReports);
         result.diagnostics = std::move(task.diagnostics);
         return result;
     } catch (const std::exception&) {

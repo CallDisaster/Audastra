@@ -515,6 +515,9 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
                 || !add(cost.retainedBytes, maximumBytes, stroke.intent.palette->replacementRawcode.capacity()))) return fail();
             if (stroke.intent.blockPaste
                 && !add(cost.retainedBytes, maximumBytes, stroke.intent.blockPaste->expectedBlockSha256.capacity() + 1)) return fail();
+            if (stroke.intent.heightfield
+                && (!add(cost.retainedBytes, maximumBytes, stroke.intent.heightfield->groundRaw.capacity(), sizeof(std::uint16_t))
+                    || !add(cost.retainedBytes, maximumBytes, stroke.intent.heightfield->payloadSha256.capacity() + 1))) return fail();
         }
         if (command->placements) {
             if (!add(cost.retainedBytes, maximumBytes, command->placements->capacity(), sizeof(PlacementRowLineage))) return fail();
@@ -775,6 +778,10 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
         add(points_.size(), sizeof(TerrainStrokePoint));
         add(sizeof(TerrainJournalStroke) + brush_.groundTexture.capacity() + 65);
         if (blockPaste_) add(blockPaste_->expectedBlockSha256.capacity() + 1);
+        if (heightfield_) {
+            add(heightfield_->groundRaw.capacity(), sizeof(std::uint16_t));
+            add(heightfield_->payloadSha256.capacity() + 1);
+        }
     }
     for (const auto& chunk : command_->terrain) { add(chunk.before.capacity()); add(chunk.after.capacity()); }
     add(command_->changes.capacity(), sizeof(MemberChange));
@@ -797,6 +804,10 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
         }
         if (command_->terrainStroke->intent.blockPaste)
             add(command_->terrainStroke->intent.blockPaste->expectedBlockSha256.capacity() + 1);
+        if (command_->terrainStroke->intent.heightfield) {
+            add(command_->terrainStroke->intent.heightfield->groundRaw.capacity(), sizeof(std::uint16_t));
+            add(command_->terrainStroke->intent.heightfield->payloadSha256.capacity() + 1);
+        }
     }
     if (command_->placements) {
         add(sizeof(std::vector<PlacementRowLineage>) + 64);
@@ -847,7 +858,7 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
         verifyRealtime = std::move(rebuilt.value->verifySources);
     }
     // 超出持久化域不影响原始编辑。不能截断/拆笔或持久化caller锚点冒充来源。
-    bool expressible = plan.blockPaste_ || (!plan.points_.empty() && plan.points_.size() <= 4096);
+    bool expressible = plan.blockPaste_ || plan.heightfield_ || (!plan.points_.empty() && plan.points_.size() <= 4096);
     TerrainJournalStroke stroke;
     if (expressible) {
         stroke.intent.points = plan.points_; stroke.intent.followDoodads = plan.followDoodads_;
@@ -855,6 +866,10 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
             expressible = plan.points_.empty() && !plan.waterRulesSha256_.empty()
                 && ValidateTerrainBlockPasteIntent(*plan.blockPaste_).Succeeded();
             stroke.intent.blockPaste = plan.blockPaste_; stroke.rulesSha256 = plan.waterRulesSha256_;
+        } else if (plan.heightfield_) {
+            expressible = plan.points_.empty() && !plan.waterRulesSha256_.empty()
+                && ValidateTerrainHeightfieldIntent(*plan.heightfield_).Succeeded();
+            stroke.intent.heightfield = plan.heightfield_; stroke.rulesSha256 = plan.waterRulesSha256_;
         } else if (plan.waterBrush_) {
             expressible = expressible && plan.waterIntentOptions_ && !plan.waterRulesSha256_.empty()
                 && plan.waterIntentOptions_->algorithm == plan.waterBrush_->algorithm;

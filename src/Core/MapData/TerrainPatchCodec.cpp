@@ -67,6 +67,16 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
                     "地形块补丁需要实际来源重放的独立矩形命令，不能夹带笔刷、原始载荷或其它变体。");
             continue;
         }
+        if (stroke.heightfield) {
+            TerrainStrokeIntent expected;
+            expected.heightfield = stroke.heightfield; expected.followDoodads = stroke.followDoodads;
+            // 同地形块：仅Services已从实际来源严格重放的整图载荷可以没有采样点。
+            if (!trustedReplay || !EqualTerrainJournalIntent(stroke, expected)
+                || !ValidateTerrainHeightfieldIntent(*stroke.heightfield).Succeeded())
+                return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_HEIGHTFIELD_INVALID",
+                    "高度场补丁需要实际来源重放的独立整图命令，不能夹带笔刷或其它变体。");
+            continue;
+        }
         if (stroke.points.empty() || stroke.points.size() > 4096 - pointCount)
             return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_POINT_BUDGET", "地形目录事务累计采样点超过 4096 或包含空笔划。");
         pointCount += stroke.points.size();

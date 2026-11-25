@@ -4,6 +4,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 
 #include "War3MapCore/MapData/MapFields.h"
+#include "War3MapCore/MapData/TerrainHeightfield.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
@@ -606,6 +607,23 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             Services::MapEditTerrainStroke resize;
             resize.resize = MapData::TerrainResizeIntent{1, {*west, *south, *east, *north}};
             request.terrainStrokes.push_back(std::move(resize)); index += 5;
+        } else if (flag == L"--terrain-heightfield") {
+            if (index + 3 >= argc) return Invalid("--terrain-heightfield requires <heightfield.json> <cliff-level 0..14> <sink>");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");
+            const auto level = ParseNumber<std::uint32_t>(argv[index + 2]);
+            const auto sink = ParseNumber<double>(argv[index + 3]);
+            if (!level || *level > 14 || !sink || !std::isfinite(*sink) || std::abs(*sink) > 65536)
+                return Invalid("--terrain-heightfield needs cliff level 0..14 and a finite sink in world units");
+            auto source = MapData::ReadTerrainHeightfield(std::filesystem::path(std::wstring(argv[index + 1])));
+            if (!source.Succeeded() || !source.value) { PrintDiagnostics(source.diagnostics); return 2; }
+            Services::MapEditTerrainStroke stroke;
+            stroke.heightfield = Services::MapEditHeightfieldImport{std::move(*source.value),
+                {static_cast<std::uint8_t>(*level), static_cast<float>(*sink)}};
+            request.terrainStrokes.push_back(std::move(stroke)); index += 4;
+        } else if (flag == L"--terrain-heightfield-follow") {
+            if (request.terrainStrokes.empty() || !request.terrainStrokes.back().heightfield)
+                return Invalid("--terrain-heightfield-follow must follow --terrain-heightfield");
+            request.terrainStrokes.back().followDoodads = true; index += 1;
         } else if (flag == L"--terrain-bounds") {
             if (index + 4 >= argc) return Invalid("--terrain-bounds requires west south east north cell indices");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");
@@ -747,6 +765,27 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         std::cout << "\nedited_member_" << index << '=' << member.name
                   << "\nedited_member_" << index << "_original_sha256=" << member.originalSha256
                   << "\nedited_member_" << index << "_saved_sha256=" << member.savedSha256;
+    }
+    std::cout << "\nheightfield_count=" << receipt.heightfieldReports.size();
+    for (std::size_t index = 0; index < receipt.heightfieldReports.size(); ++index) {
+        const auto& report = receipt.heightfieldReports[index];
+        const auto prefix = "\nheightfield_" + std::to_string(index);
+        std::cout << prefix << "_imported_vertices=" << report.importedVertices
+            << prefix << "_filled_vertices=" << report.filledVertices
+            << prefix << "_outside_vertices=" << report.outsideVertices
+            << prefix << "_height_min=" << report.minimumHeight << prefix << "_height_max=" << report.maximumHeight
+            << prefix << "_storable_min=" << report.storableMinimum << prefix << "_storable_max=" << report.storableMaximum
+            << prefix << "_clamped_low=" << report.clampedLow << prefix << "_clamped_high=" << report.clampedHigh;
+        if (report.importedVertices)
+            std::cout << prefix << "_covered_vertices=" << report.coveredBounds[0] << ',' << report.coveredBounds[1]
+                << ',' << report.coveredBounds[2] << ',' << report.coveredBounds[3];
+        if (report.clampedLow || report.clampedHigh)
+            std::cout << prefix << "_clamped_vertices=" << report.clampedBounds[0] << ',' << report.clampedBounds[1]
+                << ',' << report.clampedBounds[2] << ',' << report.clampedBounds[3];
+        for (std::size_t sample = 0; sample < report.clampedSamples.size(); ++sample) {
+            const auto& value = report.clampedSamples[sample];
+            std::cout << prefix << "_clamped_" << sample << '=' << value.worldX << ',' << value.worldY << ',' << value.height;
+        }
     }
     std::cout << "\nscript_backend_policy=" << (receipt.inProcessOnly ? "in_process_only" : "configured")
               << "\nopaque_script_member_count=" << receipt.opaqueScriptMembers.size();

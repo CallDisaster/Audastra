@@ -315,6 +315,7 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
 
 #include "CliStraightRampCases.h"
 #include "CliTerrainBlockCases.h"
+#include "CliTerrainHeightfieldCases.h"
 #include "CliTerrainPathingCases.h"
 #include "CliTerrainResizeCases.h"
 #include "CliTerrainTextureSlotCases.h"
@@ -384,6 +385,7 @@ int main() {
         CornerRampUsesOneWorldPointAndStrictBoolean();
         StraightRampUsesItsOwnWorldPointCommand();
         TerrainBlockCopyUsesBoundedTypedCommand();
+        TerrainHeightfieldReadsManifestBeforeSharedSave();
         PathingRestrictionUsesTypedSharedSave();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         TerrainResizeUsesSignedBeforeCanvasEdges();

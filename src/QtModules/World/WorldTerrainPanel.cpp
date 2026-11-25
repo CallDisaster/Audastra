@@ -219,6 +219,10 @@ QWidget* WorldModule::BuildTerrainPage() {
     for (auto* button : {terrainBlockRotateLeft_, terrainBlockRotateRight_, terrainBlockFlipEastWest_, terrainBlockFlipNorthSouth_})
         blockOrientation->addWidget(button);
     column->addLayout(blockOrientation);
+    auto* heightfieldImport = new QPushButton(tr("导入高度场…"), terrainPalette_);
+    heightfieldImport->setObjectName(QStringLiteral("worldTerrainHeightfieldImport"));
+    column->addWidget(heightfieldImport);
+    connect(heightfieldImport, &QPushButton::clicked, this, &WorldModule::ImportTerrainHeightfield);
     terrainBlockStatus_ = new QLabel(tr("同图复制 · 绝对高度；源块变化须重新复制"), terrainPalette_);
     terrainBlockStatus_->setObjectName(QStringLiteral("worldTerrainBlockStatus"));
     terrainBlockStatus_->setWordWrap(true); column->addWidget(terrainBlockStatus_);

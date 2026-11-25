@@ -127,7 +127,10 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
             || !textCopy(stroke.intent.brush.groundTexture) || !textCopy(stroke.rulesSha256)
             || (stroke.intent.palette && (!textCopy(stroke.intent.palette->expectedRawcode)
                 || !textCopy(stroke.intent.palette->replacementRawcode)))
-            || (stroke.intent.blockPaste && !textCopy(stroke.intent.blockPaste->expectedBlockSha256)))
+            || (stroke.intent.blockPaste && !textCopy(stroke.intent.blockPaste->expectedBlockSha256))
+            || (stroke.intent.heightfield && (!textCopy(stroke.intent.heightfield->payloadSha256)
+                || !Charge(remaining.maximumCandidateBytes, stroke.intent.heightfield->groundRaw.capacity(), sizeof(std::uint16_t) * 2)
+                || !Charge(remaining.maximumWork, stroke.intent.heightfield->groundRaw.size(), 2))))
             return Failure("TERRAIN_REPLAY_BUDGET", "历史typed采样点或文本副本超过恢复预算。");
         for (const auto* delta : {stroke.ordinaryDoodads ? static_cast<const MapData::TerrainPlacementJournalDelta*>(&*stroke.ordinaryDoodads) : nullptr,
                  stroke.units ? static_cast<const MapData::TerrainPlacementJournalDelta*>(&*stroke.units) : nullptr,

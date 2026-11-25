@@ -4,29 +4,31 @@
 #include <algorithm>
 #include <new>
 #include <stdexcept>
+#include <string>
 
 namespace War3Map::MapData {
 
-Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainBlockPasteEdit(
-    const TerrainPathingResources& resources, const TerrainBlockPasteIntent& intent,
-    bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+// 地形块粘贴与整图高度场导入共用：同一实际规则owner、来源核对、预算与统一候选流程。
+// 区别只在纯候选（candidate回调）和调用方随后写入的typed意图；text给出各自的诊断码与名称。
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareAbsoluteTerrainEdit(
+    const TerrainPathingResources& resources, bool followDoodads, const TerrainWaterBrushLimits& limits,
+    std::size_t intentBytes, const AbsoluteTerrainEditText& text, const AbsoluteTerrainCandidateFactory& candidateFor) const {
     using Output = Result<PreparedTerrainEdit>;
-    const auto validated = ValidateTerrainBlockPasteIntent(intent);
-    if (!validated.Succeeded()) return {{}, validated.diagnostics};
+    const std::string noun(text.noun);
     const TerrainWaterBrushLimits hard;
     if (!limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes
         || !limits.maximumWork || limits.maximumWork > hard.maximumWork
         || !limits.maximumPoints || limits.maximumPoints > hard.maximumPoints
         || !limits.maximumRecursionDepth || limits.maximumRecursionDepth > hard.maximumRecursionDepth)
-        return Output::Failure("MapData.Edit", "TERRAIN_BLOCK_LIMITS", "地形块预算只能收紧硬上限，不能为零。");
+        return Output::Failure("MapData.Edit", text.limitsCode, noun + "预算只能收紧硬上限，不能为零。");
     if (!terrain_ || !terrainOriginal_)
-        return Output::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形块缺少可编辑的原始来源或当前网格。");
+        return Output::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", noun + "缺少可编辑的原始来源或当前网格。");
     if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
         return Output::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
     const auto* rules = resources.WaterBrushRules();
     if (!rules || !rules->enforceWaterLimits)
-        return Output::Failure("MapData.Edit", "TERRAIN_BLOCK_RULE_OWNER",
-            "地形块必须使用固定enforceWaterLimits=true的实际完整规则owner，供恢复和保存复核。");
+        return Output::Failure("MapData.Edit", text.ruleOwnerCode,
+            noun + "必须使用固定enforceWaterLimits=true的实际完整规则owner，供恢复和保存复核。");
     const auto doodadIndex = Index(MapDataKind::Doodads), unitIndex = Index(MapDataKind::Units);
     const auto available = [this](std::size_t index) {
         return !preservedSources_[index] && (states_[index] == MapDataState::Missing || states_[index] == MapDataState::Ready);
@@ -35,9 +37,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         return Output::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE", "实际装饰物来源不可读，不能以空表代替特殊模型来源。");
     if (followDoodads && !available(unitIndex))
         return Output::Failure("MapData.Edit", "MAP_UNITS_UNSAFE", "单位来源不可读，不能准备高度跟随。");
-    const auto budgetFailure = [] {
-        return Output::Failure("MapData.Edit", "TERRAIN_BLOCK_SESSION_BUDGET",
-            "地形块候选、撤销、通行或对象联动超出本笔预算，尚未修改会话。");
+    const auto budgetFailure = [&] {
+        return Output::Failure("MapData.Edit", text.budgetCode,
+            noun + "候选、撤销、通行或对象联动超出本笔预算，尚未修改会话。");
     };
     const auto reserve = [](std::size_t& used, std::size_t limit, std::size_t count, std::size_t element = 1) {
         if (used > limit || (element && count > (limit - used) / element)) return false;
@@ -100,7 +102,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         }
         auto algorithmLimits = limits;
         algorithmLimits.maximumCandidateBytes -= liveBytes; algorithmLimits.maximumWork -= work;
-        auto candidate = PrepareTerrainBlockPasteStroke(*terrain_, *rules, intent, resources.WaterSpecialShapes(), algorithmLimits);
+        auto candidate = candidateFor(*terrain_, *rules, resources.WaterSpecialShapes(), algorithmLimits);
         if (!candidate.Succeeded() || !candidate.value) return {{}, std::move(candidate.diagnostics)};
         if (!reserve(work, limits.maximumWork, candidate.value->result.work)) return budgetFailure();
         auto algorithmPeak = liveBytes;
@@ -121,7 +123,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                 * (std::min(pathingHeight, y * 4 + 2) - y0);
         }
         if (blightCells && !pathing_)
-            return Output::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "粘贴改变了荒芜，但缺少可解析的源WPM，整笔未提交。");
+            return Output::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", noun + "改变了荒芜，但缺少可解析的源WPM，整笔未提交。");
 
         // 算法scratch已释放，以下只收真实候选容量及同一公共finalize会分配的载荷。
         std::size_t finalBytes = liveBytes;
@@ -131,7 +133,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             || !reserve(finalBytes, limits.maximumCandidateBytes, grid.tiles.capacity(), sizeof(TerrainTile))
             || !reserve(finalBytes, limits.maximumCandidateBytes,
                 grid.header.groundTilesets.capacity() + grid.header.cliffTilesets.capacity(), sizeof(std::string))
-            || !reserve(finalBytes, limits.maximumCandidateBytes, intent.expectedBlockSha256.capacity() + 1)) return budgetFailure();
+            || !reserve(finalBytes, limits.maximumCandidateBytes, intentBytes)) return budgetFailure();
         for (const auto* table : {&grid.header.groundTilesets, &grid.header.cliffTilesets})
             for (const auto& name : *table)
                 if (!reserve(finalBytes, limits.maximumCandidateBytes, name.capacity() + 1)) return budgetFailure();
@@ -161,7 +163,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             true, true, false, &doodads, false, rules->maximumCliffLevel, limits.maximumWork - work);
         if (!prepared.Succeeded() || !prepared.value) return prepared;
         if (!reserve(work, limits.maximumWork, prepared.value->waterPreparationWork_)) return budgetFailure();
-        // 新块意图必须完整typed持久化，不能像旧自由笔划一样因预算不足降级成raw编辑。
+        // 绝对值意图必须完整typed持久化，不能像旧自由笔划一样因预算不足降级成raw编辑。
         const auto digestBytes = resources.WaterBrushDependencyBudgetBytes();
         if (!digestBytes || !reserve(finalBytes, limits.maximumCandidateBytes, digestBytes, 2)
             || !reserve(finalBytes, limits.maximumCandidateBytes, 65)
@@ -169,13 +171,44 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         auto fingerprint = resources.WaterBrushDependencyFingerprint();
         if (!fingerprint.Succeeded() || !fingerprint.value) return {{}, std::move(fingerprint.diagnostics)};
         prepared.value->waterRulesSha256_ = std::move(*fingerprint.value);
-        prepared.value->blockPaste_ = intent;
         prepared.value->waterResult_ = std::move(candidate.value->result);
         prepared.value->waterPreparationWork_ = work;
         prepared.value->waterPreparationBytes_ = std::max(peak, finalBytes);
         return prepared;
     } catch (const std::bad_alloc&) { return budgetFailure(); }
     catch (const std::length_error&) { return budgetFailure(); }
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainBlockPasteEdit(
+    const TerrainPathingResources& resources, const TerrainBlockPasteIntent& intent,
+    bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    const auto validated = ValidateTerrainBlockPasteIntent(intent);
+    if (!validated.Succeeded()) return {{}, validated.diagnostics};
+    auto prepared = PrepareAbsoluteTerrainEdit(resources, followDoodads, limits, intent.expectedBlockSha256.capacity() + 1,
+        {"TERRAIN_BLOCK_LIMITS", "TERRAIN_BLOCK_RULE_OWNER", "TERRAIN_BLOCK_SESSION_BUDGET", "地形块"},
+        [&](const TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules,
+            std::span<const TerrainWaterSpecialDoodadShape> shapes, const TerrainWaterBrushLimits& algorithmLimits) {
+            return PrepareTerrainBlockPasteStroke(terrain, rules, intent, shapes, algorithmLimits);
+        });
+    if (prepared.Succeeded() && prepared.value) prepared.value->blockPaste_ = intent;
+    return prepared;
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainHeightfieldEdit(
+    const TerrainPathingResources& resources, const TerrainHeightfieldIntent& intent,
+    bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    const auto validated = ValidateTerrainHeightfieldIntent(intent);
+    if (!validated.Succeeded()) return {{}, validated.diagnostics};
+    // 载荷在准备记录与历史中各保留一份。
+    const auto bytes = intent.groundRaw.size() * 2 * sizeof(std::uint16_t) + 2 * (intent.payloadSha256.size() + 1);
+    auto prepared = PrepareAbsoluteTerrainEdit(resources, followDoodads, limits, bytes,
+        {"TERRAIN_HEIGHTFIELD_LIMITS", "TERRAIN_HEIGHTFIELD_RULE_OWNER", "TERRAIN_HEIGHTFIELD_SESSION_BUDGET", "高度场导入"},
+        [&](const TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules,
+            std::span<const TerrainWaterSpecialDoodadShape> shapes, const TerrainWaterBrushLimits& algorithmLimits) {
+            return PrepareTerrainHeightfieldStroke(terrain, rules, intent, shapes, algorithmLimits);
+        });
+    if (prepared.Succeeded() && prepared.value) prepared.value->heightfield_ = intent;
+    return prepared;
 }
 
 } // namespace War3Map::MapData

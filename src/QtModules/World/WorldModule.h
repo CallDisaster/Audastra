@@ -5,6 +5,7 @@
 #include "Modules/EditorModule.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
+#include "War3MapCore/MapData/TerrainHeightfield.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/ObjectData/ObjectTypes.h"
 #include "War3MapCore/Render/WorldModelScene.h"
@@ -286,6 +287,9 @@ private:
     void StopTerrainBlockTool(bool clearClipboard = false);
     [[nodiscard]] bool TerrainBlockClipboardCurrent() const;
     void AppendTerrainBlockOverlay(std::vector<War3RenderOverlayLineV2>& lines) const;
+    // 高度场导入（WorldTerrainHeightfield.cpp）：对话框换算预览，后台准备，主线程按修订提交并入撤销栈。
+    void ImportTerrainHeightfield();
+    void StartTerrainHeightfieldCommit(MapData::TerrainHeightfieldIntent intent, bool followDoodads);
     void StartWaterBrushCommit();
     void PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult> edited,
         std::shared_ptr<const MapData::TerrainGridSnapshot> beforeTerrain, std::uint64_t beforeRevision,
@@ -417,6 +421,7 @@ private:
     QPushButton* terrainBlockSelect_ = nullptr;
     QPushButton* terrainBlockCopy_ = nullptr;
     QPushButton* terrainBlockPaste_ = nullptr;
+    QString heightfieldDirectory_;
     QPushButton* terrainBlockRotateLeft_ = nullptr;
     QPushButton* terrainBlockRotateRight_ = nullptr;
     QPushButton* terrainBlockFlipEastWest_ = nullptr;

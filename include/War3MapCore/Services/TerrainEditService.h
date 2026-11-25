@@ -70,6 +70,9 @@ private:
     friend Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainBlockPasteIntent&, bool, const MapData::TerrainWaterBrushLimits&);
+    friend Result<PreparedTerrainEdit> PrepareTerrainHeightfieldEdit(const MapData::MapDataEditSession&,
+        const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
+        const MapData::TerrainHeightfieldIntent&, bool, const MapData::TerrainWaterBrushLimits&);
 };
 
 // 宿主在同一串行临界区提供实际文档身份；服务不读盘、不替宿主猜来源或修订。
@@ -122,6 +125,12 @@ private:
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
     const MapData::TerrainBlockPasteIntent& intent, bool followDoodads = false,
+    const MapData::TerrainWaterBrushLimits& limits = {});
+// 整图高度场导入（载荷由ConvertTerrainHeightfield按当前网格换算）；换图或修订漂移不提交任何前缀。
+[[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainHeightfieldEdit(
+    const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
+    const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
+    const MapData::TerrainHeightfieldIntent& intent, bool followDoodads = false,
     const MapData::TerrainWaterBrushLimits& limits = {});
 [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(
     MapData::MapDataEditSession& session, const MapDataQueryBinding& document,

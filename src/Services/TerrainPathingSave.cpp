@@ -92,7 +92,7 @@ TerrainTextureSlotCommand TextureSlotCommand(const MapData::TerrainPaletteEditIn
 }
 
 bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke, bool allowNoOp) {
-    if (!stroke.palette || stroke.bounds || stroke.resize || stroke.blockPaste || !Neutral(stroke.brush) || !stroke.points.empty()
+    if (!stroke.palette || stroke.bounds || stroke.resize || stroke.blockPaste || stroke.heightfield || !Neutral(stroke.brush) || !stroke.points.empty()
         || stroke.waterBrush || stroke.followDoodads) return false;
     const auto& palette = *stroke.palette;
     const auto normalized = NormalizeTerrainTextureSlotCommand(TextureSlotCommand(palette));
@@ -101,15 +101,23 @@ bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke, bool allowNoOp) 
 }
 
 bool BlockCommand(const MapData::TerrainStrokeIntent& stroke) {
-    return stroke.blockPaste && !stroke.palette && !stroke.bounds && !stroke.resize && !stroke.waterBrush
+    return stroke.blockPaste && !stroke.heightfield && !stroke.palette && !stroke.bounds && !stroke.resize && !stroke.waterBrush
         && Neutral(stroke.brush) && stroke.points.empty()
         && stroke.cornerRampAlgorithm == MapData::TerrainCornerRampAlgorithm::DryOnly
         && stroke.straightRampAlgorithm == MapData::TerrainStraightRampAlgorithm::Independent
         && MapData::ValidateTerrainBlockPasteIntent(*stroke.blockPaste).Succeeded();
 }
 
+bool HeightfieldCommand(const MapData::TerrainStrokeIntent& stroke) {
+    return stroke.heightfield && !stroke.blockPaste && !stroke.palette && !stroke.bounds && !stroke.resize && !stroke.waterBrush
+        && Neutral(stroke.brush) && stroke.points.empty()
+        && stroke.cornerRampAlgorithm == MapData::TerrainCornerRampAlgorithm::DryOnly
+        && stroke.straightRampAlgorithm == MapData::TerrainStraightRampAlgorithm::Independent
+        && MapData::ValidateTerrainHeightfieldIntent(*stroke.heightfield).Succeeded();
+}
+
 bool ResizeCommand(const MapData::TerrainStrokeIntent& stroke) {
-    return stroke.resize && !stroke.palette && !stroke.bounds && !stroke.blockPaste && !stroke.waterBrush
+    return stroke.resize && !stroke.palette && !stroke.bounds && !stroke.blockPaste && !stroke.heightfield && !stroke.waterBrush
         && Neutral(stroke.brush) && stroke.points.empty() && !stroke.followDoodads
         && stroke.cornerRampAlgorithm == MapData::TerrainCornerRampAlgorithm::DryOnly
         && stroke.straightRampAlgorithm == MapData::TerrainStraightRampAlgorithm::Independent
@@ -258,10 +266,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             || !journal->strokes[inputIndex].ordinaryMembers.empty());
         ++inputIndex;
         if (ordinary) continue;
-        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
+        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste || stroke.heightfield)
             && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::DryOnly)
             return fail("TERRAIN_REPLAY_CORNER_ALGORITHM", "非拐角命令不能携带拐角算法版本。");
-        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
+        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste || stroke.heightfield)
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent)
             || (stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
@@ -272,6 +280,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
         }
         if (stroke.blockPaste) {
             if (!BlockCommand(stroke)) return fail("TERRAIN_REPLAY_BLOCK_CONFLICT", "地形块须为独立的有界绝对复制命令，不能混用笔刷、范围或其它算法。");
+            continue;
+        }
+        if (stroke.heightfield) {
+            if (!HeightfieldCommand(stroke)) return fail("TERRAIN_REPLAY_HEIGHTFIELD_CONFLICT", "高度场须为独立的整图命令，不能混用笔刷、范围或其它算法。");
             continue;
         }
         if (stroke.palette) {
@@ -536,9 +548,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
         const bool cornerRamp = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp;
         const bool straightRamp = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp;
         const bool blockPaste = stroke.blockPaste.has_value();
-        if (stroke.waterBrush || nativeCliff || cornerRamp || straightRamp || blockPaste) {
+        const bool heightfield = stroke.heightfield.has_value();
+        if (stroke.waterBrush || nativeCliff || cornerRamp || straightRamp || blockPaste || heightfield) {
             const bool enforceWaterLimits = stroke.waterBrush ? stroke.waterBrush->enforceWaterLimits
-                : cornerRamp || straightRamp || blockPaste ? true : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
+                : cornerRamp || straightRamp || blockPaste || heightfield ? true : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
             const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
                 std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
             if (!remaining || historyBytes == limits.maximumCandidateBytes || work == limits.maximumWork)
@@ -581,6 +594,9 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             auto plan = blockPaste
                 ? PrepareTerrainBlockPasteEdit(candidate, document, binding, *resources.value,
                     *stroke.blockPaste, stroke.followDoodads, waterLimits)
+                : heightfield
+                ? PrepareTerrainHeightfieldEdit(candidate, document, binding, *resources.value,
+                    *stroke.heightfield, stroke.followDoodads, waterLimits)
                 : stroke.waterBrush
                 ? PrepareTerrainWaterEdit(candidate, document, binding, *resources.value,
                     *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits)
@@ -749,10 +765,10 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
             || !journal->strokes[inputIndex].ordinaryMembers.empty());
         ++inputIndex;
         if (ordinary) continue;
-        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
+        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste || stroke.heightfield)
             && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::DryOnly)
             return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_CORNER_ALGORITHM", "非拐角命令不能携带拐角算法版本。");
-        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
+        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste || stroke.heightfield)
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent)
             || (stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
@@ -763,6 +779,10 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
         }
         if (stroke.blockPaste) {
             if (!BlockCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BLOCK_CONFLICT", "地形块须为独立的有界绝对复制命令，不能混用笔刷、范围或其它算法。");
+            continue;
+        }
+        if (stroke.heightfield) {
+            if (!HeightfieldCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_HEIGHTFIELD_CONFLICT", "高度场须为独立的整图命令，不能混用笔刷、范围或其它算法。");
             continue;
         }
         if (stroke.palette) {
@@ -975,6 +995,10 @@ Result<DraftPreparation> PrepareDraft(const MapDocument& original,
             && (!charge(remaining.maximumCandidateBytes, stroke.intent.blockPaste->expectedBlockSha256.capacity() + 1, 1)
                 || !charge(remaining.maximumWork, stroke.intent.blockPaste->expectedBlockSha256.size(), 1)))
             return Result<DraftPreparation>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "地形块摘要的输入驻留或核对工作超过剩余预算。");
+        if (stroke.intent.heightfield
+            && (!charge(remaining.maximumCandidateBytes, stroke.intent.heightfield->groundRaw.capacity(), sizeof(std::uint16_t))
+                || !charge(remaining.maximumWork, stroke.intent.heightfield->groundRaw.size(), 4)))
+            return Result<DraftPreparation>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "高度场载荷的输入驻留或核对工作超过剩余预算。");
         if (stroke.ordinaryDoodads
             && (!charge(remaining.maximumCandidateBytes, stroke.ordinaryDoodads->inserted.capacity(), 1)
                 || !charge(remaining.maximumWork, stroke.ordinaryDoodads->inserted.size(), 1)))
@@ -1003,6 +1027,9 @@ Result<DraftPreparation> PrepareDraft(const MapDocument& original,
             || (stroke.intent.blockPaste
                 && (!charge(remaining.maximumCandidateBytes, stroke.intent.blockPaste->expectedBlockSha256.size() + 1, 1)
                     || !charge(remaining.maximumWork, stroke.intent.blockPaste->expectedBlockSha256.size(), 1)))
+            || (stroke.intent.heightfield
+                && (!charge(remaining.maximumCandidateBytes, stroke.intent.heightfield->groundRaw.size(), sizeof(std::uint16_t))
+                    || !charge(remaining.maximumWork, stroke.intent.heightfield->groundRaw.size(), 1)))
             || !charge(remaining.maximumWork, stroke.intent.points.size(), 2)
             || !charge(remaining.maximumWork, 1, 64))
             return Result<DraftPreparation>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向点序列复制或工作预算不足。");

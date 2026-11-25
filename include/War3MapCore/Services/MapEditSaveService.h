@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
+#include "War3MapCore/MapData/TerrainHeightfield.h"
 #include "War3MapCore/MapData/TerrainResizeEditing.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/MapRuntimePreparation.h"
@@ -38,6 +39,12 @@ enum class MapEditPointSpace {
 
 // 同一保存事务内按顺序施加。TerrainVertex 使用源 W3E 顶点索引；World 使用
 // Warcraft 世界坐标。普通笔刷与浅/深水最终都通过同一Core准备/提交事务。
+// 外部高度场与导入参数；服务按本笔之前的实际网格换算成整图载荷，不接受客户端换算结果。
+struct MapEditHeightfieldImport {
+    MapData::TerrainHeightfieldSource source;
+    MapData::TerrainHeightfieldOptions options;
+};
+
 struct MapEditTerrainStroke {
     MapData::TerrainBrush brush;
     std::vector<MapData::TerrainStrokePoint> points;
@@ -53,6 +60,8 @@ struct MapEditTerrainStroke {
     // 同图绝对原始值复制；来源摘要仅由保存服务在绑定会话中捕获，不接受任意字节。
     std::optional<MapData::TerrainBlockPasteIntent> blockPaste;
     std::optional<TerrainTextureSlotCommand> textureSlot;
+    // 独立整图高度场命令；无采样点、普通笔刷或其它结构命令。
+    std::optional<MapEditHeightfieldImport> heightfield;
 };
 
 // 地图数据字段修改：类别 / 行 / 字段寻址（字段目录见 MapData/MapFields.h），绑定成员 SHA、
@@ -190,6 +199,8 @@ struct MapEditSaveReceipt {
     std::vector<MapEditOpaqueMemberReceipt> opaqueScriptMembers;
     std::optional<Trigger::TriggerGraphEditReceipt> codeIdentityGraph;
     bool inProcessOnly = false;
+    // 每个高度场命令的换算报告（截断、覆盖、填充），顺序同请求。
+    std::vector<MapData::TerrainHeightfieldReport> heightfieldReports;
 };
 
 // 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

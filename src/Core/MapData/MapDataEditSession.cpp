@@ -1143,10 +1143,17 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainJournalCommands(
             return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
         }
         const auto count = command->terrainStroke->intent.points.size();
-        if ((!count && !command->terrainStroke->intent.palette && !command->terrainStroke->intent.blockPaste && !command->terrainStroke->intent.resize)
+        if ((!count && !command->terrainStroke->intent.palette && !command->terrainStroke->intent.blockPaste
+                && !command->terrainStroke->intent.heightfield && !command->terrainStroke->intent.resize)
             || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
         if (command->terrainStroke->intent.blockPaste) {
             const auto bytes = command->terrainStroke->intent.blockPaste->expectedBlockSha256.capacity() + 1;
+            if (bytes > TerrainJournalMaximumBytes - frozenBytes) return fail("TERRAIN_JOURNAL_BUDGET");
+            frozenBytes += bytes;
+        }
+        if (command->terrainStroke->intent.heightfield) {
+            const auto& heightfield = *command->terrainStroke->intent.heightfield;
+            const auto bytes = heightfield.groundRaw.size() * 2 + heightfield.payloadSha256.size() + 16;
             if (bytes > TerrainJournalMaximumBytes - frozenBytes) return fail("TERRAIN_JOURNAL_BUDGET");
             frozenBytes += bytes;
         }

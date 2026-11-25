@@ -181,6 +181,16 @@ Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(const MapData::MapDataE
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }
 
+Result<PreparedTerrainEdit> PrepareTerrainHeightfieldEdit(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainPathingResources& resources, const MapData::TerrainHeightfieldIntent& intent,
+    bool followDoodads, const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    auto plan = session.PrepareTerrainHeightfieldEdit(resources, intent, followDoodads, limits);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+}
+
 Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document, const PreparedTerrainEdit& prepared,
     const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& prepublish) {

@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainBoundsEditing.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
+#include "War3MapCore/MapData/TerrainHeightfield.h"
 #include "War3MapCore/MapData/TerrainResizeEditing.h"
 
 namespace War3Map::MapData {
@@ -30,6 +31,8 @@ struct TerrainStrokeIntent {
     std::optional<TerrainPaletteEditIntent> palette;
     // 独立绝对高度块命令；仅携源矩形、目标和内容摘要，重放从当时before读取实际源块。
     std::optional<TerrainBlockPasteIntent> blockPaste;
+    // 独立整图高度场命令：携带已换算的完整地面值与统一悬崖层，摘要绑定载荷。
+    std::optional<TerrainHeightfieldIntent> heightfield;
     // FTJG独立外矩形扩裁；相对当笔before，不能夹带普通笔刷或raw网格。
     std::optional<TerrainResizeIntent> resize;
     // 仅CornerRamp可选版本化算法；其余命令保持1。不是来源授权，仍须实际规则owner。
