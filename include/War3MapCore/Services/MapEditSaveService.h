@@ -8,6 +8,7 @@
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "War3MapCore/MapData/TerrainHeightfield.h"
+#include "War3MapCore/Services/PlacementImport.h"
 #include "War3MapCore/MapData/TerrainResizeEditing.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/MapRuntimePreparation.h"
@@ -146,6 +147,9 @@ struct MapEditSaveRequest {
     bool inProcessOnly = false;
     std::string minimapMarkerRevision;
     std::vector<MinimapMarkerEdit> minimapMarkerEdits;
+    // 外部摆放清单（已装入文件字节）：导入文件、新建装饰物/单位类型和摆放一次写出，须单独保存。
+    // 物编由保存服务按实际来源规划并冻结；调用方不能同时提供 objectTransactions 或成员字节。
+    std::shared_ptr<const MapData::PlacementManifest> placementImport;
 };
 
 struct MapEditMemberReceipt {
@@ -201,6 +205,8 @@ struct MapEditSaveReceipt {
     bool inProcessOnly = false;
     // 每个高度场命令的换算报告（截断、覆盖、填充），顺序同请求。
     std::vector<MapData::TerrainHeightfieldReport> heightfieldReports;
+    // 摆放清单导入：新建类型的 key→rawcode、实例与文件计数。
+    std::optional<PlacementImportReport> placementImport;
 };
 
 // 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

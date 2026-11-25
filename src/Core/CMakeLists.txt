@@ -49,6 +49,7 @@ add_library(War3MapCore STATIC
     MapData/MapDataEditSessionTerrainQuery.cpp
     MapData/MapDataEditSessionTerrainInternal.h
     MapData/PlacementEditing.cpp
+    MapData/PlacementManifest.cpp
     MapData/MapTerrain.cpp
     MapData/MapTerrainDecode.h
     MapData/TerrainVertexRows.cpp

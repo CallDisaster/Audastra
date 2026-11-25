@@ -206,40 +206,81 @@ Result<PlacementId> AddDoodadPlacement(MapDataEditSession& session, DoodadPlacem
     return Result<PlacementId>::Success(std::move(added.value->front()));
 }
 
+namespace {
+// 新增与导入批次共用：同一份记录校验、创建编号续接、写出预算预检和行谱系。
+template <class Record>
+Status AppendCreations(const MapDocument& document, std::span<const Record> added, std::size_t limit,
+    detail::PlacementEditCandidate& candidate) {
+    constexpr bool units = std::is_same_v<Record, UnitPlacement>;
+    constexpr auto file = units ? PlacementFile::Units : PlacementFile::Doodads;
+    const auto* source = [&] { if constexpr (units) return document.Units() ? &*document.Units() : nullptr;
+        else return document.Doodads() ? &*document.Doodads() : nullptr; }();
+    if (!source) return Failure("PLACEMENT_FILE_UNAVAILABLE", "摆放来源缺失或不可编辑，不能新增");
+    if (source->recordLayout != PlacementRecordLayout::Classic)
+        return Failure("PLACEMENT_LAYOUT_UNDETERMINED", "记录布局尚未确定，不能新增摆放");
+    if (added.empty() || added.size() > limit)
+        return Failure("PLACEMENT_CREATE_LIMIT", "一次须新增 1.." + std::to_string(limit) + " 个同类摆放");
+    for (const auto& record : added) if (!ValidTransform(record))
+        return Failure("PLACEMENT_COORDINATE_INVALID", "新摆放的 rawcode、坐标、朝向或缩放无效");
+    const auto& existing = [&]() -> const auto& { if constexpr (units) return source->units; else return source->doodads; }();
+    const auto first = NextCreationId(existing);
+    if (first < 0 || std::uint64_t(first) + added.size() - 1 > std::uint64_t((std::numeric_limits<std::int32_t>::max)()))
+        return Failure("PLACEMENT_ID_EXHAUSTED", "新增批次的创建编号已用尽");
+    const auto measured = MeasureClassicPlacementAppend(*source, added);
+    if (!measured.Succeeded()) return Status{measured.diagnostics};
+    auto& next = [&]() -> auto& { if constexpr (units) { candidate.units = *source; return candidate.units->units; }
+        else { candidate.doodads = *source; return candidate.doodads->doodads; } }();
+    next.reserve(next.size() + added.size());
+    candidate.newIds.reserve(candidate.newIds.size() + added.size());
+    for (std::size_t i = 0; i < added.size(); ++i) {
+        auto record = added[i]; record.creationId = static_cast<std::int32_t>(std::uint64_t(first) + i);
+        next.push_back(std::move(record));
+        candidate.newIds.push_back(MakePlacementId(file, static_cast<std::uint32_t>(next.size() - 1), next.back()));
+    }
+    candidate.lineage.push_back(Rows(file, existing.size(), next.size()));
+    return Status::Ok();
+}
+} // namespace
+
 Result<detail::PlacementEditCandidate> detail::PreparePlacementCreations(
     const MapDocument& document, const PlacementCreationRecords& records) {
-    const auto fail = [](Status status) { return Result<PlacementEditCandidate>{std::nullopt, std::move(status.diagnostics)}; };
     return std::visit([&](const auto& added) -> Result<PlacementEditCandidate> {
         using Record = typename std::decay_t<decltype(added)>::value_type;
-        constexpr bool units = std::is_same_v<Record, UnitPlacement>;
-        constexpr auto file = units ? PlacementFile::Units : PlacementFile::Doodads;
-        const auto* source = [&] { if constexpr (units) return document.Units() ? &*document.Units() : nullptr;
-            else return document.Doodads() ? &*document.Doodads() : nullptr; }();
-        if (!source) return fail(Failure("PLACEMENT_FILE_UNAVAILABLE", "摆放来源缺失或不可编辑，不能新增"));
-        if (source->recordLayout != PlacementRecordLayout::Classic)
-            return fail(Failure("PLACEMENT_LAYOUT_UNDETERMINED", "记录布局尚未确定，不能新增摆放"));
-        if (added.empty() || added.size() > 4096)
-            return fail(Failure("PLACEMENT_CREATE_LIMIT", "一次须新增 1..4096 个同类摆放"));
-        for (const auto& record : added) if (!ValidTransform(record))
-            return fail(Failure("PLACEMENT_COORDINATE_INVALID", "新摆放的 rawcode、坐标、朝向或缩放无效"));
-        const auto& existing = [&]() -> const auto& { if constexpr (units) return source->units; else return source->doodads; }();
-        const auto first = NextCreationId(existing);
-        if (first < 0 || std::uint64_t(first) + added.size() - 1 > std::uint64_t((std::numeric_limits<std::int32_t>::max)()))
-            return fail(Failure("PLACEMENT_ID_EXHAUSTED", "新增批次的创建编号已用尽"));
-        const auto measured = MeasureClassicPlacementAppend(*source, std::span<const Record>(added));
-        if (!measured.Succeeded()) return {std::nullopt, measured.diagnostics};
         PlacementEditCandidate candidate;
-        auto& next = [&]() -> auto& { if constexpr (units) { candidate.units = *source; return candidate.units->units; }
-            else { candidate.doodads = *source; return candidate.doodads->doodads; } }();
-        candidate.newIds.reserve(added.size());
-        for (std::size_t i = 0; i < added.size(); ++i) {
-            auto record = added[i]; record.creationId = static_cast<std::int32_t>(std::uint64_t(first) + i);
-            next.push_back(std::move(record));
-            candidate.newIds.push_back(MakePlacementId(file, static_cast<std::uint32_t>(next.size() - 1), next.back()));
-        }
-        candidate.lineage.push_back(Rows(file, existing.size(), next.size()));
+        const auto appended = AppendCreations(document, std::span<const Record>(added), 4096, candidate);
+        if (!appended.Succeeded()) return {std::nullopt, appended.diagnostics};
         return Result<PlacementEditCandidate>::Success(std::move(candidate));
     }, records);
+}
+
+Result<detail::PlacementEditCandidate> detail::PreparePlacementBatch(const MapDocument& document,
+    std::span<const UnitPlacement> units, std::span<const DoodadPlacement> doodads) {
+    if ((units.empty() && doodads.empty()) || units.size() > PlacementBatchMaximumRecords
+        || doodads.size() > PlacementBatchMaximumRecords - units.size())
+        return Result<PlacementEditCandidate>::Failure("MapData.Placement", "PLACEMENT_BATCH_LIMIT",
+            "导入批次须含 1.." + std::to_string(PlacementBatchMaximumRecords) + " 个摆放");
+    PlacementEditCandidate candidate;
+    if (!units.empty()) {
+        const auto appended = AppendCreations(document, units, PlacementBatchMaximumRecords, candidate);
+        if (!appended.Succeeded()) return {std::nullopt, appended.diagnostics};
+    }
+    if (!doodads.empty()) {
+        const auto appended = AppendCreations(document, doodads, PlacementBatchMaximumRecords, candidate);
+        if (!appended.Succeeded()) return {std::nullopt, appended.diagnostics};
+    }
+    return Result<PlacementEditCandidate>::Success(std::move(candidate));
+}
+
+Result<std::vector<PlacementId>> AddPlacementBatch(MapDataEditSession& session,
+    std::span<const UnitPlacement> units, std::span<const DoodadPlacement> doodads) {
+    const auto document = session.Snapshot();
+    auto candidate = detail::PreparePlacementBatch(document, units, doodads);
+    if (!candidate.Succeeded()) return {std::nullopt, candidate.diagnostics};
+    const auto status = detail::PlacementEditingAccess::Commit(session, document,
+        candidate.value->units ? &*candidate.value->units : nullptr,
+        candidate.value->doodads ? &*candidate.value->doodads : nullptr, std::move(candidate.value->lineage));
+    if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
+    return Result<std::vector<PlacementId>>::Success(std::move(candidate.value->newIds));
 }
 
 Result<std::vector<PlacementId>> AddPlacements(MapDataEditSession& session, const PlacementCreationRecords& records) {

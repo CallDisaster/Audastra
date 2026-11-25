@@ -5,6 +5,7 @@
 
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/TerrainHeightfield.h"
+#include "War3MapCore/MapData/PlacementManifest.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
@@ -620,6 +621,13 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             stroke.heightfield = Services::MapEditHeightfieldImport{std::move(*source.value),
                 {static_cast<std::uint8_t>(*level), static_cast<float>(*sink)}};
             request.terrainStrokes.push_back(std::move(stroke)); index += 4;
+        } else if (flag == L"--placements") {
+            if (index + 1 >= argc) return Invalid("--placements requires <placements.json>");
+            if (request.placementImport) return Invalid("--placements may appear only once");
+            auto manifest = MapData::ReadPlacementManifest(std::filesystem::path(std::wstring(argv[index + 1])));
+            if (!manifest.Succeeded() || !manifest.value) { PrintDiagnostics(manifest.diagnostics); return 2; }
+            request.placementImport = std::make_shared<const MapData::PlacementManifest>(std::move(*manifest.value));
+            index += 2;
         } else if (flag == L"--terrain-heightfield-follow") {
             if (request.terrainStrokes.empty() || !request.terrainStrokes.back().heightfield)
                 return Invalid("--terrain-heightfield-follow must follow --terrain-heightfield");
@@ -731,7 +739,8 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     else request.runtimeCatalogDiagnostics = runtimeSources.diagnostics;
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
         && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits
-        && !request.rebuildTerrainShadow && !request.runtime.decision && !request.settingsCustomEdits && !request.triggerCodeIdentity)
+        && !request.rebuildTerrainShadow && !request.runtime.decision && !request.settingsCustomEdits && !request.triggerCodeIdentity
+        && !request.placementImport)
         return Invalid("at least one bounded edit operation is required");
     const auto timingStart = std::chrono::steady_clock::now();
     std::mutex timingMutex;
@@ -765,6 +774,18 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         std::cout << "\nedited_member_" << index << '=' << member.name
                   << "\nedited_member_" << index << "_original_sha256=" << member.originalSha256
                   << "\nedited_member_" << index << "_saved_sha256=" << member.savedSha256;
+    }
+    if (receipt.placementImport) {
+        const auto& report = *receipt.placementImport;
+        std::cout << "\nplacement_import_files=" << report.files << "\nplacement_import_replaced_files=" << report.replacedFiles
+            << "\nplacement_import_doodads=" << report.doodads << "\nplacement_import_fixed_height_doodads=" << report.fixedHeightDoodads
+            << "\nplacement_import_units=" << report.units << "\nplacement_import_type_count=" << report.types.size();
+        for (std::size_t index = 0; index < report.types.size(); ++index) {
+            const auto& type = report.types[index];
+            std::cout << "\nplacement_import_type_" << index << '=' << type.key << ','
+                << (type.kind == MapData::PlacementManifestKind::Unit ? "unit" : "doodad") << ',' << type.rawcode
+                << ',' << type.base << ',' << type.instances;
+        }
     }
     std::cout << "\nheightfield_count=" << receipt.heightfieldReports.size();
     for (std::size_t index = 0; index < receipt.heightfieldReports.size(); ++index) {

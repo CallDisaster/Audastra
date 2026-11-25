@@ -86,4 +86,18 @@ Status WriteFileBytes(const std::filesystem::path& path, std::span<const std::by
     }
 }
 
+bool IsSafeManifestRelativePath(std::string_view text) noexcept {
+    if (text.empty() || text.size() > 260) return false;
+    if (text.find(':') != std::string_view::npos || text.front() == '/' || text.front() == '\\') return false;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const auto end = text.find_first_of("/\\", start);
+        const auto part = text.substr(start, end == std::string_view::npos ? text.size() - start : end - start);
+        if (part.empty() || part == "." || part == "..") return false;
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return true;
+}
+
 } // namespace War3Map::IO

@@ -93,3 +93,32 @@
 
 本程序写出和重开原生记录，与原版编辑器打开、地图初始化脚本生成、实际进游戏是不同
 的验证步骤。涉及运行时效果时仍应另行确认。
+
+## 导入摆放清单
+
+世界页大纲“新建”菜单中的“导入摆放清单…”读取一份 `sonne-placements/v1` 清单，一次完成三件事：
+导入外部制作的模型文件，新建对应的自定义装饰物或单位类型，摆放全部实例。对话框先按当前地图给出
+文件数量与大小、覆盖已有文件数量、装饰物与单位数量和每个新类型的 ID，确认后才修改地图。
+
+清单为 JSON，未知字段一律拒绝：
+
+| 字段 | 含义 |
+|---|---|
+| `format` | 固定为 `sonne-placements/v1` |
+| `files` | 可选。`source` 为清单目录内的相对路径；`archivePath` 为地图内路径，须以 `Sonne\` 开头，不区分大小写不得重复。单个文件不超过 64MiB，合计不超过 1GiB |
+| `types` | `key` 唯一；`kind` 为 `doodad` 或 `unit`；`model` 为模型路径，`Sonne\` 下的模型须列在 `files` 中；可选 `name`；`base` 为父类型，单位必填，装饰物缺省时使用无占地、无声音、无阴影的原版装饰物 `LOsp`；`followGround` 仅用于装饰物 |
+| `instances` | `type` 为类型的 `key`；`x`、`y`、`z` 为世界坐标；`facing` 为角度（度）；`scale` 为三轴缩放，每轴大于 0 且不超过 1000；可选 `variation`（0–1023） |
+
+新类型的 ID 按父类型首字母顺延分配，避开原版和地图已有的 ID，并写入模型字段。单位归中立被动。
+装饰物默认保持清单中的绝对高度（存储标志 0x04）；`followGround` 为 `true` 时贴地。使用默认父类型的
+装饰物只有一个变体，`variation` 须为 0。任何实例落在地图范围外时整份拒绝，并列出前 32 个位置。
+
+导入按编辑器分开记录撤销：导入的文件在资源导入里作为一步；新建的装饰物类型和单位类型分别记在
+对应物编分类里；全部摆放在世界页作为一步。在世界页撤销只撤回这次的摆放，不会撤回物编类型或导入的
+文件，反之亦然。任何一步失败时整份不导入，已完成的步骤撤回并从撤销记录中移除。编辑器内导入的文件
+合计不超过 256MiB，更大的清单使用命令行。
+
+命令行在 `map-edit-save` 后追加 `--placements 清单.json`，W3E 的 SHA 参数传 `-`。摆放清单须单独保存，
+不能与其它修改组合。回执中的 `placement_import_files`、`placement_import_replaced_files`、
+`placement_import_doodads`、`placement_import_fixed_height_doodads`、`placement_import_units` 和
+`placement_import_type_count` 给出数量；`placement_import_type_N` 依次为类型的 key、种类、新 ID、父类型和实例数。

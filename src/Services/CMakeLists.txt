@@ -27,6 +27,8 @@ add_library(War3MapServices STATIC
     WorldModelBugPlaceholderService.cpp
     PlacementPresentationService.cpp
     PlacementCreation.cpp
+    PlacementImport.cpp
+    ObjectCommandSources.cpp
     ProjectReferenceIndex.cpp
     AuxiliaryEditing.cpp
     AuxiliaryScriptSymbols.cpp

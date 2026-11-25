@@ -54,6 +54,11 @@ struct PlacementMove {
 using PlacementCreationRecords = std::variant<std::vector<UnitPlacement>, std::vector<DoodadPlacement>>;
 [[nodiscard]] Result<std::vector<PlacementId>> AddPlacements(
     MapDataEditSession& session, const PlacementCreationRecords& records);
+// 外部摆放清单的导入批次：单位与装饰物在同一修订中追加（一步撤销），两个文件各自续接创建编号。
+// 记录校验与 AddPlacements 相同；两类合计 1..PlacementBatchMaximumRecords 条。
+inline constexpr std::size_t PlacementBatchMaximumRecords = 100000;
+[[nodiscard]] Result<std::vector<PlacementId>> AddPlacementBatch(MapDataEditSession& session,
+    std::span<const UnitPlacement> units, std::span<const DoodadPlacement> doodads);
 
 // 按同一世界坐标偏移复制最多 4096 个单位/物品/装饰物/可破坏物，可跨两个文件。
 // 所有身份、坐标、创建编号及起始位置规则先校验，再一次提交；返回标识与请求顺序一致。
@@ -75,6 +80,8 @@ struct PlacementEditCandidate {
     const MapDocument& document, std::span<const PlacementId> ids, std::array<float, 3> offset);
 [[nodiscard]] Result<PlacementEditCandidate> PreparePlacementCreations(
     const MapDocument& document, const PlacementCreationRecords& records);
+[[nodiscard]] Result<PlacementEditCandidate> PreparePlacementBatch(const MapDocument& document,
+    std::span<const UnitPlacement> units, std::span<const DoodadPlacement> doodads);
 [[nodiscard]] Result<PlacementEditCandidate> PreparePlacementDeletions(
     const MapDocument& document, std::span<const PlacementId> ids);
 }

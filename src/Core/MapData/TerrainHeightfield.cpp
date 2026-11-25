@@ -52,20 +52,6 @@ std::optional<std::int64_t> Integral(const nlohmann::json& value) {
     return static_cast<std::int64_t>(number);
 }
 
-bool SafeRelativePath(std::string_view text) {
-    if (text.empty() || text.size() > 260) return false;
-    if (text.find(':') != std::string_view::npos || text.front() == '/' || text.front() == '\\') return false;
-    std::size_t start = 0;
-    while (start <= text.size()) {
-        const auto end = text.find_first_of("/\\", start);
-        const auto part = text.substr(start, end == std::string_view::npos ? text.size() - start : end - start);
-        if (part.empty() || part == "." || part == "..") return false;
-        if (end == std::string_view::npos) break;
-        start = end + 1;
-    }
-    return true;
-}
-
 std::string PayloadSha256(std::uint8_t algorithm, std::uint8_t cliffLevel, std::uint32_t width, std::uint32_t height,
     std::span<const std::uint16_t> groundRaw) {
     std::vector<std::byte> wire;
@@ -139,7 +125,7 @@ Result<TerrainHeightfieldSource> ParseTerrainHeightfieldManifest(std::span<const
         source.fillHeight = fill.get<float>();
         source.dataPath = "heightfield.f32";
         if (const auto data = root.find("data"); data != root.end()) {
-            if (!data->is_string() || !SafeRelativePath(data->get<std::string>()))
+            if (!data->is_string() || !IO::IsSafeManifestRelativePath(data->get<std::string>()))
                 Fail("TERRAIN_HEIGHTFIELD_DATA_PATH", "高度场 data 必须是清单目录内的相对路径，不能是绝对路径或含“..”。");
             source.dataPath = data->get<std::string>();
         }

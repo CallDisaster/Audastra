@@ -46,6 +46,8 @@ qt_add_library(War3MapQtProject STATIC
     ProjectLuaCatalog.cpp ProjectLuaModules.h
     ObjectNames.cpp
     ObjectContextProvider.cpp ObjectContextProvider.h
+    ObjectPlanCommit.cpp ObjectPlanCommit.h
+    ProjectPlacementImport.cpp ProjectPlacementImport.h
     MapCopySave.cpp
     MapSaveRun.cpp
     MapSavePreferences.cpp

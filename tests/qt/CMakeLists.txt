@@ -511,6 +511,13 @@ target_compile_options(audastra-object-context-provider-tests PRIVATE /W4 /permi
 add_test(NAME qt-object-context-provider COMMAND audastra-object-context-provider-tests)
 set_tests_properties(qt-object-context-provider PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+qt_add_executable(audastra-project-placement-import-tests ProjectPlacementImportTests.cpp)
+target_link_libraries(audastra-project-placement-import-tests PRIVATE War3MapEditor::QtProject)
+target_compile_definitions(audastra-project-placement-import-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-project-placement-import-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-project-placement-import COMMAND audastra-project-placement-import-tests)
+set_tests_properties(qt-project-placement-import PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(audastra-terrain-water-edit-tests TerrainWaterEditPreparationTests.cpp)
 target_link_libraries(audastra-terrain-water-edit-tests PRIVATE War3MapEditor::QtProject Qt6::Test)

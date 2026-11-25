@@ -52,7 +52,8 @@ struct ObjectCommandsFixture {
     ObjectData::ObjectFieldSchema schema;
     std::array<std::unique_ptr<ObjectData::LniObjectDocument>, 7> documents;
 
-    ObjectCommandsFixture() {
+    // modelFields：为装饰物与单位追加模型字段（dfil/umdl，原值 Base\Model.mdl），供摆放导入等测试新建类型后写模型。
+    explicit ObjectCommandsFixture(bool modelFields = false) {
         using namespace ObjectData;
         std::map<std::string, std::string> files;
         CatalogLoadOptions catalogOptions; catalogOptions.stringFiles.clear();
@@ -77,9 +78,16 @@ struct ObjectCommandsFixture {
             }
             if (kind.type == ObjectType::Ability) metadata.push_back({{"ID", "adat"}, {"field", "Data"},
                 {"slk", "AbilityData"}, {"type", "int"}, {"repeat", "4"}, {"data", "1"}, {"useSpecific", "A001"}});
+            const bool modeled = modelFields && (kind.type == ObjectType::Doodad || kind.type == ObjectType::Unit);
+            if (modeled) {
+                data.front()["file"] = "Base\\Model.mdl";
+                metadata.push_back({{"ID", kind.type == ObjectType::Doodad ? "dfil" : "umdl"}, {"field", "file"},
+                    {"slk", "Profile"}, {"index", "0"}, {"type", "string"}, {"displayName", "模型"}});
+            }
             files[prefix + ".slk"] = ObjectTable(data);
             files[prefix + ".meta"] = ObjectTable(metadata);
-            files[prefix + ".txt"] = "[" + std::string(kind.base) + "]\nName=\"原始对象\"\n";
+            files[prefix + ".txt"] = "[" + std::string(kind.base) + "]\nName=\"原始对象\"\n"
+                + (modeled ? "file=Base\\Model.mdl\n" : "");
             catalogOptions.sources.push_back({kind.type, {prefix + ".slk"}, {prefix + ".txt"}});
             schemaOptions.sources.push_back({kind.type, prefix + ".meta"});
             auto parsed = LniObjectCodec(kind.type).Parse({});

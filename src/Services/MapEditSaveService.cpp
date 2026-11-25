@@ -10,6 +10,7 @@
 #include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
+#include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapDocument.h"
@@ -18,6 +19,8 @@
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/AuxiliaryTransaction.h"
 #include "War3MapCore/Services/MapCustomSettingsSources.h"
+#include "War3MapCore/Services/ObjectCommandSources.h"
+#include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/UiLibrary/UiLibrary.h"
@@ -414,6 +417,62 @@ Status ApplyObjectTransactions(const MapEditSaveRequest& request, const MapArchi
     return Status::Ok();
 }
 
+// 摆放清单：两类摆放同一修订追加，导入文件逐个写入并登记到 war3map.imp。物编已由冻结事务写出。
+Status ApplyPlacementImport(const MapData::PlacementManifest& manifest, const PlacementImportPlan& plan,
+    const MapArchiveSession& source, MapData::MapDataEditSession& edits,
+    std::vector<MapArchiveMember>& replacements, std::vector<MapEditMemberReceipt>& receipts) {
+    const auto memberSha = [&](const std::string& name) -> Result<std::string> {
+        if (!source.HasMember(name)) return Result<std::string>::Success(std::string{});
+        const auto bytes = source.ReadMember(name);
+        if (!bytes.Succeeded() || !bytes.value) return {{}, bytes.diagnostics};
+        return Sha256(*bytes.value);
+    };
+    const auto receipt = [&](const MapArchiveMember& member) -> Status {
+        auto original = memberSha(member.name);
+        if (!original.Succeeded() || !original.value) return ForwardStatus(std::move(original.diagnostics));
+        auto saved = Sha256(member.data);
+        if (!saved.Succeeded() || !saved.value) return ForwardStatus(std::move(saved.diagnostics));
+        receipts.push_back({member.name, std::move(*original.value), std::move(*saved.value)});
+        return Status::Ok();
+    };
+    const auto added = MapData::AddPlacementBatch(edits, plan.units, plan.doodads);
+    if (!added.Succeeded()) return ForwardStatus(added.diagnostics);
+    if (!edits.Removals().empty()) return FieldFailure("SAVE_EDIT_SCOPE_INVALID", "摆放清单导入不能删除成员。");
+    for (auto& member : edits.Replacements()) {
+        if (member.name != "war3map.doo" && member.name != "war3mapUnits.doo")
+            return FieldFailure("SAVE_EDIT_SCOPE_INVALID", "摆放清单导入生成了未获允许的成员：" + member.name);
+        const auto noted = receipt(member); if (!noted.Succeeded()) return noted;
+        replacements.push_back(std::move(member));
+    }
+    auto imports = Resources::ImportTable::CreateEmpty();
+    if (source.HasMember("war3map.imp")) {
+        const auto bytes = source.ReadMember("war3map.imp");
+        if (!bytes.Succeeded() || !bytes.value) return ForwardStatus(bytes.diagnostics);
+        auto parsed = Resources::ImportTable::Parse(*bytes.value);
+        if (!parsed.Succeeded() || !parsed.value) return ForwardStatus(parsed.diagnostics);
+        imports = std::move(*parsed.value);
+    }
+    const auto exists = [&](std::string_view member) {
+        return source.HasMember(member) || std::any_of(manifest.files.begin(), manifest.files.end(),
+            [&](const auto& file) { return file.archivePath == member; });
+    };
+    for (const auto& file : manifest.files) {
+        const MapArchiveMember member{file.archivePath, file.bytes};
+        const auto noted = receipt(member); if (!noted.Succeeded()) return noted;
+        replacements.push_back(member);
+        const auto registered = imports.Upsert(file.archivePath, exists);
+        if (!registered.Succeeded()) return registered;
+    }
+    if (!manifest.files.empty()) {
+        auto table = imports.Serialize();
+        if (!table.Succeeded() || !table.value) return ForwardStatus(table.diagnostics);
+        const MapArchiveMember member{"war3map.imp", std::move(*table.value)};
+        const auto noted = receipt(member); if (!noted.Succeeded()) return noted;
+        replacements.push_back(member);
+    }
+    return Status::Ok();
+}
+
 Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
     const MapEditSaveRequest& request, std::vector<MapEditMemberReceipt>& editedMembers,
     std::optional<Trigger::TriggerEditBatchReceipt>& triggerReceipt,
@@ -622,8 +681,8 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
 Result<Trigger::UiCatalog> ResolveMapEditCatalog(const std::filesystem::path& root,
     const std::optional<std::vector<std::string>>& layers) { return ResolveEditCatalog(root, layers); }
 
-Result<MapEditSaveReceipt> SaveMapEditCandidate(
-    const MapEditSaveRequest& request, const MapSaveService::Progress& progress) {
+static Result<MapEditSaveReceipt> SaveMapEditCandidateImpl(const MapEditSaveRequest& request,
+    const MapSaveService::Progress& progress, const PlacementImportPlan* importPlan) {
     Detail::SaveProgressStage totalTiming(progress, "total");
     Detail::SaveProgressStage inputTiming(progress, "open-preload");
     if (request.triggerCodeIdentity) {
@@ -644,6 +703,12 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
         const bool markerRequest = !request.minimapMarkerEdits.empty();
+        // 摆放清单只伴随保存服务自己冻结的物编事务，不与其它领域合并。
+        const bool importRequest = importPlan != nullptr;
+        if (importRequest != (request.placementImport != nullptr) || (importRequest && (!objectRequest || terrainRequest
+            || fieldRequest || customRequest || placementRequest || triggerRequest || auxiliaryRequest || markerRequest
+            || request.rebuildTerrainShadow || request.runtime.decision.has_value())))
+            return Fail("SAVE_PLACEMENT_IMPORT_SCOPE", "摆放清单导入须单独保存；地形等其它修改请先另存，再在新候选上导入。");
         if (markerRequest != !request.minimapMarkerRevision.empty())
             return Fail("SAVE_MINIMAP_MARKER_REQUEST", "图标编辑需要同时提供操作和查询所得修订。");
         const bool terrainCompanion = terrainRequest && (fieldRequest || objectRequest)
@@ -835,6 +900,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         } else if (objectRequest) {
             const auto applied = ApplyObjectTransactions(request, source, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
+            if (importPlan) {
+                const auto imported = ApplyPlacementImport(*request.placementImport, *importPlan, source, edits, replacements, editedMembers);
+                if (!imported.Succeeded()) return Forward(imported.diagnostics);
+            }
         } else if (shadowOnly) {
             // 计算阴影本身不重放空笔划，也不要求原图有WPM；W3E仍须逐字绑定。
             const auto terrainBytes = source.ReadMember("war3map.w3e");
@@ -1048,7 +1117,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const auto& finalEdits = terrainReplay ? *terrainReplay : edits;
         // 摆放请求也可能改变静态占地；由脚本完成后的最终旧/新资源重建核对。
         // 不能先用“原通行不变、只改Z”的窄门拒绝已通过类型事务的普通DOO增删。
-        const auto pathingGate = terrainRequest || placementRequest
+        const auto pathingGate = terrainRequest || placementRequest || importRequest
             ? Status::Ok() : finalEdits.VerifyTerrainPathingForSave();
         if (!pathingGate.Succeeded()) return Forward(pathingGate.diagnostics);
 
@@ -1300,12 +1369,84 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 manifest.encodedBlpBytes, mip0.width, mip0.height, manifest.encodedMipCount, manifest.rangePolicy};
         }
         result.value->heightfieldReports = std::move(heightfieldReports);
+        if (importPlan) result.value->placementImport = importPlan->report;
         result.diagnostics = std::move(task.diagnostics);
         return result;
     } catch (const std::exception&) {
         return Fail("SAVE_PREPARATION_FAILED", written
             ? "候选已写出，但无法建立完整回执；请核对目标文件并重新打开。"
             : "地图编辑或保存准备发生异常；当前基线未切换，请核对目标路径。");
+    }
+}
+
+namespace {
+struct PreparedPlacementImport {
+    MapEditSaveRequest request;
+    PlacementImportPlan plan;
+};
+
+// 按实际来源规划摆放清单：同一次捕获的原版目录、字段表和地图物编，地形范围取自源 W3E。
+// 物编计划冻结为普通物编事务，随后与摆放、导入文件在同一保存任务中写出。
+Result<PreparedPlacementImport> PreparePlacementImportSave(const MapEditSaveRequest& request) {
+    using R = Result<PreparedPlacementImport>;
+    const auto fail = [](const char* code, std::string message) { return R::Failure("MapEdit.Save", code, std::move(message)); };
+    if (!request.objectTransactions.empty())
+        return fail("SAVE_PLACEMENT_IMPORT_SCOPE", "摆放清单导入的物编由保存服务生成，不能同时提交物编事务。");
+    auto opened = MapArchiveSession::Open(request.sourceMap);
+    if (!opened.Succeeded() || !opened.value) return {{}, opened.diagnostics};
+    const auto& source = *opened.value;
+    if (source.SourceSha256() != request.expectedSourceSha256)
+        return fail("SAVE_SOURCE_STALE", "源地图 SHA-256 与请求不符，请重新获取来源。");
+    const auto terrainBytes = source.ReadMember("war3map.w3e");
+    if (!terrainBytes.Succeeded() || !terrainBytes.value) return {{}, terrainBytes.diagnostics};
+    const auto terrain = MapData::ParseMapTerrain(*terrainBytes.value);
+    if (!terrain.Succeeded() || !terrain.value || !terrain.value->Snapshot()) return {{}, terrain.diagnostics};
+    ObjectCatalogSources catalog; catalog.archive = &source; catalog.gameRoot = request.gameRoot;
+    auto sources = CaptureObjectCommandSources(catalog);
+    if (!sources.Succeeded() || !sources.value) return {{}, sources.diagnostics};
+    auto doodads = sources.value->context(ObjectData::ObjectType::Doodad);
+    if (!doodads.Succeeded() || !doodads.value) return {{}, doodads.diagnostics};
+    auto units = sources.value->context(ObjectData::ObjectType::Unit);
+    if (!units.Succeeded() || !units.value) return {{}, units.diagnostics};
+    PlacementImportInputs inputs{*doodads.value, *units.value, terrain.value->Snapshot()->header,
+        [&source](std::string_view name) { return source.HasMember(name); }};
+    auto plan = PlanPlacementImport(*request.placementImport, inputs);
+    if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+    PreparedPlacementImport prepared{request, std::move(*plan.value)};
+    for (const auto* objects : {&prepared.plan.doodadObjects, &prepared.plan.unitObjects}) {
+        if (!*objects) continue;
+        const auto type = (*objects)->after.Type();
+        const auto& context = type == ObjectData::ObjectType::Doodad ? *doodads.value : *units.value;
+        const std::string name(ObjectData::NativeFileName(type));
+        std::optional<std::vector<std::byte>> original;
+        if (source.HasMember(name)) {
+            auto bytes = source.ReadMember(name);
+            if (!bytes.Succeeded() || !bytes.value) return {{}, bytes.diagnostics};
+            original = std::move(*bytes.value);
+        }
+        auto frozen = ObjectTransactionSnapshot::Freeze((*objects)->after,
+            original ? std::optional<std::span<const std::byte>>(*original) : std::nullopt,
+            request.expectedSourceSha256, context.schema, context.standard);
+        if (!frozen.Succeeded() || !frozen.value) return {{}, frozen.diagnostics};
+        prepared.request.objectTransactions.push_back(std::move(*frozen.value));
+    }
+    const auto verified = sources.value->verify();
+    if (!verified.Succeeded()) return {{}, verified.diagnostics};
+    return R::Success(std::move(prepared));
+}
+} // namespace
+
+Result<MapEditSaveReceipt> SaveMapEditCandidate(
+    const MapEditSaveRequest& request, const MapSaveService::Progress& progress) {
+    if (!request.placementImport) return SaveMapEditCandidateImpl(request, progress, nullptr);
+    try {
+        auto prepared = PreparePlacementImportSave(request);
+        if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
+        return SaveMapEditCandidateImpl(prepared.value->request, progress, &prepared.value->plan);
+    } catch (const std::bad_alloc&) {
+        return Fail("SAVE_PLACEMENT_IMPORT_MEMORY", "摆放清单导入内存不足，未写入地图候选。");
+    } catch (const std::exception&) {
+        return Fail("SAVE_PREPARATION_FAILED", "摆放清单导入准备发生异常，未写入地图候选。");
     }
 }
 

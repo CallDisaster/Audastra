@@ -402,6 +402,10 @@ QWidget* WorldModule::BuildSelectPage() {
     auto* newCamera = menu->addAction(tr("新建镜头")); newCamera->setObjectName(QStringLiteral("worldNewCamera"));
     connect(newRegion, &QAction::triggered, this, [this] { CreateAuxiliary(MapDataKind::Regions); });
     connect(newCamera, &QAction::triggered, this, [this] { CreateAuxiliary(MapDataKind::Cameras); });
+    menu->addSeparator();
+    auto* importPlacements = menu->addAction(tr("导入摆放清单…"));
+    importPlacements->setObjectName(QStringLiteral("worldImportPlacements"));
+    connect(importPlacements, &QAction::triggered, this, &WorldModule::ImportPlacementManifest);
     commands->AddWidget(create, 100);
     auto* properties = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/settings-2")), tr("属性"), commands);
     properties->setObjectName(QStringLiteral("worldAuxiliaryProperties")); commands->AddWidget(properties, 80);

@@ -290,6 +290,8 @@ private:
     // 高度场导入（WorldTerrainHeightfield.cpp）：对话框换算预览，后台准备，主线程按修订提交并入撤销栈。
     void ImportTerrainHeightfield();
     void StartTerrainHeightfieldCommit(MapData::TerrainHeightfieldIntent intent, bool followDoodads);
+    // 摆放清单导入（WorldPlacementImport.cpp）：预览后由工程共用提交，文件、物编类型、摆放各进各自撤销栈。
+    void ImportPlacementManifest();
     void StartWaterBrushCommit();
     void PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult> edited,
         std::shared_ptr<const MapData::TerrainGridSnapshot> beforeTerrain, std::uint64_t beforeRevision,
@@ -422,6 +424,7 @@ private:
     QPushButton* terrainBlockCopy_ = nullptr;
     QPushButton* terrainBlockPaste_ = nullptr;
     QString heightfieldDirectory_;
+    QString placementManifestDirectory_;
     QPushButton* terrainBlockRotateLeft_ = nullptr;
     QPushButton* terrainBlockRotateRight_ = nullptr;
     QPushButton* terrainBlockFlipEastWest_ = nullptr;
