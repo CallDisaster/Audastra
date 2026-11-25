@@ -122,3 +122,8 @@
 不能与其它修改组合。回执中的 `placement_import_files`、`placement_import_replaced_files`、
 `placement_import_doodads`、`placement_import_fixed_height_doodads`、`placement_import_units` 和
 `placement_import_type_count` 给出数量；`placement_import_type_N` 依次为类型的 key、种类、新 ID、父类型和实例数。
+
+装饰物有变化的保存会重建通行数据，此时整张地图已有的全部自定义装饰物类型与摆放、游戏自带的装饰物与
+可破坏物表都计入同一份单次保存的解析预算（至多 64MiB）。这份预算按整张地图的累计量计算，分几次导入不能
+绕过。在 192×128 的测试地图上实测，大约能容纳 1500 个自定义装饰物类型（摆放约 1600 个），或 50 个类型配
+约 1 万个摆放；地图更大或摆放更多时上限更低。超出时报错写明是哪一项、需要多少、还剩多少。

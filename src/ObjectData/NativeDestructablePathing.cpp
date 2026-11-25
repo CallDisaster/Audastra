@@ -69,7 +69,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                     + " 为 " + std::to_string(source.bytes.size()) + " 字节，按每字节 " + std::to_string(kWorkPerInputByte)
                     + " 计需 " + MebibyteText(source.bytes.size() * kWorkPerInputByte) + "，剩余 "
                     + MebibyteText(maximumWorkingBytes - work) + "（单次保存预算至多 64 MiB，先扣除已读取的地图成员）。"
-                    "请把新建类型分到多次保存。");
+                    "预算按整张地图已有的自定义物体与摆放计算，分次保存不能绕过；请减少自定义类型或摆放数量，例如把密集小物件合并成较大的模型。");
             work += source.bytes.size() * kWorkPerInputByte;
         }
         if (std::any_of(inputs.begin(), inputs.begin() + 5, [](const auto* input) { return !input; }))

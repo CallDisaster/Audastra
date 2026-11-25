@@ -278,8 +278,8 @@ std::vector<std::byte> TerrainWire(const TerrainGridSnapshot& grid, std::size_t 
     const auto header = 37 + tables * 4;
     if (header > maximumBytes || grid.vertices.size() > (maximumBytes - header) / 7)
         Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "原版通行需要的地形数据（" + std::to_string(header + grid.vertices.size() * 7)
-            + " 字节）超过本次保存剩余预算（" + std::to_string(maximumBytes) + " 字节）；预算多被前面的物编与来源用掉时，"
-            "请把新建类型分到多次保存。");
+            + " 字节）超过本次保存剩余预算（" + std::to_string(maximumBytes) + " 字节）；预算按整张地图已有的自定义物体与摆放计算，"
+            "分次保存不能绕过；请减少自定义类型或摆放数量。");
     return Take(SerializeMapTerrain(grid));
 }
 void SameScalar(std::optional<float>& target, float value, const char* name) {
