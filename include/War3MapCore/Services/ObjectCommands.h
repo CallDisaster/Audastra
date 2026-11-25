@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,23 @@ struct ObjectCommandPlan {
 [[nodiscard]] Result<ObjectCommandPlan> PlanObjectCreation(
     const ObjectCommandContext& context, const std::string& baseId,
     const std::optional<std::string>& newId, const std::optional<std::string>& name);
+
+// 一次新建多个同类对象：只复制一次文档，最后整体校验回读一次。
+// 自动 id 按基础对象首字母依次取第一个空位，与逐个新建得到的 id 相同。
+inline constexpr std::size_t kMaxObjectCreationBatch = 4096;
+struct ObjectCreationRequest {
+    std::string baseId;
+    std::optional<std::string> name;
+    std::vector<ObjectFieldChange> fields;
+};
+struct ObjectCreationBatchPlan {
+    ObjectCommandPlan plan;               // subject 为本批第一个新对象
+    std::vector<std::string> createdIds;  // 与请求同序
+};
+// 失败时 failedRequest（若给出）写入出错的请求序号。
+[[nodiscard]] Result<ObjectCreationBatchPlan> PlanObjectCreationBatch(
+    const ObjectCommandContext& context, std::span<const ObjectCreationRequest> requests,
+    std::size_t* failedRequest = nullptr);
 // 当前审计未能证明动态/脚本全覆盖时明确拒绝，不从零静态引用构造删除令牌。
 [[nodiscard]] Result<ObjectCommandPlan> PlanObjectDeletion(
     const ObjectCommandContext& context, const std::string& id,

@@ -401,37 +401,45 @@ Result<std::vector<ObjectFieldRow>> ReadObjectFields(const ObjectCommandContext&
     return Result<std::vector<ObjectFieldRow>>::Success(std::move(rows));
 }
 
-Result<ObjectCommandPlan> PlanObjectFieldChanges(const ObjectCommandContext& context, const std::string& id,
-    std::span<const ObjectFieldChange> changes) {
+namespace {
+Status CopyStatus(const Status& source) { return source; }
+template<class U> Status CopyStatus(const Result<U>& source) { return Status{source.diagnostics}; }
+Status FailStatus(const char* code, std::string message) { return Status::Failure("Object.Commands", code, std::move(message)); }
+
+// 字段修改的共同前置：写回资格、单批上限与修改前的字段行。
+Result<std::vector<ObjectFieldRow>> PrepareFieldChanges(const ObjectCommandContext& context, const std::string& id,
+    std::size_t count) {
     const auto writable = VerifyObjectWriteSource(context, id);
-    if (!writable.Succeeded()) return CopyFailure<ObjectCommandPlan>(writable);
-    if (changes.empty() || changes.size() > 128)
-        return Fail<ObjectCommandPlan>("OBJECT_CHANGE_BUDGET", "一批需要 1..128 个字段。");
-    const auto fields = ReadObjectFields(context, id);
-    if (!fields.Succeeded()) return CopyFailure<ObjectCommandPlan>(fields);
-    auto before = EmptyOrCopy(context);
-    if (!before.Succeeded()) return CopyFailure<ObjectCommandPlan>(before);
-    ObjectCommandPlan plan{{context.type, id}, *before.value, *before.value, {}, "Agent 修改物编 " + id};
+    if (!writable.Succeeded()) return CopyFailure<std::vector<ObjectFieldRow>>(writable);
+    if (count == 0 || count > 128)
+        return Fail<std::vector<ObjectFieldRow>>("OBJECT_CHANGE_BUDGET", "一批需要 1..128 个字段。");
+    return ReadObjectFields(context, id);
+}
+
+// 在工作文档上就地写入一批字段。context 读取修改前的状态，可以就是 after 本身（批量新建）。
+Status ApplyFieldChanges(const ObjectCommandContext& context, LniObjectDocument& after, const ObjectKey& subject,
+    const std::vector<ObjectFieldRow>& fields, std::span<const ObjectFieldChange> changes) {
+    const auto& id = subject.rawcode;
     std::vector<ModificationKey> seen;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> raisedLevels;
-    if (!plan.after.FindObject(plan.subject)) {
-        const auto added = plan.after.AddOriginalObject(id);
-        if (!added.Succeeded()) return CopyFailure<ObjectCommandPlan>(added);
+    if (!after.FindObject(subject)) {
+        const auto added = after.AddOriginalObject(id);
+        if (!added.Succeeded()) return CopyStatus(added);
     }
     for (const auto& change : changes) {
         const auto match = ResolveObjectField(context, id, change.field, change.level, change.variation);
-        if (!match.Succeeded()) return CopyFailure<ObjectCommandPlan>(match);
+        if (!match.Succeeded()) return CopyStatus(match);
         const auto& canonical = match.value->modification;
         if (std::find(seen.begin(), seen.end(), canonical) != seen.end())
-            return Fail<ObjectCommandPlan>("OBJECT_DUPLICATE_FIELD", "同一批重复修改精确字段地址：" + change.field);
+            return FailStatus("OBJECT_DUPLICATE_FIELD", "同一批重复修改精确字段地址：" + change.field);
         seen.push_back(canonical);
         auto normalized = Normalize(context, *match.value->definition, change.value);
-        if (!normalized.Succeeded()) return CopyFailure<ObjectCommandPlan>(normalized);
-        const auto old = std::find_if(fields.value->begin(), fields.value->end(), [&](const ObjectFieldRow& row) { return row.key == canonical; });
-        if (old != fields.value->end() && !old->editable)
-            return Fail<ObjectCommandPlan>("OBJECT_FIELD_READ_ONLY", change.field + "：" + old->reason);
+        if (!normalized.Succeeded()) return CopyStatus(normalized);
+        const auto old = std::find_if(fields.begin(), fields.end(), [&](const ObjectFieldRow& row) { return row.key == canonical; });
+        if (old != fields.end() && !old->editable)
+            return FailStatus("OBJECT_FIELD_READ_ONLY", change.field + "：" + old->reason);
         ModificationKey target = canonical;
-        if (context.document) if (const auto* record = context.document->FindObject(plan.subject)) {
+        if (context.document) if (const auto* record = context.document->FindObject(subject)) {
             for (const auto& modification : record->modifications) {
                 const auto chain = Inheritance(context, id);
                 const auto existing = MatchModification(context, *chain.value, modification.key);
@@ -439,67 +447,142 @@ Result<ObjectCommandPlan> PlanObjectFieldChanges(const ObjectCommandContext& con
             }
         }
         // 提高技能等级数：新等级沿用上一级的值一起写入（与物编界面同一规则），本批明确改到的等级不覆盖。
-        if (ObjectData::IsLevelCountField(*match.value->definition) && old != fields.value->end() && old->value) {
+        if (ObjectData::IsLevelCountField(*match.value->definition) && old != fields.end() && old->value) {
             const auto oldCount = ObjectData::LevelCountValue(*old->value);
             const auto newCount = ObjectData::LevelCountValue(*normalized.value);
             if (oldCount && newCount && *newCount > *oldCount) raisedLevels = std::pair{*oldCount, *newCount};
         }
-        const auto applied = plan.after.SetModification(plan.subject, target, std::move(*normalized.value));
-        if (!applied.Succeeded()) return CopyFailure<ObjectCommandPlan>(applied);
+        const auto applied = after.SetModification(subject, target, std::move(*normalized.value));
+        if (!applied.Succeeded()) return CopyStatus(applied);
     }
     if (raisedLevels) {
         std::vector<ObjectData::LevelFieldValue> known;
-        for (const auto& row : *fields.value)
+        for (const auto& row : fields)
             if (row.definition && row.value && ObjectData::IsPerLevelField(*row.definition, row.key))
                 known.push_back({row.key, row.definition, *row.value});
         for (const auto& fill : ObjectData::FillAddedLevels(known, raisedLevels->first, raisedLevels->second)) {
             if (std::find(seen.begin(), seen.end(), fill.key) != seen.end()) continue;
-            const auto applied = plan.after.SetModification(plan.subject, fill.key, fill.value);
-            if (!applied.Succeeded()) return CopyFailure<ObjectCommandPlan>(applied);
+            const auto applied = after.SetModification(subject, fill.key, fill.value);
+            if (!applied.Succeeded()) return CopyStatus(applied);
         }
     }
+    return Status::Ok();
+}
+
+// 在工作文档上新建一个对象（不封口）。自动 id 从 counter 起找第一个空位，并把 counter 推到其后，
+// 供同一批连续新建时不再从头扫描；单个新建从 0 开始，结果与逐个新建一致。
+Result<std::string> AddCreatedObject(const ObjectCommandContext& context, LniObjectDocument& after,
+    const std::string& baseId, const std::optional<std::string>& requestedId, std::uint32_t& counter) {
+    const auto base = Inheritance(context, baseId);
+    if (!base.Succeeded()) return CopyFailure<std::string>(base);
+    if (!base.value->base->nativeOverridesSupported)
+        return Fail<std::string>("OBJECT_CATALOG_READ_ONLY", "基础对象来自地图或战役 SLK/profile，当前只支持读取，未创建或复制对象。");
+    std::string id = requestedId.value_or("");
+    if (!requestedId) {
+        constexpr std::string_view alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        for (; counter < 46656; ++counter) {
+            std::string candidate(4, '0'); candidate[0] = baseId.front();
+            auto value = counter;
+            for (std::size_t i = 4; i > 1; --i) { candidate[i - 1] = alphabet[value % 36]; value /= 36; }
+            if (!Exists(context, context.type, candidate)) { id = std::move(candidate); ++counter; break; }
+        }
+    }
+    if (!ValidId(id) || !std::all_of(id.begin(), id.end(), [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    })) return Fail<std::string>("OBJECT_NEW_ID_INVALID", "新 id 必须是四位英文字母或数字；自动分配空间可能已满。");
+    if (Exists(context, context.type, id)) return Fail<std::string>("OBJECT_ID_EXISTS", "对象 id 已存在：" + id);
+    // 来源可能就在 after 里（批量新建）：先取出需要的内容，新增对象后旧指针不再使用。
+    const auto* source = context.document ? context.document->FindObject({context.type, baseId}) : nullptr;
+    const bool cloneCustom = source && source->parentRawcode;
+    const auto inherited = source && !source->parentRawcode ? source->modifications : decltype(source->modifications){};
+    const auto added = cloneCustom ? after.CloneCustomObject({context.type, baseId}, id) : after.AddObject(id, baseId);
+    if (!added.Succeeded()) return CopyFailure<std::string>(added);
+    for (const auto& field : inherited) {
+        const auto applied = after.SetModification({context.type, id}, field.key, field.value);
+        if (!applied.Succeeded()) return CopyFailure<std::string>(applied);
+    }
+    return Result<std::string>::Success(std::move(id));
+}
+} // namespace
+
+Result<ObjectCommandPlan> PlanObjectFieldChanges(const ObjectCommandContext& context, const std::string& id,
+    std::span<const ObjectFieldChange> changes) {
+    const auto fields = PrepareFieldChanges(context, id, changes.size());
+    if (!fields.Succeeded()) return CopyFailure<ObjectCommandPlan>(fields);
+    auto before = EmptyOrCopy(context);
+    if (!before.Succeeded()) return CopyFailure<ObjectCommandPlan>(before);
+    ObjectCommandPlan plan{{context.type, id}, *before.value, *before.value, {}, "Agent 修改物编 " + id};
+    const auto applied = ApplyFieldChanges(context, plan.after, plan.subject, *fields.value, changes);
+    if (!applied.Succeeded()) return CopyFailure<ObjectCommandPlan>(applied);
     return Seal(std::move(plan));
 }
 
 Result<ObjectCommandPlan> PlanObjectCreation(const ObjectCommandContext& context, const std::string& baseId,
     const std::optional<std::string>& requestedId, const std::optional<std::string>& name) {
-    const auto base = Inheritance(context, baseId);
-    if (!base.Succeeded()) return CopyFailure<ObjectCommandPlan>(base);
-    if (!base.value->base->nativeOverridesSupported)
-        return Fail<ObjectCommandPlan>("OBJECT_CATALOG_READ_ONLY", "基础对象来自地图或战役 SLK/profile，当前只支持读取，未创建或复制对象。");
-    std::string id = requestedId.value_or("");
-    if (!requestedId) {
-        constexpr std::string_view alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        for (std::uint32_t counter = 0; counter < 46656; ++counter) {
-            std::string candidate(4, '0'); candidate[0] = baseId.front();
-            auto value = counter;
-            for (std::size_t i = 4; i > 1; --i) { candidate[i - 1] = alphabet[value % 36]; value /= 36; }
-            if (!Exists(context, context.type, candidate)) { id = std::move(candidate); break; }
-        }
-    }
-    if (!ValidId(id) || !std::all_of(id.begin(), id.end(), [](unsigned char c) {
-        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-    })) return Fail<ObjectCommandPlan>("OBJECT_NEW_ID_INVALID", "新 id 必须是四位英文字母或数字；自动分配空间可能已满。");
-    if (Exists(context, context.type, id)) return Fail<ObjectCommandPlan>("OBJECT_ID_EXISTS", "对象 id 已存在：" + id);
     auto before = EmptyOrCopy(context);
     if (!before.Succeeded()) return CopyFailure<ObjectCommandPlan>(before);
-    ObjectCommandPlan plan{{context.type, id}, *before.value, *before.value, {}, "Agent 创建物编 " + id};
-    const auto* source = context.document ? context.document->FindObject({context.type, baseId}) : nullptr;
-    const auto added = source && source->parentRawcode ? plan.after.CloneCustomObject(source->key, id) :
-        plan.after.AddObject(id, baseId);
-    if (!added.Succeeded()) return CopyFailure<ObjectCommandPlan>(added);
-    if (source && !source->parentRawcode) for (const auto& field : source->modifications) {
-        const auto applied = plan.after.SetModification(plan.subject, field.key, field.value);
-        if (!applied.Succeeded()) return CopyFailure<ObjectCommandPlan>(applied);
-    }
+    ObjectCommandPlan plan{{context.type, {}}, *before.value, *before.value, {}, {}};
+    std::uint32_t counter = 0;
+    auto created = AddCreatedObject(context, plan.after, baseId, requestedId, counter);
+    if (!created.Succeeded()) return CopyFailure<ObjectCommandPlan>(created);
+    plan.subject.rawcode = *created.value;
+    plan.label = "Agent 创建物编 " + plan.subject.rawcode;
     if (name) {
         auto targetContext = context; targetContext.document = &plan.after;
         const std::array<ObjectFieldChange, 1> changes{{{"name", {}, {}, *name}}};
-        auto renamed = PlanObjectFieldChanges(targetContext, id, changes);
-        if (!renamed.Succeeded()) return renamed;
-        plan.after = std::move(renamed.value->after);
+        const auto fields = PrepareFieldChanges(targetContext, plan.subject.rawcode, changes.size());
+        if (!fields.Succeeded()) return CopyFailure<ObjectCommandPlan>(fields);
+        const auto renamed = ApplyFieldChanges(targetContext, plan.after, plan.subject, *fields.value, changes);
+        if (!renamed.Succeeded()) return CopyFailure<ObjectCommandPlan>(renamed);
     }
     return Seal(std::move(plan));
+}
+
+Result<ObjectCreationBatchPlan> PlanObjectCreationBatch(const ObjectCommandContext& context,
+    std::span<const ObjectCreationRequest> requests, std::size_t* failedRequest) {
+    if (requests.empty() || requests.size() > kMaxObjectCreationBatch)
+        return Fail<ObjectCreationBatchPlan>("OBJECT_CREATION_BATCH_BUDGET",
+            "一次批量新建需要 1.." + std::to_string(kMaxObjectCreationBatch) + " 个对象。");
+    auto before = EmptyOrCopy(context);
+    if (!before.Succeeded()) return CopyFailure<ObjectCreationBatchPlan>(before);
+    ObjectCreationBatchPlan batch{{{context.type, {}}, *before.value, *before.value, {}, "Agent 批量创建物编"}, {}};
+    auto& after = batch.plan.after;
+    // 后续对象的 id 分配、继承链与字段读取都看本批已新建的对象。
+    auto working = context;
+    working.document = &after;
+    working.documents[static_cast<std::size_t>(context.type)] = &after;
+    std::map<char, std::uint32_t> counters;
+    batch.createdIds.reserve(requests.size());
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        const auto& request = requests[index];
+        const auto failed = [&](const auto& source) {
+            if (failedRequest) *failedRequest = index;
+            return CopyFailure<ObjectCreationBatchPlan>(source);
+        };
+        if (request.baseId.empty()) {
+            if (failedRequest) *failedRequest = index;
+            return Fail<ObjectCreationBatchPlan>("OBJECT_BASE_MISSING", "批量新建的每一项都需要基础对象。");
+        }
+        auto created = AddCreatedObject(working, after, request.baseId, std::nullopt, counters[request.baseId.front()]);
+        if (!created.Succeeded()) return failed(created);
+        const ObjectKey subject{context.type, *created.value};
+        std::vector<ObjectFieldChange> changes;
+        changes.reserve(request.fields.size() + 1);
+        if (request.name) changes.push_back({"name", {}, {}, *request.name});
+        changes.insert(changes.end(), request.fields.begin(), request.fields.end());
+        if (!changes.empty()) {
+            const auto fields = PrepareFieldChanges(working, subject.rawcode, changes.size());
+            if (!fields.Succeeded()) return failed(fields);
+            const auto applied = ApplyFieldChanges(working, after, subject, *fields.value, changes);
+            if (!applied.Succeeded()) return failed(applied);
+        }
+        batch.createdIds.push_back(subject.rawcode);
+    }
+    batch.plan.subject.rawcode = batch.createdIds.front();
+    auto sealed = Seal(std::move(batch.plan));
+    if (!sealed.Succeeded() || !sealed.value) return CopyFailure<ObjectCreationBatchPlan>(sealed);
+    batch.plan = std::move(*sealed.value);
+    return Result<ObjectCreationBatchPlan>::Success(std::move(batch));
 }
 
 Result<ObjectCommandPlan> PlanObjectDeletion(const ObjectCommandContext& context, const std::string& id,

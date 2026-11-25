@@ -19,19 +19,12 @@ R ForType(std::vector<Diagnostic> diagnostics, const std::string& key) {
     return {{}, std::move(diagnostics)};
 }
 
-// 一类物编的工作文档：同类连续新建时 rawcode 依次分配，模型字段写在同一份文档上。
-struct Working {
+// 一类物编（装饰物或单位）：本清单里这一类的全部新类型一次批量新建，rawcode 依次分配。
+struct Batch {
     const ObjectCommandContext* source = nullptr;
     ObjectType type = ObjectType::Doodad;
-    std::optional<ObjectData::LniObjectDocument> document;
-    std::string first;
-
-    std::optional<ObjectCommandPlan> Seal() {
-        if (!document) return std::nullopt;
-        ObjectCommandPlan plan{{type, first}, *source->document, std::move(*document), {}, "导入摆放清单"};
-        plan.changes = ObjectData::DiffObjects(plan.before.Objects(), plan.after.Objects());
-        return plan;
-    }
+    std::vector<std::size_t> typeIndexes;
+    std::vector<ObjectCreationRequest> requests;
 };
 
 float Radians(float degrees) {
@@ -50,33 +43,35 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
         || manifest.instances.size() > MapData::PlacementManifestMaximumInstances)
         return Fail("PLACEMENT_IMPORT_EMPTY", "摆放清单须有类型和 1.." + std::to_string(MapData::PlacementManifestMaximumInstances) + " 个实例。");
     PlacementImportPlan plan;
-    Working doodads{&inputs.doodads, ObjectType::Doodad, {}, {}}, units{&inputs.units, ObjectType::Unit, {}, {}};
-    std::vector<std::string> rawcodes(manifest.types.size());
+    Batch doodads{&inputs.doodads, ObjectType::Doodad, {}, {}}, units{&inputs.units, ObjectType::Unit, {}, {}};
+    std::vector<std::string> rawcodes(manifest.types.size()), bases(manifest.types.size());
     for (std::size_t index = 0; index < manifest.types.size(); ++index) {
         const auto& type = manifest.types[index];
-        auto& working = type.kind == PlacementManifestKind::Doodad ? doodads : units;
-        const auto& source = *working.source;
-        if (!source.document || !source.standard || !source.schema || source.type != working.type)
-            return Fail("PLACEMENT_IMPORT_OBJECT_SOURCE", std::string("当前") + (working.type == ObjectType::Doodad ? "装饰物" : "单位")
+        auto& batch = type.kind == PlacementManifestKind::Doodad ? doodads : units;
+        const auto& source = *batch.source;
+        if (!source.document || !source.standard || !source.schema || source.type != batch.type)
+            return Fail("PLACEMENT_IMPORT_OBJECT_SOURCE", std::string("当前") + (batch.type == ObjectType::Doodad ? "装饰物" : "单位")
                 + "物编来源不完整，不能新建类型 " + type.key + "。");
-        if (!working.document) working.document = *source.document;
-        auto context = source;
-        context.document = &*working.document;
-        context.documents[static_cast<std::size_t>(working.type)] = &*working.document;
-        const auto base = type.base.value_or(std::string(PlacementImportDefaultDoodadBase));
-        auto created = PlanObjectCreation(context, base, std::nullopt, type.name);
-        if (!created.Succeeded() || !created.value) return ForType(std::move(created.diagnostics), type.key);
-        *working.document = std::move(created.value->after);
-        const auto rawcode = created.value->subject.rawcode;
-        const std::array<ObjectFieldChange, 1> model{{{working.type == ObjectType::Doodad ? "dfil" : "umdl", {}, {},
-            ObjectData::Value{type.model}}}};
-        auto modeled = PlanObjectFieldChanges(context, rawcode, model);
-        if (!modeled.Succeeded() || !modeled.value) return ForType(std::move(modeled.diagnostics), type.key);
-        *working.document = std::move(modeled.value->after);
-        if (working.first.empty()) working.first = rawcode;
-        rawcodes[index] = rawcode;
-        plan.report.types.push_back({type.key, type.kind, rawcode, base, 0});
+        bases[index] = type.base.value_or(std::string(PlacementImportDefaultDoodadBase));
+        batch.typeIndexes.push_back(index);
+        batch.requests.push_back({bases[index], type.name, {{batch.type == ObjectType::Doodad ? "dfil" : "umdl", {}, {},
+            ObjectData::Value{type.model}}}});
     }
+    for (auto* batch : {&doodads, &units}) {
+        if (batch->requests.empty()) continue;
+        std::size_t failed = batch->requests.size();
+        auto created = PlanObjectCreationBatch(*batch->source, batch->requests, &failed);
+        if (!created.Succeeded() || !created.value) {
+            if (failed < batch->typeIndexes.size())
+                return ForType(std::move(created.diagnostics), manifest.types[batch->typeIndexes[failed]].key);
+            return {{}, std::move(created.diagnostics)};
+        }
+        for (std::size_t i = 0; i < batch->typeIndexes.size(); ++i) rawcodes[batch->typeIndexes[i]] = created.value->createdIds[i];
+        created.value->plan.label = "导入摆放清单";
+        (batch->type == ObjectType::Doodad ? plan.doodadObjects : plan.unitObjects) = std::move(created.value->plan);
+    }
+    for (std::size_t index = 0; index < manifest.types.size(); ++index)
+        plan.report.types.push_back({manifest.types[index].key, manifest.types[index].kind, rawcodes[index], bases[index], 0});
 
     const double west = header.offset[0], south = header.offset[1];
     const double east = west + 128.0 * (header.width - 1), north = south + 128.0 * (header.height - 1);
@@ -113,8 +108,6 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
         return Fail("PLACEMENT_IMPORT_OUT_OF_BOUNDS", std::format("{} 个实例落在地图范围 x {:g}…{:g}、y {:g}…{:g} 之外：{}{}",
             outside, west, east, south, north, listed, outside > PlacementImportReportedOutside ? " 等" : ""));
 
-    plan.doodadObjects = doodads.Seal();
-    plan.unitObjects = units.Seal();
     plan.report.doodads = plan.doodads.size();
     plan.report.units = plan.units.size();
     plan.report.files = manifest.files.size();

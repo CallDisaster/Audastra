@@ -37,6 +37,37 @@ void AllKindsReadCreateAndRoundtrip() {
         Require(custom.Succeeded() && custom.value->size() == 1 && custom.value->front().name == "副本名称", "custom list name from actual field");
     }
 }
+void BatchCreationMatchesSequentialCreation() {
+    // 批量新建只复制一次文档：id 分配、名称和字段结果须与逐个新建完全相同。
+    ObjectCommandsFixture fixture;
+    const auto context = fixture.Context(ObjectType::Unit);
+    std::vector<ObjectCreationRequest> requests;
+    for (const char* name : {"甲", "乙", "丙"})
+        requests.push_back({"u001", std::string(name), {ObjectFieldChange{"uhpm", {}, {}, std::int32_t{300}}}});
+    const auto batch = PlanObjectCreationBatch(context, requests);
+    Require(batch.Succeeded() && batch.value->createdIds.size() == 3, "batch creates every request");
+    LniObjectDocument sequential = *context.document;
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        auto step = fixture.Context(ObjectType::Unit);
+        step.document = &sequential;
+        step.documents[static_cast<std::size_t>(ObjectType::Unit)] = &sequential;
+        const auto created = PlanObjectCreation(step, "u001", {}, requests[index].name);
+        Require(created.Succeeded() && created.value->subject.rawcode == batch.value->createdIds[index], "batch ids follow sequential allocation");
+        auto edit = step; LniObjectDocument named = created.value->after; edit.document = &named;
+        edit.documents[static_cast<std::size_t>(ObjectType::Unit)] = &named;
+        const auto health = PlanObjectFieldChanges(edit, created.value->subject.rawcode, requests[index].fields);
+        Require(health.Succeeded(), "sequential field change");
+        sequential = health.value->after;
+    }
+    Require(DiffObjects(sequential.Objects(), batch.value->plan.after.Objects()).Empty(), "batch document equals sequential result");
+    Require(batch.value->plan.subject.rawcode == batch.value->createdIds.front() && !batch.value->plan.changes.Empty(),
+        "batch plan names its first object and carries the diff");
+    auto broken = requests;
+    broken[1].fields.front().value = std::string("not a number");
+    std::size_t failed = broken.size();
+    Require(!PlanObjectCreationBatch(context, broken, &failed).Succeeded() && failed == 1, "batch failure names the failing request");
+    Require(!PlanObjectCreationBatch(context, {}).Succeeded(), "empty batch rejected");
+}
 void AtomicFieldTypesAndReferences() {
     ObjectCommandsFixture fixture;
     const auto context = fixture.Context(ObjectType::Unit);
@@ -124,7 +155,7 @@ void DeletionRemainsFailClosed() {
 }
 }
 int main() {
-    try { AllKindsReadCreateAndRoundtrip(); AtomicFieldTypesAndReferences(); CompactTextRoundtrip(); DeletionRemainsFailClosed();
+    try { AllKindsReadCreateAndRoundtrip(); BatchCreationMatchesSequentialCreation(); AtomicFieldTypesAndReferences(); CompactTextRoundtrip(); DeletionRemainsFailClosed();
         std::cout << "ObjectCommands tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "ObjectCommands test failure: " << error.what() << '\n'; return 1; }
 }
