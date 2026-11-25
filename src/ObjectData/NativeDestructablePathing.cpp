@@ -41,6 +41,14 @@ void ValidateDisplayOnlyParent(const ObjectRecord& parent, const NativeObjectDoc
 }
 }
 
+namespace {
+// 预算拒绝消息用一位小数的 MiB，便于作者对照文档里的上限。
+std::string MebibyteText(std::size_t bytes) {
+    const auto tenths = (static_cast<unsigned long long>(bytes) * 10 + 512 * 1024) / (1024 * 1024);
+    return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " MiB";
+}
+} // namespace
+
 Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::span<const std::string_view> placedRawcodes,
     std::span<const std::string_view> specialRawcodes, std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
     try {
@@ -57,7 +65,11 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
             if (!source.present && !source.bytes.empty()) Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "缺失对象来源却携带字节。");
             inputs[found - paths.begin()] = &source;
             if (source.bytes.size() > (maximumWorkingBytes - work) / kWorkPerInputByte)
-                Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "原生对象与实际表的解析工作超过累计剩余预算。");
+                Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "原生对象与实际表的解析工作超过本次保存剩余预算：" + source.name
+                    + " 为 " + std::to_string(source.bytes.size()) + " 字节，按每字节 " + std::to_string(kWorkPerInputByte)
+                    + " 计需 " + MebibyteText(source.bytes.size() * kWorkPerInputByte) + "，剩余 "
+                    + MebibyteText(maximumWorkingBytes - work) + "（单次保存预算至多 64 MiB，先扣除已读取的地图成员）。"
+                    "请把新建类型分到多次保存。");
             work += source.bytes.size() * kWorkPerInputByte;
         }
         if (std::any_of(inputs.begin(), inputs.begin() + 5, [](const auto* input) { return !input; }))

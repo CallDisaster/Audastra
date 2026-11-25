@@ -60,6 +60,15 @@ int Invalid(std::string_view detail) {
     return 2;
 }
 
+// 相对路径在命令入口按当前目录转成绝对路径，后续各保存阶段都用同一基准。
+std::filesystem::path AbsolutePathArgument(const wchar_t* text) {
+    std::filesystem::path path{std::wstring(text)};
+    if (path.empty()) return path;
+    std::error_code error;
+    auto absolute = std::filesystem::absolute(path, error);
+    return error ? path : absolute.lexically_normal();
+}
+
 std::optional<std::string> ReadUtf8Text(const std::filesystem::path& path, std::string& error) {
     if (Jass::IsAiScriptTextSource(path)) {
         error = std::string(Jass::kAiScriptTextCode) + ": " + std::string(Jass::kAiScriptTextMessage);
@@ -382,13 +391,13 @@ std::optional<Services::MapEditTerrainStroke> ParseWaterStroke(wchar_t** argv, i
 int RunMapEditSave(int argc, wchar_t** argv) {
     if (argc < 9) return Invalid("expected a source, bound SHA-256 values, roots, candidate, and one edit operation");
     Services::MapEditSaveRequest request;
-    request.sourceMap = argv[2];
+    request.sourceMap = AbsolutePathArgument(argv[2]);
     request.expectedSourceSha256 = Utf8Argument(argv[3]);
     request.expectedTerrainSha256 = Utf8Argument(argv[4]);
     if (request.expectedTerrainSha256 == "-") request.expectedTerrainSha256.clear();
-    request.toolRoot = argv[5];
-    request.gameRoot = argv[6];
-    request.targetCandidate = argv[7];
+    request.toolRoot = AbsolutePathArgument(argv[5]);
+    request.gameRoot = AbsolutePathArgument(argv[6]);
+    request.targetCandidate = AbsolutePathArgument(argv[7]);
     std::vector<Services::MapEditPlacementSource> copySources;
     std::optional<std::array<float, 3>> copyOffset;
     std::optional<Services::MapEditPlacementTransform> rotation;
@@ -403,7 +412,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             saveTimings = true; ++index;
         } else if (flag == L"--lua-folder") {
             if (index + 1 >= argc || !request.luaFolderOverride.empty()) return Invalid("--lua-folder needs one directory");
-            request.luaFolderOverride = argv[index + 1]; index += 2;
+            request.luaFolderOverride = AbsolutePathArgument(argv[index + 1]); index += 2;
         } else if (flag == L"--confirm-lua-deletions") {
             if (index + 1 >= argc || !request.luaFolderDeletionApproval.empty()) return Invalid("--confirm-lua-deletions needs one reviewed SHA");
             request.luaFolderDeletionApproval = Utf8Argument(argv[index + 1]); index += 2;
@@ -443,7 +452,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         } else if (flag == L"--ui-root") {
             if (index + 1 >= argc || argv[index + 1][0] == L'\0' || !request.uiRoot.empty())
                 return Invalid("--ui-root requires one nonempty UI data root");
-            request.uiRoot = argv[index + 1];
+            request.uiRoot = AbsolutePathArgument(argv[index + 1]);
             index += 2;
         } else if (flag == L"--lua-map-target") {
             if (index + 1 >= argc || argv[index + 1][0] == L'\0' || request.luaTarget)
@@ -615,7 +624,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             const auto sink = ParseNumber<double>(argv[index + 3]);
             if (!level || *level > 14 || !sink || !std::isfinite(*sink) || std::abs(*sink) > 65536)
                 return Invalid("--terrain-heightfield needs cliff level 0..14 and a finite sink in world units");
-            auto source = MapData::ReadTerrainHeightfield(std::filesystem::path(std::wstring(argv[index + 1])));
+            auto source = MapData::ReadTerrainHeightfield(AbsolutePathArgument(argv[index + 1]));
             if (!source.Succeeded() || !source.value) { PrintDiagnostics(source.diagnostics); return 2; }
             Services::MapEditTerrainStroke stroke;
             stroke.heightfield = Services::MapEditHeightfieldImport{std::move(*source.value),
@@ -624,7 +633,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         } else if (flag == L"--placements") {
             if (index + 1 >= argc) return Invalid("--placements requires <placements.json>");
             if (request.placementImport) return Invalid("--placements may appear only once");
-            auto manifest = MapData::ReadPlacementManifest(std::filesystem::path(std::wstring(argv[index + 1])));
+            auto manifest = MapData::ReadPlacementManifest(AbsolutePathArgument(argv[index + 1]));
             if (!manifest.Succeeded() || !manifest.value) { PrintDiagnostics(manifest.diagnostics); return 2; }
             request.placementImport = std::make_shared<const MapData::PlacementManifest>(std::move(*manifest.value));
             index += 2;
@@ -855,7 +864,8 @@ int RunMapEditSave(int argc, wchar_t** argv) {
 int RunMapTriggerTextQuery(int argc, wchar_t** argv) {
     if (argc < 9) return Invalid("map-trigger-text requires source map, source SHA, UI root, global/trigger slot, trigger ID or 0, offset and limit");
     Services::MapTriggerTextQueryRequest request;
-    request.sourceMap = argv[2]; request.expectedSourceSha256 = Utf8Argument(argv[3]); request.uiRoot = argv[4];
+    request.sourceMap = AbsolutePathArgument(argv[2]); request.expectedSourceSha256 = Utf8Argument(argv[3]);
+    request.uiRoot = AbsolutePathArgument(argv[4]);
     const std::wstring_view slot(argv[5]);
     if (slot == L"global") request.query.slot = Trigger::TriggerTextSlot::GlobalCode;
     else if (slot == L"trigger") request.query.slot = Trigger::TriggerTextSlot::TriggerCode;

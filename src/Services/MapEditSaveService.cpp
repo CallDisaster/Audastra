@@ -748,13 +748,17 @@ static Result<MapEditSaveReceipt> SaveMapEditCandidateImpl(const MapEditSaveRequ
             return Fail("SAVE_TRIGGER_INPUT_CONFLICT", "触发器批次与完整冻结事务不能在同一次保存中混用。");
         if (request.triggerTransaction && request.triggerTransaction->IsSourceCompanion() && !objectRequest)
             return Fail("SAVE_SOURCE_COMPANION_WITHOUT_OBJECTS", "未变化的触发器配对封印只能伴随非空物编保存事务。");
-        if (request.sourceMap.empty() || request.targetCandidate.empty() || request.toolRoot.empty()
-            || request.gameRoot.empty() || !ValidSha(request.expectedSourceSha256)
-            || ((terrainRequest || shadowOnly || (domainCount == 0 && !runtimeOnly))
-                ? !ValidSha(request.expectedTerrainSha256)
-                : !request.expectedTerrainSha256.empty())) {
-            return Fail("SAVE_REQUEST_INVALID", "地图路径、数据根、源 SHA 和当前操作所需的成员 SHA 必须有效。");
-        }
+        // 逐项说明哪一个参数不对；地形 SHA 用 - 跳过时须说清本次为何仍需要它。
+        const bool terrainShaNeeded = terrainRequest || shadowOnly || (domainCount == 0 && !runtimeOnly);
+        const char* invalid = request.sourceMap.empty() ? "源地图路径为空"
+            : request.targetCandidate.empty() ? "输出地图路径为空"
+            : (request.toolRoot.empty() || request.gameRoot.empty()) ? "数据根或游戏目录为空"
+            : !ValidSha(request.expectedSourceSha256) ? "源地图 SHA-256 必须是 64 位十六进制"
+            : (terrainShaNeeded && !ValidSha(request.expectedTerrainSha256))
+                ? "本次保存包含地形修改、阴影计算或没有其他修改，需要当前 war3map.w3e 的 SHA-256，不能用 -"
+            : (!terrainShaNeeded && !request.expectedTerrainSha256.empty())
+                ? "本次保存不改地形，地形 SHA 位置请传 -" : nullptr;
+        if (invalid) return Fail("SAVE_REQUEST_INVALID", std::string(invalid) + "。");
         if (domainCount - static_cast<int>(terrainCompanion) - static_cast<int>(terrainUnitPlacementCompanion)
             != ((shadowOnly || runtimeOnly) ? 0 : 1))
             return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作、同源触发器与物编事务，或地形及一种受支持的说明、物编或单位摆放修改。");

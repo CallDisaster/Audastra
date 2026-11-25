@@ -7,6 +7,7 @@
 #include "support/TriggerCodeIdentitySaveFixture.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -65,6 +66,21 @@ void LegacyMinimapSwitchesAreRemoved() {
     arguments = Arguments();
     arguments.push_back(L"--generate-missing-playable-minimap");
     Rejected(Invoke(arguments), "unknown map-edit-save option");
+}
+
+void MissingRelativeSourceNamesResolvedPathAndReason() {
+    // 相对来源在命令入口转成绝对路径；打开失败写明系统错误码与该路径，不再一律说成“正在被写入”。
+    auto arguments = Arguments(); arguments.push_back(L"--rebuild-shadows");
+    const auto result = Invoke(arguments);
+    const auto resolved = (std::filesystem::current_path() / L"missing-minimap-cli-source.w3x").lexically_normal().u8string();
+    Require(result.exitCode != 0 && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos
+        && result.error.find("Win32 2") != std::string::npos
+        && result.error.find(std::string(resolved.begin(), resolved.end())) != std::string::npos,
+        "a missing relative source must report the resolved absolute path and the not-found error");
+    arguments = Arguments(); arguments[4] = L"-"; arguments.push_back(L"--rebuild-shadows");
+    const auto dash = Invoke(arguments);
+    Require(dash.error.find("SAVE_REQUEST_INVALID") != std::string::npos && dash.error.find("war3map.w3e") != std::string::npos,
+        "a dash terrain SHA on a save that needs it must name the w3e member");
 }
 
 void ShadowCalculationUsesTheSharedSaveService() {
@@ -377,6 +393,7 @@ int main() {
     try {
         LegacyMinimapSwitchesAreRemoved();
         ShadowCalculationUsesTheSharedSaveService();
+        MissingRelativeSourceNamesResolvedPathAndReason();
         TypedTextureAndWaterReachTheSaveService();
         RemoveWaterUsesOnlyItsFootprintAndSharedSaveService();
         NativeWaterUsesExplicitTypedArguments();

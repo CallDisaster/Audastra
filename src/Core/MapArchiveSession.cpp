@@ -41,6 +41,25 @@ Result<T> ForwardFailure(std::vector<Diagnostic> diagnostics) {
     return result;
 }
 
+// 打开来源失败时写明系统原因与路径，避免把“找不到文件”误报成“正在被写入”。
+std::string SourceOpenFailure(std::string_view action, DWORD error, const std::filesystem::path& path) {
+    std::string reason;
+    switch (error) {
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_INVALID_NAME:
+    case ERROR_BAD_NETPATH: case ERROR_BAD_PATHNAME: case ERROR_INVALID_DRIVE:
+        reason = "找不到该文件或路径"; break;
+    case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION:
+        reason = "文件正被其他程序写入或独占打开，请等它完成后重试"; break;
+    case ERROR_ACCESS_DENIED:
+        reason = "没有读取权限，或该路径是目录"; break;
+    default:
+        reason = "系统拒绝打开"; break;
+    }
+    const auto text = path.u8string();
+    return std::string(action) + "：" + reason + "（Win32 " + std::to_string(error) + "，路径 "
+        + std::string(text.begin(), text.end()) + "）";
+}
+
 class FileHandle {
 public:
     explicit FileHandle(HANDLE handle = INVALID_HANDLE_VALUE) : handle_(handle) {}
@@ -182,6 +201,8 @@ bool ScriptAuditMember(std::string_view name) {
 } // namespace
 
 struct ArchiveExactReadLease {
+    // 先于file声明：构造时记录打开失败的系统错误，供拒绝消息说明原因。
+    DWORD openError = ERROR_SUCCESS;
     FileHandle file;
     FileHandle event;
     FileHandle stopEvent;
@@ -198,8 +219,7 @@ struct ArchiveExactReadLease {
     std::jthread issuer;
     ArchiveExactReadLease(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId)
-        : file(CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr)),
+        : file(OpenLeaseFile(source, openError)),
           event(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
           stopEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
           path(source), sha256(sha), volume(serial), id(fileId) {
@@ -233,6 +253,12 @@ struct ArchiveExactReadLease {
             issuer.join();
         }
     }
+    static HANDLE OpenLeaseFile(const std::filesystem::path& source, DWORD& error) {
+        const HANDLE handle = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) error = GetLastError();
+        return handle;
+    }
     bool Stable() const { return pending && WaitForSingleObject(event.Get(), 0) == WAIT_TIMEOUT; }
     bool Matches(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId) const {
@@ -248,15 +274,16 @@ Status MapArchiveSession::PinSourceForExactCaptures(const ProjectSaveControl* co
             return VerifySourceUnchanged(control);
         }
         auto lease = std::make_shared<ArchiveExactReadLease>(sourcePath_, sourceSha256_, volumeSerial_, fileId_);
-        if (!lease->file.Valid())
-            return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法在本次候选保存期间只读固定来源。");
+        if (!lease->file.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED",
+            SourceOpenFailure("无法在本次候选保存期间只读固定来源", lease->openError, sourcePath_));
         const auto pinnedIdentity = VerifyIdentity(lease->file.Get(), volumeSerial_, fileId_);
         if (!pinnedIdentity.Succeeded()) return pinnedIdentity;
         // 只读共享模式不足以排除先前建立的可写映射。R oplock不获准或失效时，
         // 保留逐次完整散列；不把“不支持缓存资格”变成保存拒绝。
         FileHandle proof(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!proof.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法完整核对已固定来源。");
+        if (!proof.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED",
+            SourceOpenFailure("无法完整核对已固定来源", GetLastError(), sourcePath_));
         const auto verified = VerifyHandle(proof.Get(), volumeSerial_, fileId_, sourceSha256_, control);
         if (!verified.Succeeded()) return verified;
         const auto path = FinalPath(lease->file.Get());
@@ -383,8 +410,8 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
     try {
         FileHandle source(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!source.Valid()) return Result<MapArchiveSession>::Failure(
-            "MapArchiveSession", "SOURCE_LEASE_FAILED", "无法只读锁定源归档；请等待外部写入完成。");
+        if (!source.Valid()) return Result<MapArchiveSession>::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED",
+            SourceOpenFailure("无法只读打开源地图", GetLastError(), path));
         BY_HANDLE_FILE_INFORMATION info{};
         if (!GetFileInformationByHandle(source.Get(), &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
             return Result<MapArchiveSession>::Failure("MapArchiveSession", "SOURCE_INVALID", "源归档必须是普通文件。");
@@ -464,7 +491,8 @@ Status MapArchiveSession::VerifySourceUnchanged(const ProjectSaveControl* contro
     DiagnosticTrace::Scope timing(terrainAuditOnly_ ? "core-terrain-source-verify" : "core-archive-source-verify");
     FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (!source.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
+    if (!source.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED",
+        SourceOpenFailure("无法重新核对源地图", GetLastError(), sourcePath_));
     // 来源检查可复用同次、仍有效的R租约；新句柄身份及路径仍真查。
     // 有逐字节进度/取消观察者时保持原完整读取，不伪报缓存命中的读数字节。
     if (!control && exactReadLease_ && exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_)
@@ -548,7 +576,7 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         }
         FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!source.Valid()) return fail("SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
+        if (!source.Valid()) return fail("SOURCE_LEASE_FAILED", SourceOpenFailure("无法重新核对源地图", GetLastError(), sourcePath_));
         // 只有显式固定、仍存活的同一文件内容租约可复用已完整散列的来源证明。
         // 新句柄仍核对卷/文件ID和实际路径；目录、预算与每个正文比较不变。
         if (exactReadLease_ && !exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
@@ -917,8 +945,8 @@ Result<MapArchiveSession> MapArchiveSession::AfterSave(const ArchiveSaveResult& 
     try {
         FileHandle file(CreateFileW(written.path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!file.Valid()) return Result<MapArchiveSession>::Failure(
-            "MapArchiveSession", "SOURCE_LEASE_FAILED", "无法只读锁定保存结果。");
+        if (!file.Valid()) return Result<MapArchiveSession>::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED",
+            SourceOpenFailure("无法只读打开保存结果", GetLastError(), written.path));
         BY_HANDLE_FILE_INFORMATION info{};
         LARGE_INTEGER size{};
         if (!GetFileInformationByHandle(file.Get(), &info) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
@@ -1033,8 +1061,8 @@ Result<ArchiveSaveResult> MapArchiveSession::WriteCandidate(
         // 之后的检查只核对文件身份与路径指向。调用方已在外层租约下散列过时（原地保存）跳过散列。
         FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!source.Valid()) return Result<ArchiveSaveResult>::Failure(
-            "MapArchiveSession", "SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
+        if (!source.Valid()) return Result<ArchiveSaveResult>::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED",
+            SourceOpenFailure("无法在保存时只读打开源地图", GetLastError(), sourcePath_));
         auto verified = hashSource ? VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_)
                                    : VerifyIdentity(source.Get(), volumeSerial_, fileId_);
         if (!verified.Succeeded()) return ForwardFailure<ArchiveSaveResult>(std::move(verified.diagnostics));
