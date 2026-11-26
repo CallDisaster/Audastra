@@ -84,6 +84,8 @@ struct MapScriptInputs {
     const MapData::StringTableDocument* strings = nullptr;
     // 编辑器自有成员 audastra\warvk.ini 的 WarVK 渲染设置；有指令时写出受管的 AudastraWarVKInit。
     const MapData::WarVKMapSettings* warvk = nullptr;
+    // 设了云海时由完整 war3map.w3e 求得的地面范围；缺失时云海报错，不猜范围。
+    std::optional<MapData::WarVKMapGround> warvkGround;
     // 缺失时镜头范围退回 w3i 中记录的镜头边界。
     std::optional<TerrainExtent> terrain;
     // 头注释中的生成日期；为空时省略日期行（便于测试得到稳定输出）。

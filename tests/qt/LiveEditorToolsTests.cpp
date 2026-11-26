@@ -3327,6 +3327,40 @@ void LiveEditorToolsTests::WarVKSettingsUseSettingsUndoAndRefuseSeventeenth() {
     const auto afterReset = f.project.QueryWarVKMapSettings();
     QVERIFY(afterReset.Succeeded() && !afterReset.value->celestialMotion && afterReset.value->timeColorGrading == false
         && !afterReset.value->sunColor && afterReset.value->sunDirection);
+
+    // 设了太阳方向而天体运行不设置：实际按关写出、不提醒；明确开着时照写并提醒方向被覆盖。
+    const auto codes = [](const QJsonObject& result) {
+        QStringList list;
+        for (const auto& warning : result.value("warnings").toArray()) list << warning.toObject().value("code").toString();
+        return list;
+    };
+    QCOMPARE(resetSet.value("celestial_motion").toString(), QStringLiteral("default"));
+    QCOMPARE(resetSet.value("effective_celestial_motion").toString(), QStringLiteral("off"));
+    QVERIFY(resetSet.value("commands").toArray().contains(QStringLiteral("warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0")));
+    QVERIFY(codes(resetSet).isEmpty());
+    auto cycleOn = f.Context(); cycleOn.insert("celestial_motion", "on");
+    const auto cycleSet = f.tools->Invoke("map_warvk_set", cycleOn);
+    QVERIFY2(cycleSet.value("ok").toBool(), qPrintable(Explain(cycleSet)));
+    QCOMPARE(codes(cycleSet), QStringList{QStringLiteral("WARVK_SUN_DIRECTION_OVERRIDDEN")});
+
+    // 云海：一次一条撤销；覆盖度越界拒绝且不入栈；没有已载入地形时报告无法确定范围，有地形时给出地面范围。
+    auto cloud = f.Context(); cloud.insert("cloud_sea", QJsonObject{{"enabled", true}, {"top", 1400}, {"cover", 0.93}});
+    const auto undoBeforeCloud = settingsUndo->count();
+    const auto cloudSet = f.tools->Invoke("map_warvk_set", cloud);
+    QVERIFY2(cloudSet.value("ok").toBool(), qPrintable(Explain(cloudSet)));
+    QCOMPARE(settingsUndo->count(), undoBeforeCloud + 1);
+    QCOMPARE(cloudSet.value("cloud_sea").toObject().value("top").toDouble(), 1400.0);
+    QCOMPARE(cloudSet.value("cloud_sea").toObject().value("cover").toDouble(), 0.93);
+    const bool terrainLoaded = f.project.MapEdits() && f.project.MapEdits()->Terrain();
+    QCOMPARE(cloudSet.contains("map_ground"), terrainLoaded);
+    if (!terrainLoaded) QVERIFY(codes(cloudSet).contains(QStringLiteral("WARVK_CLOUD_SEA_TERRAIN")));
+    auto badCover = f.Context(); badCover.insert("cloud_sea", QJsonObject{{"enabled", true}, {"top", 1400}, {"cover", 1.5}});
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_warvk_set", badCover)), QString("WARVK_CLOUD_SEA_COVER_RANGE"));
+    QCOMPARE(settingsUndo->count(), undoBeforeCloud + 1);
+    auto noCloud = f.Context(); noCloud.insert("cloud_sea", QJsonObject{{"enabled", false}});
+    const auto cloudOff = f.tools->Invoke("map_warvk_set", noCloud);
+    QVERIFY2(cloudOff.value("ok").toBool(), qPrintable(Explain(cloudOff)));
+    QVERIFY(!cloudOff.value("cloud_sea").toObject().value("enabled").toBool() && !f.project.QueryWarVKMapSettings().value->cloudSea);
 }
 
 QTEST_MAIN(LiveEditorToolsTests)

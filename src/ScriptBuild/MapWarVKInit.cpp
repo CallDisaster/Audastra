@@ -17,17 +17,41 @@ void WriteWarVKGlobals(MapContext& context) {
     // 协议版本：WarVK 接管时非零，未接管为 0；各条指令结果（0 为接受）按执行顺序存入数组，供测试运行读取。
     context.out.Line("integer                 AudastraWarVKProtocol      = 0");
     context.out.Line("integer array           AudastraWarVKErrors");
+    // 云海雾盒 id（localFog.createBox 的返回值）；WarVK 未接管或旧宿主为 0。
+    if (context.in.warvk->cloudSea) context.out.Line("integer                 AudastraWarVKCloudSea      = 0");
 }
 
 void WriteWarVKInitFunction(MapContext& context) {
     const auto* settings = Active(context);
     if (!settings) return;
+    const auto origin = OriginSpan{std::string(MapData::kWarVKSettingsMember), 0, 0, {}};
     const auto commands = MapData::WarVKInitCommands(*settings);
+    std::optional<std::string> cloudSea;
+    if (commands.Succeeded() && settings->cloudSea) {
+        if (!context.in.warvkGround) {
+            context.diagnostics.push_back({DiagnosticSeverity::Error, "Script.Map", "WARVK_CLOUD_SEA_TERRAIN",
+                "设了云海但读不到地图地形（war3map.w3e），无法确定云海范围；未写出任何 WarVK 指令。", origin});
+            return;
+        }
+        const auto box = MapData::WarVKCloudSeaBoxFor(*settings->cloudSea, *context.in.warvkGround);
+        if (!box.Succeeded() || !box.value) {
+            for (auto diagnostic : box.diagnostics) {
+                diagnostic.origin = origin;
+                context.diagnostics.push_back(std::move(diagnostic));
+            }
+            return;
+        }
+        cloudSea = MapData::WarVKCloudSeaQuery(*box.value);
+    }
     if (!commands.Succeeded() || !commands.value) {
         context.diagnostics.insert(context.diagnostics.end(), commands.diagnostics.begin(), commands.diagnostics.end());
         context.diagnostics.push_back({DiagnosticSeverity::Error, "Script.Map", "MAP_WARVK_SETTINGS_INVALID",
-            "WarVK 设置无效，未写出任何 WarVK 指令；请在 地图设置 → WarVK 中修正。", OriginSpan{std::string(MapData::kWarVKSettingsMember), 0, 0, {}}});
+            "WarVK 设置无效，未写出任何 WarVK 指令；请在 地图设置 → WarVK 中修正。", origin});
         return;
+    }
+    for (auto warning : MapData::WarVKSettingsWarnings(*settings)) {
+        warning.origin = origin;
+        context.diagnostics.push_back(std::move(warning));
     }
     auto& out = context.out;
     const bool timer = settings->timing == MapData::WarVKInitTiming::AfterInitialization;
@@ -39,6 +63,12 @@ void WriteWarVKInitFunction(MapContext& context) {
     for (std::size_t i = 0; i < commands.value->size(); ++i) {
         out.Line("call Preloader( " + QuoteJassString((*commands.value)[i]) + " )");
         out.Line("set AudastraWarVKErrors[" + std::to_string(i) + "] = GetLocalizedHotkey( "
+            + QuoteJassString(MapData::kWarVKLastErrorQuery) + " )");
+    }
+    // 云海：返回雾盒 id 的查询，照常记录结果码；不写 volumetric.setEnabled（体积光打开后雾盒归体积光）。
+    if (cloudSea) {
+        out.Line("set AudastraWarVKCloudSea = GetLocalizedHotkey( " + QuoteJassString(*cloudSea) + " )");
+        out.Line("set AudastraWarVKErrors[" + std::to_string(commands.value->size()) + "] = GetLocalizedHotkey( "
             + QuoteJassString(MapData::kWarVKLastErrorQuery) + " )");
     }
     if (!settings->skyModel.empty()) out.Line("call SetSkyModel( " + QuoteJassString(settings->skyModel) + " )");

@@ -2,6 +2,9 @@
 // 设置作为编辑器自有的待保存导入发布；保存时脚本生成据此写出受管的 WarVK 初始化指令。
 #include "EditorProject.h"
 
+#include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapTerrain.h"
+
 #include <QUndoCommand>
 #include <QUndoStack>
 
@@ -54,6 +57,14 @@ Result<MapData::WarVKMapSettings> EditorProject::QueryWarVKMapSettings() const {
     const auto bytes = ReadOwnedMapMember(kWarVKSettings);
     if (!bytes.Succeeded() || !bytes.value) return {std::nullopt, bytes.diagnostics};
     return *bytes.value ? MapData::ParseWarVKMapSettings(**bytes.value) : Result<MapData::WarVKMapSettings>::Success({});
+}
+
+Result<MapData::WarVKMapGround> EditorProject::QueryWarVKMapGround() const {
+    const auto* edits = MapEdits();
+    const auto terrain = edits ? edits->Terrain() : nullptr;
+    if (!terrain) return Result<MapData::WarVKMapGround>::Failure("MapData.WarVK", "WARVK_CLOUD_SEA_TERRAIN",
+        "当前地图没有已载入的地形，无法确定云海范围。");
+    return MapData::WarVKMapGroundOf(*terrain);
 }
 
 Status EditorProject::PublishWarVKMapSettings(const MapData::WarVKMapSettings& settings, EditOperation operation) {

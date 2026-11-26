@@ -49,6 +49,38 @@ QJsonObject SettingsJson(QtProject::EditorProject& project) {
         : QJsonObject{{"enabled", false}});
     result.insert("celestial_motion", SwitchText(value.celestialMotion));
     result.insert("time_color_grading", SwitchText(value.timeColorGrading));
+    // 实际写出值：设了太阳方向/颜色而对应开关不设置时按关写出。
+    result.insert("effective_celestial_motion", SwitchText(MapData::WarVKEffectiveCelestialMotion(value)));
+    result.insert("effective_time_color_grading", SwitchText(MapData::WarVKEffectiveTimeColorGrading(value)));
+    result.insert("cloud_sea", value.cloudSea
+        ? QJsonObject{{"enabled", true}, {"top", value.cloudSea->top}, {"cover", value.cloudSea->cover}}
+        : QJsonObject{{"enabled", false}});
+    QJsonArray warnings;
+    for (const auto& warning : MapData::WarVKSettingsWarnings(value))
+        warnings.append(QJsonObject{{"code", QString::fromStdString(warning.code)}, {"message", QString::fromStdString(warning.message)}});
+    // 当前地形的地面范围与云海盒；保存时按待写出的地形重新计算。
+    const auto ground = project.QueryWarVKMapGround();
+    if (ground.Succeeded() && ground.value) {
+        result.insert("map_ground", QJsonObject{{"west", ground.value->west}, {"south", ground.value->south},
+            {"east", ground.value->east}, {"north", ground.value->north}, {"lowest", ground.value->lowest}});
+        if (value.cloudSea) {
+            const auto box = MapData::WarVKCloudSeaBoxFor(*value.cloudSea, *ground.value);
+            if (box.Succeeded() && box.value) {
+                const auto& b = *box.value;
+                result.insert("cloud_sea_box", QJsonObject{{"center", QJsonArray{b.centerX, b.centerY, b.centerZ}},
+                    {"size", QJsonArray{b.sizeX, b.sizeY, b.sizeZ}}, {"bottom", b.bottom}, {"feather", b.feather},
+                    {"query", QString::fromStdString(MapData::WarVKCloudSeaQuery(b))}});
+            } else {
+                for (const auto& problem : box.diagnostics)
+                    warnings.append(QJsonObject{{"code", QString::fromStdString(problem.code)},
+                        {"message", QString::fromStdString(problem.message)}});
+            }
+        }
+    } else if (value.cloudSea) {
+        for (const auto& problem : ground.diagnostics)
+            warnings.append(QJsonObject{{"code", QString::fromStdString(problem.code)}, {"message", QString::fromStdString(problem.message)}});
+    }
+    result.insert("warnings", warnings);
     if (!value.skyModel.empty()) {
         // 是否已在地图里（含待保存导入）；不在时也可能是游戏自带路径，只报告，不拒绝。
         const auto key = QtProject::EditorProject::AssetKey(QString::fromStdString(value.skyModel));
@@ -124,6 +156,18 @@ Result<WarVKMapSettings> Merge(WarVKMapSettings settings, const QJsonObject& arg
             settings.sunColor = MapData::WarVKSunColor{red.toDouble(), green.toDouble(), blue.toDouble(), intensity.toDouble()};
         }
     }
+    if (arguments.contains("cloud_sea")) {
+        const auto object = arguments.value("cloud_sea").toObject();
+        const auto enabled = object.value("enabled");
+        if (!enabled.isBool()) return fail("WARVK_CLOUD_SEA_NUMBER", "cloud_sea 须含 enabled。");
+        if (!enabled.toBool()) settings.cloudSea.reset();
+        else {
+            const auto top = object.value("top"), cover = object.value("cover");
+            if (!top.isDouble() || !cover.isDouble())
+                return fail("WARVK_CLOUD_SEA_NUMBER", "启用云海时须给出数值 top（世界 z）与 cover（0–1）。");
+            settings.cloudSea = MapData::WarVKCloudSea{top.toDouble(), cover.toDouble()};
+        }
+    }
     for (const auto& [name, target] : {std::pair{"celestial_motion", &settings.celestialMotion},
              std::pair{"time_color_grading", &settings.timeColorGrading}}) {
         if (!arguments.contains(QLatin1String(name))) continue;
@@ -141,7 +185,8 @@ QJsonObject Rawcode() { return {{"type", "string"}, {"minLength", 4}, {"maxLengt
 
 std::vector<LiveWarVKTool> LiveWarVKTools() {
     std::vector<LiveWarVKTool> tools;
-    tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型、天空模型、太阳方向与颜色、昼夜光照开关及保存时写出的指令。",
+    tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型、天空模型、太阳方向与颜色、"
+        "昼夜光照开关（含实际写出值）、云海、保存时写出的指令、提醒（warnings），以及当前地形的地面范围与云海盒。",
         Mcp::ToolPermission::Query, {}, {}, SettingsJson, {}});
     QJsonObject set{
         {"timing", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"timer", "main"}}}},
@@ -169,11 +214,20 @@ std::vector<LiveWarVKTool> LiveWarVKTools() {
                 {"intensity", NumberSchema(0, MapData::kWarVKSunIntensityMax)}}},
             {"required", QJsonArray{"enabled"}}}},
         {"celestial_motion", SwitchSchema()},
-        {"time_color_grading", SwitchSchema()}};
+        {"time_color_grading", SwitchSchema()},
+        {"cloud_sea", QJsonObject{{"type", "object"}, {"additionalProperties", false},
+            {"properties", QJsonObject{
+                {"enabled", QJsonObject{{"type", "boolean"}}},
+                {"top", NumberSchema(-MapData::kWarVKCoordinateMax, MapData::kWarVKCoordinateMax)},
+                {"cover", NumberSchema(0, 1)}}},
+            {"required", QJsonArray{"enabled"}}}}};
     tools.push_back({"map_warvk_set", "修改地图设置 → WarVK（只改给出的项；camera_limits.enabled=false 取消镜头限制，far_doodad_types 整表替换，"
         "超过 16 个拒绝；sky_model 为天空模型路径，空串取消，超过 259 字节拒绝，正斜杠按反斜杠写；"
         "sun_direction 的 azimuth 同单位朝向（0 东、90 北），elevation 为仰角，写出光线方向向量；sun_color 各分量 0–1、强度 0–10；"
-        "celestial_motion / time_color_grading 为昼夜光照循环开关，固定太阳需两个都 off，default 为不设置）。"
+        "celestial_motion / time_color_grading 为昼夜光照循环开关，default 为不设置：设了太阳方向/颜色时不设置按 off 写出，"
+        "on 会让日夜循环每帧覆盖方向/颜色（返回 warnings），time_color_grading 同时开关整个昼夜系统；"
+        "cloud_sea 为云海，top 为盒顶世界 z、cover 为覆盖度 0–1，盒子按地图中心、1.5 倍地图尺寸和最低地面以下 100 计算，"
+        "顶高不高于盒底或盒高超过水平尺寸时保存拒绝，见 map_warvk_get 的 map_ground 与 cloud_sea_box）。"
         "一次调用是地图设置撤销栈上的一条记录。", Mcp::ToolPermission::Edit, set, {}, {},
         [](QtProject::EditorProject& project, const QJsonObject& arguments) -> QJsonObject {
             const auto current = project.QueryWarVKMapSettings();

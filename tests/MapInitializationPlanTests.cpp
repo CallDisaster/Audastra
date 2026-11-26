@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/MapInitializationPlan.h"
 #include "War3MapCore/MapData/GeneratedObjectSymbol.h"
+#include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <algorithm>
@@ -541,6 +542,127 @@ void WarVKManagedInitialization() {
         [](const auto& diagnostic) { return diagnostic.code == "MAP_WARVK_SETTINGS_INVALID"; }), "invalid WarVK settings block generation");
 }
 
+// 太阳方向/颜色与昼夜开关的实际写出值、覆盖提醒，以及云海的设置、盒子计算和受管脚本。
+void WarVKSunHoldAndCloudSea() {
+    using MapData::WarVKMapSettings;
+    const auto parse = [](std::string_view text) {
+        return MapData::ParseWarVKMapSettings(std::span(reinterpret_cast<const std::byte*>(text.data()), text.size()));
+    };
+    const auto hasCode = [](const std::vector<Diagnostic>& diagnostics, std::string_view code) {
+        return std::any_of(diagnostics.begin(), diagnostics.end(), [&](const auto& diagnostic) { return diagnostic.code == code; });
+    };
+    // 设了方向/颜色而开关不设置：按关写出，不提醒。
+    WarVKMapSettings held;
+    held.sunDirection = MapData::WarVKSunDirection{0, 6};
+    held.sunColor = MapData::WarVKSunColor{1, 0.8, 0.6, 2};
+    const auto heldCommands = MapData::WarVKInitCommands(held);
+    Require(heldCommands.Succeeded() && heldCommands.value->size() == 4
+        && (*heldCommands.value)[0] == "warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0"
+        && (*heldCommands.value)[1] == "warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:0"
+        && (*heldCommands.value)[2] == "warvk:v1;sun.setDirection;r:-0.994522;r:0;r:-0.104528",
+        "unset lighting switches are written off when the sun is set");
+    Require(MapData::WarVKEffectiveCelestialMotion(held) == false && MapData::WarVKEffectiveTimeColorGrading(held) == false
+        && !held.celestialMotion && !held.timeColorGrading && MapData::WarVKSettingsWarnings(held).empty(),
+        "implied switches stay unset in the settings and raise no warning");
+    // 只设方向：只关天体运行，不动按时间调色（它会关掉整个昼夜系统）。
+    WarVKMapSettings directionOnly; directionOnly.sunDirection = MapData::WarVKSunDirection{90, 30};
+    const auto directionCommands = MapData::WarVKInitCommands(directionOnly);
+    Require(directionCommands.Succeeded() && directionCommands.value->size() == 2
+        && (*directionCommands.value)[0] == "warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0"
+        && !MapData::WarVKEffectiveTimeColorGrading(directionOnly), "a sun direction alone turns off only celestial motion");
+    // 明确开着：照写开，给出覆盖提醒。
+    WarVKMapSettings overridden = held;
+    overridden.celestialMotion = true;
+    overridden.timeColorGrading = true;
+    const auto overriddenCommands = MapData::WarVKInitCommands(overridden);
+    const auto warnings = MapData::WarVKSettingsWarnings(overridden);
+    Require(overriddenCommands.Succeeded() && (*overriddenCommands.value)[0] == "warvk:v1;lightingCycle.setCelestialMotionEnabled;b:1"
+        && (*overriddenCommands.value)[1] == "warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:1" && warnings.size() == 2
+        && hasCode(warnings, "WARVK_SUN_DIRECTION_OVERRIDDEN") && hasCode(warnings, "WARVK_SUN_COLOR_OVERRIDDEN")
+        && warnings.front().severity == DiagnosticSeverity::Warning, "explicit on is written and warned about");
+    WarVKMapSettings cycleOnly; cycleOnly.timeColorGrading = true;
+    Require(MapData::WarVKEffectiveTimeColorGrading(cycleOnly) == true && !MapData::WarVKEffectiveCelestialMotion(cycleOnly)
+        && MapData::WarVKSettingsWarnings(cycleOnly).empty(), "switches without a sun keep their own value");
+
+    // 云海：一行 cloud.sea，往返不变，不进 Preloader 指令；越界、缺项拒绝。
+    WarVKMapSettings cloud; cloud.cloudSea = MapData::WarVKCloudSea{1400, 0.93};
+    const auto cloudBytes = MapData::SerializeWarVKMapSettings(cloud);
+    Require(cloudBytes.Succeeded() && std::string(reinterpret_cast<const char*>(cloudBytes.value->data()), cloudBytes.value->size())
+        == "schema=1\ntiming=timer\ncloud.sea=1400,0.93\n", "cloud sea is one settings line");
+    const auto cloudParsed = MapData::ParseWarVKMapSettings(*cloudBytes.value);
+    Require(cloudParsed.Succeeded() && *cloudParsed.value == cloud && cloud.HasCommands()
+        && MapData::WarVKInitCommands(cloud).value->empty(), "cloud sea round-trips and is not a Preloader command");
+    for (const auto* bad : {"schema=1\ncloud.sea=1400\n", "schema=1\ncloud.sea=1400,1.5\n", "schema=1\ncloud.sea=1400,-0.1\n",
+             "schema=1\ncloud.sea=2000000,0.5\n", "schema=1\ncloud.sea=,0.5\n"})
+        Require(!parse(bad).Succeeded(), "out-of-range or malformed cloud sea refused");
+
+    // 地面范围取自地形网格：西南角 + (顶点数-1)×128，最低地面为网格最低 z。
+    MapData::TerrainGridSnapshot grid;
+    grid.header.width = 33;
+    grid.header.height = 17;
+    grid.header.offset = {-2048.0f, -1024.0f};
+    grid.vertices.resize(1);
+    grid.minimum = {-2048.0f, -1024.0f, -200.0f};
+    const auto ground = MapData::WarVKMapGroundOf(grid);
+    Require(ground.Succeeded() && ground.value->west == -2048 && ground.value->south == -1024 && ground.value->east == 2048
+        && ground.value->north == 1024 && ground.value->lowest == -200, "map ground comes from the terrain grid");
+    grid.header.width = 1;
+    Require(!MapData::WarVKMapGroundOf(grid).Succeeded(), "a grid narrower than two vertices has no ground");
+
+    // 盒子：中心在地图中心；全尺寸为 1.5 倍地图宽高、至少 4096；盒底为最低地面以下 100。
+    const auto box = MapData::WarVKCloudSeaBoxFor(*cloud.cloudSea, *ground.value);
+    Require(box.Succeeded() && box.value->sizeX == 6144 && box.value->sizeY == 4096 && box.value->bottom == -300
+        && box.value->sizeZ == 1700 && box.value->centerZ == 550, "cloud sea box follows the map");
+    Require(MapData::WarVKCloudSeaQuery(*box.value)
+        == "warvk:v1;localFog.createBox;r:0;r:0;r:550;r:6144;r:4096;r:1700;r:0.93;r:0.15", "cloud sea query text");
+    const auto below = MapData::WarVKCloudSeaBoxFor(MapData::WarVKCloudSea{-300, 0.5}, *ground.value);
+    Require(!below.Succeeded() && below.diagnostics.front().code == "WARVK_CLOUD_SEA_BELOW_GROUND", "top at the box bottom refused");
+    Require(MapData::WarVKCloudSeaBoxFor(MapData::WarVKCloudSea{3796, 0.5}, *ground.value).Succeeded(),
+        "box as tall as its smaller horizontal size accepted");
+    const auto tall = MapData::WarVKCloudSeaBoxFor(MapData::WarVKCloudSea{3797, 0.5}, *ground.value);
+    Require(!tall.Succeeded() && tall.diagnostics.front().code == "WARVK_CLOUD_SEA_TOO_TALL", "taller box refused, not clamped");
+    const auto huge = MapData::WarVKCloudSeaBoxFor(MapData::WarVKCloudSea{500, 1},
+        MapData::WarVKMapGround{1000, 2000, 1000 + 300000, 2000 + 300000, 37.5});
+    Require(huge.Succeeded() && huge.value->sizeX == 200000 && huge.value->centerX == 151000 && huge.value->centerY == 152000
+        && MapData::WarVKCloudSeaQuery(*huge.value)
+            == "warvk:v1;localFog.createBox;r:151000;r:152000;r:218.75;r:200000;r:200000;r:562.5;r:1;r:0.15",
+        "large map box capped at 200000 and off-centre maps keep their centre");
+
+    // JASS：云海在太阳颜色之后、天空模型之前，返回值存全局，照常记录结果码；不打开体积光。
+    WarVKMapSettings scripted;
+    scripted.sunDirection = MapData::WarVKSunDirection{0, 6};
+    scripted.cloudSea = cloud.cloudSea;
+    scripted.skyModel = "Sky\\Sea.mdx";
+    Fixture fixture;
+    Trigger::TriggerDocument triggers; Trigger::UiCatalog catalog;
+    fixture.inputs.triggers = &triggers; fixture.inputs.catalog = &catalog;
+    fixture.inputs.warvk = &scripted;
+    const auto noGround = GenerateMapScript(fixture.inputs);
+    Require(!noGround.Succeeded() && hasCode(noGround.diagnostics, "WARVK_CLOUD_SEA_TERRAIN"), "cloud sea without terrain refused");
+    fixture.inputs.warvkGround = *ground.value;
+    const auto generated = GenerateMapScript(fixture.inputs);
+    Require(generated.Succeeded(), "cloud sea script generates");
+    const auto& script = generated.text;
+    const auto at = [&](std::string_view needle) { return script.find(needle); };
+    const auto npos = std::string::npos;
+    const auto global = at("integer                 AudastraWarVKCloudSea      = 0");
+    const auto motion = at("call Preloader( \"warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0\" )");
+    const auto direction = at("set AudastraWarVKErrors[1] = GetLocalizedHotkey( \"warvk:v1;system.lastErrorCode\" )");
+    const auto sea = at("set AudastraWarVKCloudSea = GetLocalizedHotkey( "
+        "\"warvk:v1;localFog.createBox;r:0;r:0;r:550;r:6144;r:4096;r:1700;r:0.93;r:0.15\" )");
+    const auto seaError = at("set AudastraWarVKErrors[2] = GetLocalizedHotkey( \"warvk:v1;system.lastErrorCode\" )");
+    const auto sky = at("call SetSkyModel( \"Sky\\\\Sea.mdx\" )");
+    Require(global != npos && global < at("endglobals") && motion != npos && motion < direction && direction < sea && sea < seaError
+        && seaError < sky && at("volumetric") == npos, "cloud sea follows the sun and precedes the sky model");
+    scripted.celestialMotion = true;
+    const auto warned = GenerateMapScript(fixture.inputs);
+    Require(warned.Succeeded() && hasCode(warned.diagnostics, "WARVK_SUN_DIRECTION_OVERRIDDEN"),
+        "an overridden sun direction warns without blocking the script");
+    scripted.cloudSea = MapData::WarVKCloudSea{5000, 0.5};
+    const auto tooTall = GenerateMapScript(fixture.inputs);
+    Require(!tooTall.Succeeded() && hasCode(tooTall.diagnostics, "WARVK_CLOUD_SEA_TOO_TALL"), "too tall cloud sea blocks generation");
+}
+
 } // namespace
 
 int main() {
@@ -554,6 +676,7 @@ int main() {
         SoundSentinelsAndNonFiniteValues();
         RegionAmbientSoundInitialization();
         WarVKManagedInitialization();
+        WarVKSunHoldAndCloudSea();
         std::cout << "Map initialization plan: owned facts, ordering, identity and refusal tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

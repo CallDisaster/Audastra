@@ -18,9 +18,11 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 namespace War3Map::Modules {
@@ -28,6 +30,7 @@ namespace {
 using MapData::WarVKInitTiming;
 constexpr double kDefaultDistance = 300000, kDefaultNearClip = 4;
 constexpr double kDefaultAzimuth = 0, kDefaultElevation = 45;
+constexpr double kDefaultCloudTop = 1000, kDefaultCloudCover = 0.9;
 
 // 数值框只显示有限位小数：显示值没被改动时沿用设置里的原值，避免改别的项时顺带把 Agent 写的精确值截短。
 double Kept(double current, const QDoubleSpinBox* box) {
@@ -47,6 +50,19 @@ std::optional<bool> SwitchValue(const QComboBox* box) {
 }
 
 void SetSwitch(QComboBox* box, const std::optional<bool>& value) { box->setCurrentIndex(!value ? 0 : *value ? 1 : 2); }
+
+// 设了太阳方向/颜色而开关不设置时显示实际写出的“关”，“不设置”项不可选。
+void ShowSwitch(QComboBox* box, const std::optional<bool>& stored, const std::optional<bool>& effective) {
+    SetSwitch(box, effective);
+    if (auto* model = qobject_cast<QStandardItemModel*>(box->model()))
+        if (auto* item = model->item(0)) item->setEnabled(stored.has_value() || !effective.has_value());
+}
+
+// 显示的是推出来的值且没改动时保持不设置；其余按所选写入。
+std::optional<bool> EditedSwitch(const QComboBox* box, const std::optional<bool>& stored, const std::optional<bool>& effective) {
+    const auto shown = SwitchValue(box);
+    return !stored && shown == effective ? stored : shown;
+}
 
 QColor SunColor(const MapData::WarVKSunColor& color) {
     return QColor::fromRgbF(static_cast<float>(color.red), static_cast<float>(color.green), static_cast<float>(color.blue));
@@ -141,11 +157,29 @@ MapWarVKPage::MapWarVKPage(QtProject::EditorProject& project, QObject* context, 
     celestial_ = new QComboBox(this);
     celestial_->setObjectName(QStringLiteral("mapWarVKCelestialMotion"));
     AddSwitchItems(celestial_);
+    celestial_->setToolTip(tr("开：日夜循环每帧覆盖太阳方向；设了太阳方向时不设置按关写出"));
     caption(tr("天体运行"), QStringLiteral("lighting.celestialMotion"), celestial_);
     grading_ = new QComboBox(this);
     grading_->setObjectName(QStringLiteral("mapWarVKTimeColorGrading"));
     AddSwitchItems(grading_);
+    grading_->setToolTip(tr("同时开关整个昼夜系统；开：每帧覆盖太阳颜色；设了太阳颜色时不设置按关写出"));
     caption(tr("按时间调色"), QStringLiteral("lighting.timeColorGrading"), grading_);
+    cloudSea_ = new QCheckBox(tr("启用"), this);
+    cloudSea_->setObjectName(QStringLiteral("mapWarVKCloudSea"));
+    cloudSea_->setToolTip(tr("玩家开启物理天空与云层时显示"));
+    caption(tr("云海"), QStringLiteral("cloud.sea"), cloudSea_);
+    cloudTop_ = new QDoubleSpinBox(this);
+    cloudTop_->setObjectName(QStringLiteral("mapWarVKCloudTop"));
+    cloudTop_->setRange(-MapData::kWarVKCoordinateMax, MapData::kWarVKCoordinateMax);
+    cloudTop_->setDecimals(1);
+    cloudTop_->setSingleStep(50);
+    caption(tr("云海顶高"), QStringLiteral("cloud.sea[0]"), cloudTop_);
+    cloudCover_ = new QDoubleSpinBox(this);
+    cloudCover_->setObjectName(QStringLiteral("mapWarVKCloudCover"));
+    cloudCover_->setRange(0, 1);
+    cloudCover_->setDecimals(3);
+    cloudCover_->setSingleStep(0.01);
+    caption(tr("云海覆盖度"), QStringLiteral("cloud.sea[1]"), cloudCover_);
 
     auto* farBox = new QWidget(this);
     auto* farLayout = new QVBoxLayout(farBox);
@@ -198,6 +232,9 @@ MapWarVKPage::MapWarVKPage(QtProject::EditorProject& project, QObject* context, 
     });
     connect(celestial_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { Commit(Edited(), tr("修改天体运行")); });
     connect(grading_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) { Commit(Edited(), tr("修改按时间调色")); });
+    connect(cloudSea_, &QCheckBox::toggled, this, [this](bool) { Commit(Edited(), tr("修改云海")); });
+    connect(cloudTop_, &QDoubleSpinBox::editingFinished, this, [this] { Commit(Edited(), tr("修改云海顶高")); });
+    connect(cloudCover_, &QDoubleSpinBox::editingFinished, this, [this] { Commit(Edited(), tr("修改云海覆盖度")); });
     connect(far_, &QListWidget::itemSelectionChanged, this, [this] { removeFar_->setEnabled(!far_->selectedItems().isEmpty()); });
     connect(removeFar_, &QPushButton::clicked, this, [this] {
         auto next = current_;
@@ -238,8 +275,14 @@ MapData::WarVKMapSettings MapWarVKPage::Edited() const {
     } else {
         next.sunColor.reset();
     }
-    next.celestialMotion = SwitchValue(celestial_);
-    next.timeColorGrading = SwitchValue(grading_);
+    next.celestialMotion = EditedSwitch(celestial_, current_.celestialMotion, MapData::WarVKEffectiveCelestialMotion(current_));
+    next.timeColorGrading = EditedSwitch(grading_, current_.timeColorGrading, MapData::WarVKEffectiveTimeColorGrading(current_));
+    if (cloudSea_->isChecked()) {
+        const auto old = current_.cloudSea.value_or(MapData::WarVKCloudSea{kDefaultCloudTop, kDefaultCloudCover});
+        next.cloudSea = MapData::WarVKCloudSea{Kept(old.top, cloudTop_), Kept(old.cover, cloudCover_)};
+    } else {
+        next.cloudSea.reset();
+    }
     return next;
 }
 
@@ -247,7 +290,8 @@ void MapWarVKPage::Fill() {
     const auto read = project_.QueryWarVKMapSettings();
     const bool ok = read.Succeeded() && read.value;
     for (QWidget* widget : std::initializer_list<QWidget*>{limits_, distance_, near_, timing_, sky_, sunDirection_, azimuth_,
-             elevation_, sunColor_, sunColorButton_, intensity_, celestial_, grading_, far_, removeFar_})
+             elevation_, sunColor_, sunColorButton_, intensity_, celestial_, grading_, cloudSea_, cloudTop_, cloudCover_, far_,
+             removeFar_})
         widget->setEnabled(ok);
     problem_->setVisible(!ok);
     if (!ok) {
@@ -256,6 +300,28 @@ void MapWarVKPage::Fill() {
         return;
     }
     current_ = *read.value;
+    {
+        // 不阻止修改的提醒：开关覆盖太阳方向/颜色，以及按当前地形算不出的云海盒（保存时会拒绝）。
+        auto problems = MapData::WarVKSettingsWarnings(current_);
+        if (current_.cloudSea) {
+            const auto ground = project_.QueryWarVKMapGround();
+            const auto box = ground.Succeeded() && ground.value ? MapData::WarVKCloudSeaBoxFor(*current_.cloudSea, *ground.value)
+                : Result<MapData::WarVKCloudSeaBox>{std::nullopt, ground.diagnostics};
+            if (box.Succeeded() && box.value) {
+                cloudTop_->setToolTip(tr("盒底 %1，顶高上限 %2").arg(box.value->bottom, 0, 'f', 1)
+                    .arg(box.value->bottom + std::min(box.value->sizeX, box.value->sizeY), 0, 'f', 1));
+            } else {
+                cloudTop_->setToolTip({});
+                problems.insert(problems.end(), box.diagnostics.begin(), box.diagnostics.end());
+            }
+        } else {
+            cloudTop_->setToolTip({});
+        }
+        QStringList lines;
+        for (const auto& problem : problems) lines << QString::fromStdString(problem.code + " · " + problem.message);
+        problem_->setText(lines.join(QLatin1Char('\n')));
+        problem_->setVisible(!lines.isEmpty());
+    }
     const QSignalBlocker limitsBlocker(limits_), distanceBlocker(distance_), nearBlocker(near_), timingBlocker(timing_);
     limits_->setChecked(current_.cameraLimits.has_value());
     distance_->setValue(current_.cameraLimits ? current_.cameraLimits->maxDistance : kDefaultDistance);
@@ -281,8 +347,17 @@ void MapWarVKPage::Fill() {
         swatch.fill(SunColor(color));
         sunColorButton_->setIcon(QIcon(swatch));
         sunColorButton_->setText(SunColor(color).name(QColor::HexRgb).toUpper());
-        SetSwitch(celestial_, current_.celestialMotion);
-        SetSwitch(grading_, current_.timeColorGrading);
+        ShowSwitch(celestial_, current_.celestialMotion, MapData::WarVKEffectiveCelestialMotion(current_));
+        ShowSwitch(grading_, current_.timeColorGrading, MapData::WarVKEffectiveTimeColorGrading(current_));
+    }
+    {
+        const QSignalBlocker cloudBlocker(cloudSea_), topBlocker(cloudTop_), coverBlocker(cloudCover_);
+        const auto sea = current_.cloudSea.value_or(MapData::WarVKCloudSea{kDefaultCloudTop, kDefaultCloudCover});
+        cloudSea_->setChecked(current_.cloudSea.has_value());
+        cloudTop_->setValue(sea.top);
+        cloudCover_->setValue(sea.cover);
+        cloudTop_->setEnabled(current_.cloudSea.has_value());
+        cloudCover_->setEnabled(current_.cloudSea.has_value());
     }
     {
         const QSignalBlocker skyBlocker(sky_), skyEditBlocker(sky_->lineEdit());

@@ -408,6 +408,8 @@ public:
     // 每次修改是地图设置撤销栈上的一条记录；撤销重做按设置值核对，其他操作先改了设置时不覆盖。
     [[nodiscard]] Result<MapData::WarVKMapSettings> QueryWarVKMapSettings() const;
     [[nodiscard]] Status EditWarVKMapSettings(const MapData::WarVKMapSettings& settings, const QString& undoLabel);
+    // 当前地形（含未保存的地形编辑）的地面范围，供云海盒预览；保存时脚本生成另按待写出的 w3e 计算。
+    [[nodiscard]] Result<MapData::WarVKMapGround> QueryWarVKMapGround() const;
     // 标记或取消一个装饰物类型为远景；已标 16 个时拒绝第 17 个并说明，不截断。
     [[nodiscard]] Status SetWarVKFarDoodadType(std::string_view rawcode, bool far);
     // 资源路径编辑（AssetEdits.cpp）：改名 / 移动 / 删除地图已有成员或待导入文件。

@@ -1,5 +1,7 @@
 #include "War3MapCore/MapData/WarVKMapSettings.h"
 
+#include "War3MapCore/MapData/MapTerrain.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -53,15 +55,26 @@ bool Writable(double value) {
 
 bool InRange(double value, double low, double high) { return std::isfinite(value) && value >= low && value <= high; }
 
-// 方向分量：6 位小数、去掉末尾 0，负零写成 0（-0.994522、0、-0.104528）。
-std::string Component(double value) {
+// 定点小数：给定位数、去掉末尾 0，负零写成 0（方向分量 6 位：-0.994522、0、-0.104528；云海盒 3 位）。
+std::string Decimal(double value, int digits) {
     char buffer[64];
-    const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 6);
+    const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, digits);
     if (written.ec != std::errc{}) return {};
     std::string text(buffer, written.ptr);
     while (!text.empty() && text.back() == '0') text.pop_back();
     if (!text.empty() && text.back() == '.') text.pop_back();
     return text == "-0" ? std::string("0") : text;
+}
+
+std::string Component(double value) { return Decimal(value, 6); }
+std::string Meters(double value) { return Decimal(value, 3); }
+
+Status ValidateCloudSea(const WarVKCloudSea& sea) {
+    if (!InRange(sea.top, -kWarVKCoordinateMax, kWarVKCoordinateMax))
+        return Fail("WARVK_CLOUD_SEA_TOP_RANGE", "云海顶高须在 -1000000–1000000 之间。");
+    if (!InRange(sea.cover, 0, 1)) return Fail("WARVK_CLOUD_SEA_COVER_RANGE", "云海覆盖度须在 0–1 之间。");
+    if (!Writable(sea.top) || !Writable(sea.cover)) return Fail("WARVK_CLOUD_SEA_NUMBER", "云海顶高或覆盖度无法写成十进制数。");
+    return Status::Ok();
 }
 
 std::optional<bool> ParseSwitch(std::string_view value) {
@@ -134,9 +147,32 @@ Status ValidateWarVKMapSettings(const WarVKMapSettings& settings) {
         if (!Writable(sun.red) || !Writable(sun.green) || !Writable(sun.blue) || !Writable(sun.intensity))
             return Fail("WARVK_SUN_NUMBER", "太阳颜色或强度无法写成十进制数。");
     }
+    if (settings.cloudSea) if (auto valid = ValidateCloudSea(*settings.cloudSea); !valid.Succeeded()) return valid;
     if (settings.timing != WarVKInitTiming::AfterInitialization && settings.timing != WarVKInitTiming::MainStart)
         return Fail("WARVK_TIMING_INVALID", "未知的 WarVK 指令执行时机。");
     return Status::Ok();
+}
+
+std::optional<bool> WarVKEffectiveCelestialMotion(const WarVKMapSettings& settings) noexcept {
+    if (settings.celestialMotion) return settings.celestialMotion;
+    return settings.sunDirection ? std::optional<bool>(false) : std::nullopt;
+}
+
+std::optional<bool> WarVKEffectiveTimeColorGrading(const WarVKMapSettings& settings) noexcept {
+    if (settings.timeColorGrading) return settings.timeColorGrading;
+    return settings.sunColor ? std::optional<bool>(false) : std::nullopt;
+}
+
+std::vector<Diagnostic> WarVKSettingsWarnings(const WarVKMapSettings& settings) {
+    std::vector<Diagnostic> warnings;
+    if (settings.sunDirection && settings.celestialMotion == true)
+        warnings.push_back({DiagnosticSeverity::Warning, std::string(kDomain), "WARVK_SUN_DIRECTION_OVERRIDDEN",
+            "天体运行为开：日夜循环每帧覆盖太阳方向，设的方向在游戏里看不出效果。要固定方向，把天体运行设为关或不设置。", {}});
+    if (settings.sunColor && settings.timeColorGrading == true)
+        warnings.push_back({DiagnosticSeverity::Warning, std::string(kDomain), "WARVK_SUN_COLOR_OVERRIDDEN",
+            "按时间调色为开：日夜循环每帧覆盖太阳颜色，设的颜色在游戏里看不出效果。要固定颜色，把按时间调色设为关或不设置"
+            "（关会同时关闭整个昼夜系统）。", {}});
+    return warnings;
 }
 
 Result<std::vector<std::string>> SetWarVKFarDoodadType(std::vector<std::string> types, std::string_view rawcode, bool far) {
@@ -194,6 +230,11 @@ Result<WarVKMapSettings> ParseWarVKMapSettings(std::span<const std::byte> bytes)
             if (!ParseNumbers(value, numbers))
                 return fail("WARVK_SUN_NUMBER", "sun.color 须为“红,绿,蓝,强度”四个十进制数。");
             settings.sunColor = WarVKSunColor{numbers[0], numbers[1], numbers[2], numbers[3]};
+        } else if (key == "cloud.sea") {
+            double numbers[2]{};
+            if (!ParseNumbers(value, numbers))
+                return fail("WARVK_CLOUD_SEA_NUMBER", "cloud.sea 须为“顶高,覆盖度”两个十进制数。");
+            settings.cloudSea = WarVKCloudSea{numbers[0], numbers[1]};
         } else if (key == "lighting.celestialMotion" || key == "lighting.timeColorGrading") {
             const auto enabled = ParseSwitch(value);
             if (!enabled) return fail("WARVK_LIGHTING_SWITCH", std::string(key) + " 只能是 0 或 1；不设置时省略该行。");
@@ -228,6 +269,7 @@ Result<std::vector<std::byte>> SerializeWarVKMapSettings(const WarVKMapSettings&
         text += "sun.color=" + Number(sun->red) + "," + Number(sun->green) + "," + Number(sun->blue) + "," + Number(sun->intensity) + "\n";
     if (settings.celestialMotion) text += std::string("lighting.celestialMotion=") + (*settings.celestialMotion ? "1" : "0") + "\n";
     if (settings.timeColorGrading) text += std::string("lighting.timeColorGrading=") + (*settings.timeColorGrading ? "1" : "0") + "\n";
+    if (settings.cloudSea) text += "cloud.sea=" + Number(settings.cloudSea->top) + "," + Number(settings.cloudSea->cover) + "\n";
     const auto* first = reinterpret_cast<const std::byte*>(text.data());
     return Output::Success(std::vector<std::byte>(first, first + text.size()));
 }
@@ -245,10 +287,10 @@ Result<std::vector<std::string>> WarVKInitCommands(const WarVKMapSettings& setti
         for (std::size_t i = 0; i < settings.farDoodadTypes.size(); ++i) line += (i ? "," : "") + settings.farDoodadTypes[i];
         commands.push_back(std::move(line));
     }
-    if (settings.celestialMotion)
-        commands.push_back(std::string("warvk:v1;lightingCycle.setCelestialMotionEnabled;b:") + (*settings.celestialMotion ? "1" : "0"));
-    if (settings.timeColorGrading)
-        commands.push_back(std::string("warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:") + (*settings.timeColorGrading ? "1" : "0"));
+    if (const auto motion = WarVKEffectiveCelestialMotion(settings))
+        commands.push_back(std::string("warvk:v1;lightingCycle.setCelestialMotionEnabled;b:") + (*motion ? "1" : "0"));
+    if (const auto grading = WarVKEffectiveTimeColorGrading(settings))
+        commands.push_back(std::string("warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:") + (*grading ? "1" : "0"));
     if (settings.sunDirection) {
         const double azimuth = settings.sunDirection->azimuth * kDegrees, elevation = settings.sunDirection->elevation * kDegrees;
         const double x = -std::cos(elevation) * std::cos(azimuth), y = -std::cos(elevation) * std::sin(azimuth);
@@ -259,6 +301,54 @@ Result<std::vector<std::string>> WarVKInitCommands(const WarVKMapSettings& setti
         commands.push_back("warvk:v1;sun.setColorIntensity;r:" + Number(sun->red) + ";r:" + Number(sun->green) + ";r:"
             + Number(sun->blue) + ";r:" + Number(sun->intensity));
     return Output::Success(std::move(commands));
+}
+
+Result<WarVKMapGround> WarVKMapGroundOf(const TerrainGridSnapshot& terrain) {
+    const auto& header = terrain.header;
+    if (header.width < 2 || header.height < 2 || terrain.vertices.empty())
+        return Result<WarVKMapGround>::Failure(std::string(kDomain), "WARVK_CLOUD_SEA_TERRAIN", "地形网格不足 2×2 顶点，无法确定云海范围。");
+    WarVKMapGround ground;
+    ground.west = header.offset[0];
+    ground.south = header.offset[1];
+    ground.east = ground.west + static_cast<double>(header.width - 1) * TerrainGridSnapshot::tileSize;
+    ground.north = ground.south + static_cast<double>(header.height - 1) * TerrainGridSnapshot::tileSize;
+    ground.lowest = terrain.minimum[2];
+    return Result<WarVKMapGround>::Success(ground);
+}
+
+Result<WarVKCloudSeaBox> WarVKCloudSeaBoxFor(const WarVKCloudSea& sea, const WarVKMapGround& ground) {
+    using Output = Result<WarVKCloudSeaBox>;
+    if (auto valid = ValidateCloudSea(sea); !valid.Succeeded()) return {std::nullopt, valid.diagnostics};
+    const auto fail = [](const char* code, std::string message) { return Output::Failure(std::string(kDomain), code, std::move(message)); };
+    const auto size = [](double extent) {
+        return std::clamp(extent * kWarVKCloudSeaSizeScale, kWarVKCloudSeaSizeMin, kWarVKCloudSeaSizeMax);
+    };
+    WarVKCloudSeaBox box;
+    box.centerX = (ground.west + ground.east) / 2;
+    box.centerY = (ground.south + ground.north) / 2;
+    box.sizeX = size(ground.east - ground.west);
+    box.sizeY = size(ground.north - ground.south);
+    box.bottom = ground.lowest - kWarVKCloudSeaGroundMargin;
+    box.cover = sea.cover;
+    if (!(sea.top > box.bottom))
+        return fail("WARVK_CLOUD_SEA_BELOW_GROUND", "云海顶高 " + Meters(sea.top) + " 不高于盒底 " + Meters(box.bottom)
+            + "（地图最低地面 " + Meters(ground.lowest) + " 以下 100）；请调高顶高。");
+    box.sizeZ = sea.top - box.bottom;
+    const double horizontal = std::min(box.sizeX, box.sizeY);
+    if (box.sizeZ > horizontal)
+        return fail("WARVK_CLOUD_SEA_TOO_TALL", "云海盒高 " + Meters(box.sizeZ) + " 超过水平全尺寸较小者 " + Meters(horizontal)
+            + "；顶高最多 " + Meters(box.bottom + horizontal) + "。");
+    box.centerZ = (sea.top + box.bottom) / 2;
+    if (!InRange(box.centerX, -kWarVKCoordinateMax, kWarVKCoordinateMax) || !InRange(box.centerY, -kWarVKCoordinateMax, kWarVKCoordinateMax)
+        || !InRange(box.centerZ, -kWarVKCoordinateMax, kWarVKCoordinateMax))
+        return fail("WARVK_CLOUD_SEA_RANGE", "云海盒中心超出 WarVK 坐标范围（绝对值 1000000）。");
+    return Output::Success(box);
+}
+
+std::string WarVKCloudSeaQuery(const WarVKCloudSeaBox& box) {
+    return "warvk:v1;localFog.createBox;r:" + Meters(box.centerX) + ";r:" + Meters(box.centerY) + ";r:" + Meters(box.centerZ)
+        + ";r:" + Meters(box.sizeX) + ";r:" + Meters(box.sizeY) + ";r:" + Meters(box.sizeZ) + ";r:" + Meters(box.cover)
+        + ";r:" + Meters(box.feather);
 }
 
 } // namespace War3Map::MapData

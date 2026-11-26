@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/ScriptQueries.h"
@@ -218,6 +219,15 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     if (luaMode && warvk && warvk->HasCommands())
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "WARVK_LUA_UNSUPPORTED",
             "Lua 地图暂不支持写出 WarVK 初始化指令；请清空 地图设置 → WarVK 后再保存，或改用 JASS 地图。", {}});
+    // 云海盒要用地图最低地面：只在设了云海时读完整地形网格。
+    std::optional<MapData::WarVKMapGround> warvkGround;
+    if (warvk && warvk->cloudSea)
+        warvkGround = ParseMember<MapData::WarVKMapGround>(archive, edits, removals, "war3map.w3e", [](auto bytes) {
+            const auto terrain = MapData::ParseMapTerrain(bytes);
+            if (!terrain.Succeeded() || !terrain.value || !terrain.value->Snapshot())
+                return Result<MapData::WarVKMapGround>{std::nullopt, terrain.diagnostics};
+            return MapData::WarVKMapGroundOf(*terrain.value->Snapshot());
+        }, diagnostics, capturedInputs);
     const auto terrain = ParseMember<TerrainExtent>(archive, edits, removals, "war3map.w3e", [](auto bytes) {
         const auto extent = ReadTerrainExtent(bytes);
         return extent ? Result<TerrainExtent>::Success(*extent) : Result<TerrainExtent>::Failure(
@@ -300,6 +310,7 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     inputs.sounds = sounds ? &*sounds : nullptr;
     inputs.strings = strings ? &*strings : nullptr;
     inputs.warvk = warvk ? &*warvk : nullptr;
+    inputs.warvkGround = warvkGround;
     inputs.terrain = terrain;
     if (request.toolchain.onStage) request.toolchain.onStage("generate");
     if (luaMode) {
