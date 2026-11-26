@@ -3,6 +3,7 @@ qt_add_library(War3MapQtModuleObjects STATIC
     ObjectModule.cpp ObjectModule.h ObjectModuleShared.h
     ObjectNavigation.cpp
     ObjectFieldsView.cpp
+    ObjectWarVKFar.cpp
     ObjectCreation.cpp
     ObjectDeletion.cpp
     ObjectBatchActions.cpp

@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/MapData/WarVKMapSettings.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
@@ -81,6 +82,8 @@ struct MapScriptInputs {
     const MapData::CamerasDocument* cameras = nullptr;
     const MapData::SoundsDocument* sounds = nullptr;
     const MapData::StringTableDocument* strings = nullptr;
+    // 编辑器自有成员 audastra\warvk.ini 的 WarVK 渲染设置；有指令时写出受管的 AudastraWarVKInit。
+    const MapData::WarVKMapSettings* warvk = nullptr;
     // 缺失时镜头范围退回 w3i 中记录的镜头边界。
     std::optional<TerrainExtent> terrain;
     // 头注释中的生成日期；为空时省略日期行（便于测试得到稳定输出）。

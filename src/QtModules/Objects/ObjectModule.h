@@ -110,6 +110,10 @@ private:
     void RebuildObjectFieldCategories();
     void UpdateObjectFieldControls();
     void ShowObjectFieldContextMenu(const QPoint& pos);
+    // WarVK 远景装饰物勾选（ObjectWarVKFar.cpp）：只在装饰物分类显示，状态来自地图设置 → WarVK。
+    [[nodiscard]] QWidget* BuildFarDoodadToggle();
+    void UpdateFarDoodadToggle();
+    [[nodiscard]] QString CurrentObjectRawcode() const;
     void AutofillObjectFieldLevels(int row);
     // 原版风格目录树（ObjectTreeActions.cpp）
     void RebuildObjectTree();
@@ -162,6 +166,7 @@ private:
     QPushButton* redoObjectEdit_ = nullptr;
     QPushButton* editStandardObject_ = nullptr;
     QPushButton* createObjectButton_ = nullptr;
+    QCheckBox* farDoodad_ = nullptr;
     QTabWidget* objectSourceTabs_ = nullptr;
     QStackedWidget* objectDetailPages_ = nullptr;
     QtApp::ObjectCatalogWidget* standardObjectBrowser_ = nullptr;

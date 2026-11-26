@@ -1,6 +1,7 @@
 #include "LiveEditorTools.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "LiveEditorAuxiliaryTools.h"
+#include "LiveEditorWarVKTools.h"
 #include "McpLuaTestTools.h"
 #include "McpLuaFileTools.h"
 #include "McpGameUiTools.h"
@@ -2344,6 +2345,20 @@ private:
                         if (!status.Succeeded()) return Mcp::Failure(status);
                         return {{"ok", true}, {"revision", QString::number(project_.editRevision_.Revision())}};
                     });
+                });
+        }
+        for (auto definition : LiveWarVKTools()) {
+            auto properties = IdentityProperties();
+            for (auto field = definition.properties.begin(); field != definition.properties.end(); ++field)
+                properties.insert(field.key(), field.value());
+            auto required = definition.required;
+            required.prepend("expected_revision"); required.prepend("project_identity");
+            AddTool(definition.name, definition.description, definition.permission, Schema(properties, required),
+                [this, definition](const QJsonObject& arguments) -> QJsonObject {
+                    if (definition.handler) return Write(arguments, false, [&] { return definition.handler(project_, arguments); });
+                    if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+                    const auto check = CheckContext(arguments, false, false);
+                    return check.value("ok").toBool() ? definition.query(project_) : check;
                 });
         }
         for (auto definition : Mcp::ObjectToolDefinitions()) {

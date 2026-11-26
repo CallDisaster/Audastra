@@ -17,6 +17,8 @@
 #include <QJsonObject>
 #include <QSettings>
 
+#include <algorithm>
+
 // 界面线程仅冻结当前工程文档；工具链、游戏数据与工作目录由无 Qt 的共用服务准备。
 namespace War3Map::QtProject {
 namespace {
@@ -184,7 +186,14 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
     sources.gameRoot = war3GameRoot_;
     if (job.archive) sources.scriptMember = Script::MapScriptMemberName(*job.archive);
     // 触发器和地图初始化有修改时必须真正重建；不能把 WTG 已保存冒充游戏脚本已更新。
-    sources.allowMissingToolchain = !testScenarioPlan_ && !triggerDirty_ && !(mapEdits_ && mapEdits_->IsDirty());
+    // WarVK 设置有待保存的修改时同样：受管初始化段只存在于生成的脚本里。
+    const auto warvkKey = AssetKey(QString::fromUtf8(MapData::kWarVKSettingsMember.data(),
+        static_cast<qsizetype>(MapData::kWarVKSettingsMember.size())));
+    const bool warvkPending = std::any_of(pendingImports_.begin(), pendingImports_.end(),
+            [&](const PendingImport& item) { return AssetKey(item.archivePath) == warvkKey; })
+        || std::any_of(assetEdits_.begin(), assetEdits_.end(),
+            [&](const AssetEdit& edit) { return AssetKey(edit.from) == warvkKey || AssetKey(edit.to) == warvkKey; });
+    sources.allowMissingToolchain = !testScenarioPlan_ && !triggerDirty_ && !(mapEdits_ && mapEdits_->IsDirty()) && !warvkPending;
 
     job.preserveUnaffectedScript = !testScenarioPlan_;
     optionsTiming.Finish();

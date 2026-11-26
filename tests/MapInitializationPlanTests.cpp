@@ -411,6 +411,81 @@ void SoundSentinelsAndNonFiniteValues() {
     Rejected(BuildMapInitializationPlan(fixture.inputs), "MAP_INIT_VALUE_NONFINITE");
 }
 
+void WarVKManagedInitialization() {
+    using MapData::WarVKMapSettings;
+    // 设置：严格往返、数值写成定点十进制、远景类型排序去重且至多 16 个、未知键和越界拒绝。
+    WarVKMapSettings settings;
+    settings.cameraLimits = MapData::WarVKCameraLimits{300000, 4};
+    auto far = MapData::SetWarVKFarDoodadType({}, "L050", true);
+    for (const auto* code : {"L04Y", "L04V", "L04W", "L04V"}) far = MapData::SetWarVKFarDoodadType(*far.value, code, true);
+    Require(far.Succeeded() && far.value->size() == 4 && far.value->front() == "L04V", "far types are sorted and unique");
+    settings.farDoodadTypes = *far.value;
+    const auto bytes = MapData::SerializeWarVKMapSettings(settings);
+    Require(bytes.Succeeded(), "valid WarVK settings serialize");
+    const std::string text(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
+    Require(text == "schema=1\ntiming=timer\ncamera.limits=300000,4\ndoodad.far=L04V,L04W,L04Y,L050\n", "canonical settings text");
+    const auto parsed = MapData::ParseWarVKMapSettings(*bytes.value);
+    Require(parsed.Succeeded() && *parsed.value == settings, "settings round-trip exactly");
+    const auto commands = MapData::WarVKInitCommands(settings);
+    Require(commands.Succeeded() && commands.value->size() == 2
+        && (*commands.value)[0] == "warvk:v1;camera.setLimits;r:300000;r:4"
+        && (*commands.value)[1] == "warvk:v1;doodad.setFarTypes;s:L04V,L04W,L04Y,L050", "commands keep the agreed order and text");
+    const auto parse = [](std::string_view value) {
+        return MapData::ParseWarVKMapSettings(std::span(reinterpret_cast<const std::byte*>(value.data()), value.size()));
+    };
+    Require(!parse("schema=1\nlighting=1\n").Succeeded(), "unknown keys are refused, not ignored");
+    Require(!parse("schema=1\ncamera.limits=9999,4\n").Succeeded(), "camera distance below 10000 refused");
+    Require(!parse("schema=1\ncamera.limits=300000,0.5\n").Succeeded(), "near clip below 1 refused");
+    Require(!parse("schema=1\nschema=1\n").Succeeded() && !parse("timing=timer\n").Succeeded(), "duplicate or missing schema refused");
+    Require(!parse("schema=1\ndoodad.far=L04V,L04V\n").Succeeded() && !parse("schema=1\ndoodad.far=L0;V\n").Succeeded(),
+        "duplicate or unsafe rawcodes refused");
+    std::vector<std::string> sixteen;
+    for (int i = 0; i < 16; ++i) sixteen.push_back(std::string("Y00") + static_cast<char>('A' + i));
+    Require(MapData::SetWarVKFarDoodadType(sixteen, "Y00A", true).Succeeded(), "re-marking a marked type is not a 17th type");
+    const auto seventeenth = MapData::SetWarVKFarDoodadType(sixteen, "Z000", true);
+    Require(!seventeenth.Succeeded() && seventeenth.diagnostics.front().code == "WARVK_FAR_TYPES_LIMIT", "17th far type refused, not truncated");
+    WarVKMapSettings tooMany; tooMany.farDoodadTypes = sixteen; tooMany.farDoodadTypes.push_back("Z000");
+    Require(!MapData::WarVKInitCommands(tooMany).Succeeded() && !MapData::SerializeWarVKMapSettings(tooMany).Succeeded(),
+        "more than 16 far types never produce partial commands");
+
+    // JASS：默认在 RunInitializationTriggers 之后起 0 秒计时器；受管函数先读协议版本，再逐条记录结果。
+    Fixture fixture;
+    Trigger::TriggerDocument triggers; Trigger::UiCatalog catalog;
+    fixture.inputs.triggers = &triggers; fixture.inputs.catalog = &catalog;
+    const auto none = GenerateMapScript(fixture.inputs);
+    Require(none.Succeeded() && none.text.find("AudastraWarVK") == std::string::npos, "no WarVK settings, no managed lines");
+    fixture.inputs.warvk = &settings;
+    const auto timer = GenerateMapScript(fixture.inputs);
+    Require(timer.Succeeded(), "managed WarVK script generates");
+    const auto& script = timer.text;
+    const auto at = [&](std::string_view needle) { return script.find(needle); };
+    const auto globals = at("integer array           AudastraWarVKErrors"), function = at("function AudastraWarVKInit takes nothing returns nothing");
+    const auto protocol = at("set AudastraWarVKProtocol = GetLocalizedHotkey( \"warvk:v1;system.protocolVersion\" )");
+    const auto camera = at("call Preloader( \"warvk:v1;camera.setLimits;r:300000;r:4\" )");
+    const auto cameraError = at("set AudastraWarVKErrors[0] = GetLocalizedHotkey( \"warvk:v1;system.lastErrorCode\" )");
+    const auto farTypes = at("call Preloader( \"warvk:v1;doodad.setFarTypes;s:L04V,L04W,L04Y,L050\" )");
+    const auto farError = at("set AudastraWarVKErrors[1] = GetLocalizedHotkey( \"warvk:v1;system.lastErrorCode\" )");
+    const auto mainAt = at("function main takes nothing returns nothing"), initialization = at("call RunInitializationTriggers(  )");
+    const auto start = at("call TimerStart( CreateTimer(), 0.0, false, function AudastraWarVKInit )");
+    const auto npos = std::string::npos;
+    Require(globals != npos && globals < at("endglobals") && function != npos && function < mainAt, "globals and function precede main");
+    Require(protocol != npos && protocol < camera && camera < cameraError && cameraError < farTypes && farTypes < farError,
+        "protocol first, then each command with its own result");
+    Require(at("call DestroyTimer( GetExpiredTimer() )") != npos && start != npos && initialization < start
+        && start < script.find("endfunction", mainAt), "timer starts after map initialization inside main");
+    Require(at("call AudastraWarVKInit(  )") == npos, "timer timing does not also call at main start");
+    settings.timing = MapData::WarVKInitTiming::MainStart;
+    const auto direct = GenerateMapScript(fixture.inputs);
+    const auto call = direct.text.find("call AudastraWarVKInit(  )");
+    Require(direct.Succeeded() && call != npos && call > direct.text.find("function main takes nothing returns nothing")
+        && call < direct.text.find("call SetCameraBounds(") && direct.text.find("TimerStart( CreateTimer(), 0.0") == npos
+        && direct.text.find("DestroyTimer( GetExpiredTimer() )") == npos, "main-start timing calls first and has no timer");
+    settings.farDoodadTypes = tooMany.farDoodadTypes;
+    const auto invalid = GenerateMapScript(fixture.inputs);
+    Require(!invalid.Succeeded() && std::any_of(invalid.diagnostics.begin(), invalid.diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.code == "MAP_WARVK_SETTINGS_INVALID"; }), "invalid WarVK settings block generation");
+}
+
 } // namespace
 
 int main() {
@@ -423,6 +498,7 @@ int main() {
         RefusesUnimplementedDataWithoutLosingRecords();
         SoundSentinelsAndNonFiniteValues();
         RegionAmbientSoundInitialization();
+        WarVKManagedInitialization();
         std::cout << "Map initialization plan: owned facts, ordering, identity and refusal tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

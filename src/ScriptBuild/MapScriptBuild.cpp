@@ -66,7 +66,7 @@ Result<std::vector<ArchiveExactMember>> CaptureInitializationInputs(const MapArc
     std::size_t bytes = 0;
     const ArchiveExactMemberLimits limits;
     for (const auto* name : {"war3map.w3i", "war3mapUnits.doo", "war3map.doo", "war3map.w3r",
-            "war3map.w3c", "war3map.w3s", "war3map.wts", "war3map.w3e"}) {
+            "war3map.w3c", "war3map.w3s", "war3map.wts", "war3map.w3e", "audastra\\warvk.ini"}) {
         if (std::any_of(edits.begin(), edits.end(), [&](const auto& member) { return SameMember(member.name, name); })
             || std::any_of(removals.begin(), removals.end(), [&](const auto& member) { return SameMember(member, name); })) continue;
         for (const auto& member : archive.Members()) if (SameMember(member.name, name)) {
@@ -213,6 +213,11 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     auto cameras = ParseMember<MapData::CamerasDocument>(archive, edits, removals, "war3map.w3c", [](auto bytes) { return MapData::ParseCameras(bytes); }, diagnostics, capturedInputs);
     auto sounds = ParseMember<MapData::SoundsDocument>(archive, edits, removals, "war3map.w3s", [](auto bytes) { return MapData::ParseSounds(bytes); }, diagnostics, capturedInputs);
     auto strings = ParseMember<MapData::StringTableDocument>(archive, edits, removals, "war3map.wts", [](auto bytes) { return MapData::ParseStringTable(bytes); }, diagnostics, capturedInputs);
+    const auto warvk = ParseMember<MapData::WarVKMapSettings>(archive, edits, removals, MapData::kWarVKSettingsMember,
+        [](auto bytes) { return MapData::ParseWarVKMapSettings(bytes); }, diagnostics, capturedInputs);
+    if (luaMode && warvk && warvk->HasCommands())
+        diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "WARVK_LUA_UNSUPPORTED",
+            "Lua 地图暂不支持写出 WarVK 初始化指令；请清空 地图设置 → WarVK 后再保存，或改用 JASS 地图。", {}});
     const auto terrain = ParseMember<TerrainExtent>(archive, edits, removals, "war3map.w3e", [](auto bytes) {
         const auto extent = ReadTerrainExtent(bytes);
         return extent ? Result<TerrainExtent>::Success(*extent) : Result<TerrainExtent>::Failure(
@@ -294,6 +299,7 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     inputs.cameras = cameras ? &*cameras : nullptr;
     inputs.sounds = sounds ? &*sounds : nullptr;
     inputs.strings = strings ? &*strings : nullptr;
+    inputs.warvk = warvk ? &*warvk : nullptr;
     inputs.terrain = terrain;
     if (request.toolchain.onStage) request.toolchain.onStage("generate");
     if (luaMode) {

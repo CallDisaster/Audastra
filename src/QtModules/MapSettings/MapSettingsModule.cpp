@@ -1,6 +1,7 @@
 #include "MapSettingsModule.h"
 #include "MapPlayerEnumDelegate.h"
 #include "MapTechPage.h"
+#include "MapWarVKPage.h"
 #include "../NavigationBookmarkDetail.h"
 
 #include "EditorProject.h"
@@ -223,7 +224,7 @@ bool MapSettingsModule::Reveal(const Shell::NavigationTarget& target) {
     (void)Widget();
     const QString section = target.kind.isEmpty() ? target.id : target.kind;
     if (section.isEmpty()) return true;
-    const QStringList sections{"general", "players", "forces", "loading", "tech"};
+    const QStringList sections{"general", "players", "forces", "loading", "tech", "warvk"};
     const int index = sections.indexOf(section);
     if (index < 0) return false;
     sections_->setCurrentRow(index);
@@ -236,7 +237,7 @@ QJsonObject MapSettingsModule::SaveViewState() const {
 }
 
 void MapSettingsModule::RestoreViewState(const QJsonObject& state) {
-    pendingSection_ = std::clamp(state.value("section").toInt(), 0, 4);
+    pendingSection_ = std::clamp(state.value("section").toInt(), 0, 5);
     pendingRawFields_ = state.value("rawFields").toBool();
     if (rawFields_) rawFields_->setChecked(pendingRawFields_);
     if (sections_) sections_->setCurrentRow(pendingSection_);
@@ -244,7 +245,7 @@ void MapSettingsModule::RestoreViewState(const QJsonObject& state) {
 
 std::optional<QJsonObject> MapSettingsModule::CaptureNavigationBookmark() const {
     if (!page_ || !sections_ || !pages_ || pending_) return {};
-    constexpr std::array<const char*, 5> keys{"general", "players", "forces", "loading", "tech"};
+    constexpr std::array<const char*, 6> keys{"general", "players", "forces", "loading", "tech", "warvk"};
     const int section = sections_->currentRow();
     if (section < 0 || section >= static_cast<int>(keys.size()) || section >= pages_->count()) return {};
     const auto* scroll = qobject_cast<QScrollArea*>(pages_->widget(section));
@@ -265,7 +266,7 @@ Shell::NavigationRestoreResult MapSettingsModule::RestoreNavigationBookmark(cons
     if (pending_) { (void)PrepareNavigationLeave(); return NavigationRestoreResult::Blocked; }
     const auto section = Nav::Text(bookmark, "section", 32);
     const auto vertical = Nav::Scroll(bookmark, "scroll_v"), horizontal = Nav::Scroll(bookmark, "scroll_h");
-    const QStringList keys{"general", "players", "forces", "loading", "tech"};
+    const QStringList keys{"general", "players", "forces", "loading", "tech", "warvk"};
     if (!Nav::Header(bookmark, "map-settings-view") || !section || !vertical || !horizontal || !page_ || !pages_ || !sections_)
         return NavigationRestoreResult::Invalid;
     const int index = keys.indexOf(*section);
@@ -466,6 +467,7 @@ void MapSettingsModule::BuildForms() {
     players_ = nullptr;
     forces_ = nullptr;
     techPage_ = nullptr;
+    warvkPage_ = nullptr;
     mapFlagFields_.clear();
     loadingBackground_ = nullptr;
     gameDataSet_ = nullptr;
@@ -696,6 +698,13 @@ void MapSettingsModule::BuildForms() {
         }
     }
 
+    // WarVK 设置是编辑器自有的地图成员，不进上方 W3I 草稿：每次改动立即提交为一条地图设置撤销。
+    auto* warvk = addForm(tr("WarVK"), "lucide/mountain");
+    warvkPage_ = new MapWarVKPage(project_, this,
+        [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },
+        [this](const QString& problem) { SetMessage(problem, true); }, rawFields_ && rawFields_->isChecked(), warvk->parentWidget());
+    warvk->addRow(warvkPage_);
+
     UpdateLabels();
     sections_->setCurrentRow(std::clamp(pendingSection_, 0, pages_->count() - 1));
     apply_->setEnabled(false);
@@ -715,6 +724,7 @@ void MapSettingsModule::UpdateLabels() {
         : QStringList{tr("序号"), tr("名称"), tr("控制类型"), tr("种族"), tr("选项"), tr("起点 X"), tr("起点 Y"), tr("低优先盟友"), tr("高优先盟友")});
     if (players_) players_->viewport()->update();  // 控制类型/种族列随原始字段开关切换数字与名称
     if (techPage_) techPage_->SetRaw(raw);
+    if (warvkPage_) warvkPage_->SetRaw(raw);
     if (forces_) forces_->setHorizontalHeaderLabels(raw
         ? QStringList{"name", "playerMask", "flags"}
         : QStringList{tr("名称"), tr("玩家集合"), tr("联盟选项")});

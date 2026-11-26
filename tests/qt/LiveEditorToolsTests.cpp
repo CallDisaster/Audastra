@@ -371,6 +371,7 @@ private slots:
     void ViewportToolsUseActualHostAndRejectStaleIdentity();
     void GameUiToolsUseHostAndValidateArguments();
     void BatchDeleteTriggersVariablesAndLuaFiles();
+    void WarVKSettingsUseSettingsUndoAndRefuseSeventeenth();
 };
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
@@ -390,6 +391,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "lua_folder_link", "lua_folder_reconnect", "lua_folder_review", "lua_folder_unlink",
         "lua_test_hot_reload", "lua_test_reload_result",
         "map_custom_settings_edit", "map_custom_settings_get", "map_runtime_query", "map_runtime_set", "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
+        "map_warvk_far_doodad_set", "map_warvk_get", "map_warvk_set",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_apply_text", "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "objects_text",
@@ -402,7 +404,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{111});
+    QCOMPARE(expected.size(), qsizetype{114});
     const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
@@ -3197,6 +3199,83 @@ void LiveEditorToolsTests::BatchDeleteTriggersVariablesAndLuaFiles() {
     QCOMPARE(rmRes.value("removed").toArray().size(), 40);
     QCOMPARE(f.project.AssetUndoStack()->count(), assetUndoBeforeImp + 1);
     f.project.AssetUndoStack()->undo();
+}
+
+void LiveEditorToolsTests::WarVKSettingsUseSettingsUndoAndRefuseSeventeenth() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = std::filesystem::path(f.outputs.filePath("warvk-source.w3x").toStdWString());
+    const std::array<MapArchiveMember, 1> members{{{"war3mapImported\\old.mdx", {std::byte{0x4d}}}}};
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    auto archive = MapArchiveSession::Open(source); QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.sourceArchivePath_ = source;
+    f.project.ResetEditTracking();
+    f.tools = std::make_unique<LiveEditorTools>(f.project);
+    auto* settingsUndo = f.project.mapSettingsUndoStack_;
+    const auto key = EditorProject::AssetKey(QStringLiteral("audastra\\warvk.ini"));
+    const auto pendingSettings = [&] {
+        return std::count_if(f.project.pendingImports_.begin(), f.project.pendingImports_.end(),
+            [&](const auto& entry) { return EditorProject::AssetKey(entry.archivePath) == key; });
+    };
+
+    const auto empty = f.tools->Invoke("map_warvk_get", f.Context());
+    QVERIFY2(empty.value("ok").toBool(), qPrintable(Explain(empty)));
+    QCOMPARE(empty.value("timing").toString(), QStringLiteral("timer"));
+    QVERIFY(empty.value("far_doodad_types").toArray().isEmpty() && empty.value("commands").toArray().isEmpty());
+    QVERIFY(!empty.value("camera_limits").toObject().value("enabled").toBool());
+
+    auto set = f.Context();
+    set.insert("camera_limits", QJsonObject{{"enabled", true}, {"max_distance", 300000}, {"near_clip", 4}});
+    set.insert("far_doodad_types", QJsonArray{"L050", "L04V", "L04Y", "L04W"});
+    const auto written = f.tools->Invoke("map_warvk_set", set);
+    QVERIFY2(written.value("ok").toBool(), qPrintable(Explain(written)));
+    QCOMPARE(written.value("commands").toArray(), (QJsonArray{"warvk:v1;camera.setLimits;r:300000;r:4",
+        "warvk:v1;doodad.setFarTypes;s:L04V,L04W,L04Y,L050"}));
+    QCOMPARE(settingsUndo->count(), 1);
+    QCOMPARE(f.project.AssetUndoStack()->count(), 0);
+    QCOMPARE(pendingSettings(), 1);
+
+    // 物编“远景”同名命令改的是同一设置，一次一条地图设置撤销。
+    auto mark = f.Context(); mark.insert("rawcode", "L04X"); mark.insert("far", true);
+    const auto marked = f.tools->Invoke("map_warvk_far_doodad_set", mark);
+    QVERIFY2(marked.value("ok").toBool(), qPrintable(Explain(marked)));
+    QCOMPARE(marked.value("far_doodad_types").toArray().size(), 5);
+    QCOMPARE(settingsUndo->count(), 2);
+
+    // 超过 16 个：逐个标记与整表替换都拒绝，不截断、不入栈。
+    QJsonArray sixteen;
+    for (int i = 0; i < 16; ++i) sixteen.append(QStringLiteral("Y00") + QChar('A' + i));
+    auto full = f.Context(); full.insert("far_doodad_types", sixteen);
+    const auto filled = f.tools->Invoke("map_warvk_set", full);
+    QVERIFY2(filled.value("ok").toBool(), qPrintable(Explain(filled)));
+    QCOMPARE(settingsUndo->count(), 3);
+    auto seventeenth = f.Context(); seventeenth.insert("rawcode", "Z000"); seventeenth.insert("far", true);
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_warvk_far_doodad_set", seventeenth)), QString("WARVK_FAR_TYPES_LIMIT"));
+    auto tooMany = f.Context(); auto list = sixteen; list.append("Z000"); tooMany.insert("far_doodad_types", list);
+    QVERIFY(!f.tools->Invoke("map_warvk_set", tooMany).value("ok").toBool());
+    QCOMPARE(settingsUndo->count(), 3);
+    QCOMPARE(f.project.QueryWarVKMapSettings().value->farDoodadTypes.size(), std::size_t{16});
+
+    // 之后的其他资源改动不让设置撤销过期：撤销按设置值核对。
+    const auto disk = f.outputs.filePath("hero.mdx");
+    QVERIFY(WriteFile(disk, "MDLX"));
+    auto import = f.Context();
+    import.insert("files", QJsonArray{QJsonObject{{"disk_path", QDir::toNativeSeparators(disk)}, {"archive_path", "war3mapImported\\hero.mdx"}}});
+    const auto imported = f.tools->Invoke("imports_add", import);
+    QVERIFY2(imported.value("ok").toBool(), qPrintable(Explain(imported)));
+    settingsUndo->undo();
+    QCOMPARE(f.project.QueryWarVKMapSettings().value->farDoodadTypes.size(), std::size_t{5});
+    settingsUndo->undo();
+    settingsUndo->undo();
+    QVERIFY(f.project.QueryWarVKMapSettings().value == MapData::WarVKMapSettings{});
+    QCOMPARE(pendingSettings(), 0); // 回到地图原状时不留待导入文件。
+    QCOMPARE(settingsUndo->count(), 3);
+    settingsUndo->redo();
+    const auto redone = f.project.QueryWarVKMapSettings();
+    QVERIFY(redone.Succeeded() && redone.value->cameraLimits && redone.value->farDoodadTypes.size() == 4);
+    const auto heroKey = EditorProject::AssetKey("war3mapImported\\hero.mdx");
+    QVERIFY(std::any_of(f.project.pendingImports_.begin(), f.project.pendingImports_.end(),
+        [&](const auto& entry) { return EditorProject::AssetKey(entry.archivePath) == heroKey; }));
 }
 
 QTEST_MAIN(LiveEditorToolsTests)

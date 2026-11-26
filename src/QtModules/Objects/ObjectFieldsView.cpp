@@ -471,6 +471,7 @@ void ObjectModule::UpdateObjectFieldControls() {
     undoObjectEdit_->setEnabled(map && stack && stack->canUndo());
     redoObjectEdit_->setEnabled(map && stack && stack->canRedo());
     resetObjectField_->setEnabled(map && objectFieldModel_->CanReset(objectFieldView_->currentIndex().row()));
+    UpdateFarDoodadToggle();
 }
 
 void ObjectModule::ShowObjectFieldContextMenu(const QPoint& pos) {

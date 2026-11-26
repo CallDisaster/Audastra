@@ -152,6 +152,8 @@ set_tests_properties(qt-mcp-agent-transport PROPERTIES TIMEOUT 60
 qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp TerrainBlockLiveCases.h LiveTerrainResizeCases.h LiveTerrainTextureSlotCases.h ../support/TerrainResizeFixture.h ../TerrainBlockFixtures.h ../support/TerrainTextureSlotSaveFixture.h
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.h"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorWarVKTools.cpp"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorWarVKTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.cpp"
@@ -965,6 +967,8 @@ set_tests_properties(qt-recovery-backup-cleanup PROPERTIES TIMEOUT 60
 qt_add_executable(war3-map-trigger-rename-tests TriggerRenameTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.h"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorWarVKTools.cpp"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorWarVKTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.cpp"

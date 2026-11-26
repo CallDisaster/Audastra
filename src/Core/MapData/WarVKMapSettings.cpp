@@ -1,0 +1,155 @@
+#include "War3MapCore/MapData/WarVKMapSettings.h"
+
+#include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <set>
+
+namespace War3Map::MapData {
+namespace {
+constexpr std::string_view kDomain = "MapData.WarVK";
+
+Status Fail(const char* code, std::string message) { return Status::Failure(std::string(kDomain), code, std::move(message)); }
+
+// 物编 ID：恰好四个可打印 ASCII 字符，且不含指令分隔用的 , ; : 与引号、反斜杠。
+bool ValidRawcode(std::string_view code) {
+    return code.size() == 4 && std::all_of(code.begin(), code.end(), [](char c) {
+        return c > 0x20 && c < 0x7f && c != ',' && c != ';' && c != ':' && c != '"' && c != '\\' && c != '=';
+    });
+}
+
+// 最短往返的定点十进制（300000、4、0.5），不用指数写法。
+std::string Number(double value) {
+    char buffer[64];
+    const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed);
+    return written.ec == std::errc{} ? std::string(buffer, written.ptr) : std::string{};
+}
+
+bool ParseNumber(std::string_view text, double& value) {
+    if (text.empty() || text.size() > 32) return false;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, std::chars_format::fixed);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && std::isfinite(value);
+}
+
+std::vector<std::string_view> Split(std::string_view text, char separator) {
+    std::vector<std::string_view> parts;
+    for (std::size_t start = 0;;) {
+        const auto end = text.find(separator, start);
+        parts.push_back(text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+        if (end == std::string_view::npos) return parts;
+        start = end + 1;
+    }
+}
+} // namespace
+
+Status ValidateWarVKMapSettings(const WarVKMapSettings& settings) {
+    if (settings.cameraLimits) {
+        const auto& limits = *settings.cameraLimits;
+        if (!std::isfinite(limits.maxDistance) || limits.maxDistance < kWarVKCameraMaxDistanceMin
+            || limits.maxDistance > kWarVKCameraMaxDistanceMax)
+            return Fail("WARVK_CAMERA_DISTANCE_RANGE", "镜头远距上限须在 10000–400000 之间。");
+        if (!std::isfinite(limits.nearClip) || limits.nearClip < kWarVKCameraNearClipMin || limits.nearClip > kWarVKCameraNearClipMax)
+            return Fail("WARVK_CAMERA_NEAR_RANGE", "近裁剪须在 1–100 之间。");
+        if (Number(limits.maxDistance).empty() || Number(limits.nearClip).empty())
+            return Fail("WARVK_CAMERA_NUMBER", "镜头限制无法写成十进制数。");
+    }
+    if (settings.farDoodadTypes.size() > kWarVKMaxFarDoodadTypes)
+        return Fail("WARVK_FAR_TYPES_LIMIT", "远景装饰物类型最多 16 个，当前 " + std::to_string(settings.farDoodadTypes.size())
+            + " 个；请先取消多余的标记。");
+    for (std::size_t i = 0; i < settings.farDoodadTypes.size(); ++i) {
+        const auto& code = settings.farDoodadTypes[i];
+        if (!ValidRawcode(code)) return Fail("WARVK_FAR_TYPE_INVALID", "远景装饰物类型“" + code + "”不是四字符物编 ID。");
+        if (i && settings.farDoodadTypes[i - 1] >= code)
+            return Fail("WARVK_FAR_TYPE_ORDER", "远景装饰物类型须排序且不重复（“" + code + "”）。");
+    }
+    if (settings.timing != WarVKInitTiming::AfterInitialization && settings.timing != WarVKInitTiming::MainStart)
+        return Fail("WARVK_TIMING_INVALID", "未知的 WarVK 指令执行时机。");
+    return Status::Ok();
+}
+
+Result<std::vector<std::string>> SetWarVKFarDoodadType(std::vector<std::string> types, std::string_view rawcode, bool far) {
+    using Output = Result<std::vector<std::string>>;
+    if (!ValidRawcode(rawcode)) return Output::Failure(std::string(kDomain), "WARVK_FAR_TYPE_INVALID",
+        "“" + std::string(rawcode) + "”不是四字符物编 ID。");
+    std::set<std::string> set(types.begin(), types.end());
+    if (far) set.emplace(rawcode); else set.erase(std::string(rawcode));
+    if (set.size() > kWarVKMaxFarDoodadTypes)
+        return Output::Failure(std::string(kDomain), "WARVK_FAR_TYPES_LIMIT",
+            "远景装饰物类型最多 16 个，已标记 16 个；请先取消一个再标记“" + std::string(rawcode) + "”。");
+    return Output::Success(std::vector<std::string>(set.begin(), set.end()));
+}
+
+Result<WarVKMapSettings> ParseWarVKMapSettings(std::span<const std::byte> bytes) {
+    using Output = Result<WarVKMapSettings>;
+    const auto fail = [](const char* code, std::string message) { return Output::Failure(std::string(kDomain), code, std::move(message)); };
+    if (bytes.empty() || bytes.size() > kWarVKSettingsMaxBytes) return fail("WARVK_SETTINGS_SIZE", "WarVK 设置为空或超过 4KiB。");
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    WarVKMapSettings settings;
+    std::set<std::string_view> seen;
+    bool schema = false;
+    for (auto line : Split(text, '\n')) {
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        if (line.empty()) continue;
+        const auto equals = line.find('=');
+        if (equals == std::string_view::npos) return fail("WARVK_SETTINGS_SYNTAX", "WarVK 设置行缺少“=”。");
+        const auto key = line.substr(0, equals); const auto value = line.substr(equals + 1);
+        if (!seen.insert(key).second) return fail("WARVK_SETTINGS_DUPLICATE", "WarVK 设置键“" + std::string(key) + "”重复。");
+        if (key == "schema") {
+            if (value != "1") return fail("WARVK_SETTINGS_SCHEMA", "只支持 schema=1 的 WarVK 设置。");
+            schema = true;
+        } else if (key == "timing") {
+            if (value == "timer") settings.timing = WarVKInitTiming::AfterInitialization;
+            else if (value == "main") settings.timing = WarVKInitTiming::MainStart;
+            else return fail("WARVK_TIMING_INVALID", "timing 只能是 timer 或 main。");
+        } else if (key == "camera.limits") {
+            const auto parts = Split(value, ',');
+            WarVKCameraLimits limits;
+            if (parts.size() != 2 || !ParseNumber(parts[0], limits.maxDistance) || !ParseNumber(parts[1], limits.nearClip))
+                return fail("WARVK_CAMERA_NUMBER", "camera.limits 须为“远距上限,近裁剪”两个十进制数。");
+            settings.cameraLimits = limits;
+        } else if (key == "doodad.far") {
+            if (!value.empty()) for (const auto part : Split(value, ',')) settings.farDoodadTypes.emplace_back(part);
+        } else {
+            return fail("WARVK_SETTINGS_UNKNOWN_KEY", "未知的 WarVK 设置键“" + std::string(key) + "”；不忽略未知内容。");
+        }
+    }
+    if (!schema) return fail("WARVK_SETTINGS_SCHEMA", "WarVK 设置缺少 schema=1。");
+    const auto valid = ValidateWarVKMapSettings(settings);
+    if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
+    return Output::Success(std::move(settings));
+}
+
+Result<std::vector<std::byte>> SerializeWarVKMapSettings(const WarVKMapSettings& settings) {
+    using Output = Result<std::vector<std::byte>>;
+    const auto valid = ValidateWarVKMapSettings(settings);
+    if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
+    std::string text = "schema=1\n";
+    text += settings.timing == WarVKInitTiming::MainStart ? "timing=main\n" : "timing=timer\n";
+    if (settings.cameraLimits)
+        text += "camera.limits=" + Number(settings.cameraLimits->maxDistance) + "," + Number(settings.cameraLimits->nearClip) + "\n";
+    if (!settings.farDoodadTypes.empty()) {
+        text += "doodad.far=";
+        for (std::size_t i = 0; i < settings.farDoodadTypes.size(); ++i) text += (i ? "," : "") + settings.farDoodadTypes[i];
+        text += "\n";
+    }
+    const auto* first = reinterpret_cast<const std::byte*>(text.data());
+    return Output::Success(std::vector<std::byte>(first, first + text.size()));
+}
+
+Result<std::vector<std::string>> WarVKInitCommands(const WarVKMapSettings& settings) {
+    using Output = Result<std::vector<std::string>>;
+    const auto valid = ValidateWarVKMapSettings(settings);
+    if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
+    std::vector<std::string> commands;
+    if (settings.cameraLimits)
+        commands.push_back("warvk:v1;camera.setLimits;r:" + Number(settings.cameraLimits->maxDistance) + ";r:"
+            + Number(settings.cameraLimits->nearClip));
+    if (!settings.farDoodadTypes.empty()) {
+        std::string line = "warvk:v1;doodad.setFarTypes;s:";
+        for (std::size_t i = 0; i < settings.farDoodadTypes.size(); ++i) line += (i ? "," : "") + settings.farDoodadTypes[i];
+        commands.push_back(std::move(line));
+    }
+    return Output::Success(std::move(commands));
+}
+
+} // namespace War3Map::MapData

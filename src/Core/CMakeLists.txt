@@ -55,6 +55,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainVertexRows.cpp
     MapData/MapPathing.cpp
     MapData/MapMinimapMarkers.cpp
+    MapData/WarVKMapSettings.cpp
     MapData/NativeMinimapMarkers.cpp
     MapData/TerrainShadowRebuild.cpp
     MapData/TerrainShadowResources.cpp

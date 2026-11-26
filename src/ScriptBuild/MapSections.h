@@ -62,5 +62,10 @@ void WriteCameras(MapContext& context);
 void WritePlayers(MapContext& context);
 void WriteMain(MapContext& context, bool upgrades, bool techTree);
 void WriteConfig(MapContext& context);
+// MapWarVKInit.cpp：WarVK 受管段（全局、函数、main 开头调用或末尾 0 秒计时器）。
+void WriteWarVKGlobals(MapContext& context);
+void WriteWarVKInitFunction(MapContext& context);
+void WriteWarVKMainStart(MapContext& context);
+void WriteWarVKMainEnd(MapContext& context);
 
 } // namespace War3Map::Script::detail

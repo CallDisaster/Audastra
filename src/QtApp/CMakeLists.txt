@@ -21,6 +21,8 @@ qt_add_executable(war3-map-editor WIN32
     LiveEditorTools.h
     LiveEditorAuxiliaryTools.cpp
     LiveEditorAuxiliaryTools.h
+    LiveEditorWarVKTools.cpp
+    LiveEditorWarVKTools.h
     LiveObjectTools.cpp
     LiveObjectTools.h
     MapDropActions.cpp

@@ -278,10 +278,12 @@ void WriteMain(MapContext& context, bool upgrades, bool techTree) {
         }
     }
     WriteSectionBanner(out, "Main Initialization");
+    WriteWarVKInitFunction(context);
     out.Line("//===========================================================================");
     out.Line("function main takes nothing returns nothing");
     out.Begin();
     if (hasGlobalWeather) out.Line("local weathereffect we");
+    WriteWarVKMainStart(context);
     if (settings != nullptr) {
         auto b = settings->cameraBounds;
         if (const auto& terrain = context.in.terrain) {
@@ -339,6 +341,7 @@ void WriteMain(MapContext& context, bool upgrades, bool techTree) {
     out.Line("call InitGlobals(  )");
     out.Line("call InitCustomTriggers(  )");
     out.Line("call RunInitializationTriggers(  )");
+    WriteWarVKMainEnd(context);
     out.Line("");
     out.End();
     out.Line("endfunction");

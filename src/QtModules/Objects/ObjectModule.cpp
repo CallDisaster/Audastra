@@ -386,6 +386,7 @@ void ObjectModule::BuildPage() {
     objectFieldCount_ = new QLabel(tr("选择对象"));
     objectFieldCount_->setObjectName("paneHint");
     fieldActions->addWidget(objectFieldCount_);
+    fieldActions->addWidget(BuildFarDoodadToggle());
     fieldActions->addStretch();
     undoObjectEdit_ = new QPushButton(tr("撤销"));
     undoObjectEdit_->setObjectName("quietButton");

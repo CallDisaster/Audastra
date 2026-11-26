@@ -5,6 +5,7 @@
 
 #include "War3MapCore/EditRevision.h"
 #include "War3MapCore/MapData/MapDataEditLane.h"
+#include "War3MapCore/MapData/WarVKMapSettings.h"
 #include "War3MapCore/ObjectData/ObjectTypes.h"
 #include "War3MapCore/Types.h"
 
@@ -395,6 +396,20 @@ public:
     // 只准备关联事务候选；UI与Agent须传入刚查询的修订及已列出的可信包身份。
     [[nodiscard]] Status PrepareMapRuntimeSettings(AssetState& state, const Services::MapRuntimeSettings& settings,
         std::uint64_t expectedGeneration, std::uint64_t expectedRevision) const;
+    // 编辑器自有的地图成员（运行库设置、WarVK 设置）的当前内容：待保存导入优先，其次已打开的地图或目录；不存在时为空。
+    // 被普通资源命令移动或删除、有多份来源、超出预算都报错，不回落到旧内容。
+    struct OwnedMemberSpec {
+        std::string_view member;
+        std::size_t maxBytes = 0;
+        std::string_view domain, code, label;
+    };
+    [[nodiscard]] Result<std::optional<std::vector<std::byte>>> ReadOwnedMapMember(const OwnedMemberSpec& spec) const;
+    // WarVK 渲染设置（地图成员 audastra\warvk.ini）：地图设置页、物编“远景”勾选与 Agent 命令共用。
+    // 每次修改是地图设置撤销栈上的一条记录；撤销重做按设置值核对，其他操作先改了设置时不覆盖。
+    [[nodiscard]] Result<MapData::WarVKMapSettings> QueryWarVKMapSettings() const;
+    [[nodiscard]] Status EditWarVKMapSettings(const MapData::WarVKMapSettings& settings, const QString& undoLabel);
+    // 标记或取消一个装饰物类型为远景；已标 16 个时拒绝第 17 个并说明，不截断。
+    [[nodiscard]] Status SetWarVKFarDoodadType(std::string_view rawcode, bool far);
     // 资源路径编辑（AssetEdits.cpp）：改名 / 移动 / 删除地图已有成员或待导入文件。
     // 返回空字符串表示成功，否则为不能修改的原因（非法路径、重名、编辑器管理的文件）。
     [[nodiscard]] QString MoveAsset(const QString& from, const QString& to);
@@ -522,14 +537,15 @@ public:
     // 仅宿主安装配置注入；不从地图或Agent参数解析本机路径/分发许可。
     std::vector<Services::MapRuntimePackageSource> runtimePackageSources_;
     std::vector<Diagnostic> runtimeCatalogDiagnostics_;
-    // 已打开归档里的运行库设置：同一归档会话（同一来源 SHA）内容不变，只读一次。精确读取每次都要把整张地图
-    // 重新散列（大图一秒多）；来源变化由来源监视另行发现，保存时仍按冻结来源重新读取。
-    struct RuntimeSettingsCache {
+    // 已打开归档里的编辑器自有成员：同一归档会话（同一来源 SHA）内容不变，每个成员只读一次。精确读取每次都要把
+    // 整张地图重新散列（大图一秒多）；来源变化由来源监视另行发现，保存时仍按冻结来源重新读取。
+    struct OwnedMemberCache {
         const MapArchiveSession* archive = nullptr;
-        std::string sourceSha256;
-        Services::MapRuntimeSettings settings;
+        std::string sourceSha256, member;
+        std::size_t maxBytes = 0;
+        std::optional<std::vector<std::byte>> bytes;
     };
-    mutable std::optional<RuntimeSettingsCache> runtimeSettingsCache_;
+    mutable std::vector<OwnedMemberCache> ownedMemberCache_;
     std::string runtimeApprovedPackageSha256_;
     // 一般来源档案的owned逐文件声明；保存时进入同一Capture/Verify/Replay，不授予读取资格。
     std::vector<Script::ScriptProfileSourceEncoding> scriptSourceEncodings_;
@@ -609,6 +625,11 @@ public:
 
 private:
     friend class AssetStateCommand;
+    friend class WarVKSettingsCommand;
+    // 地图或目录里已有的内容（不含待保存导入）。
+    [[nodiscard]] Result<std::optional<std::vector<std::byte>>> ReadBaseOwnedMapMember(const OwnedMemberSpec& spec) const;
+    // 只发布资源候选，不入撤销栈；首次修改与撤销重做共用。
+    [[nodiscard]] Status PublishWarVKMapSettings(const MapData::WarVKMapSettings& settings, EditOperation operation);
     std::unique_ptr<ProjectDocumentHistory> documentUndoHistory_;
     [[nodiscard]] Result<std::shared_ptr<PreparedAssetStateEdit>> PrepareAssetStateEditImpl(AssetState candidate,
         std::uint64_t expectedGeneration, std::uint64_t expectedRevision, std::string description,
