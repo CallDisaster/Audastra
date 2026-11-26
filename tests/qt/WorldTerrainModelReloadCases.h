@@ -45,7 +45,7 @@ void WorldModuleTests::TerrainModelReloadKeepsCommittedEdits() {
     } else {
         QTRY_VERIFY_WITH_TIMEOUT(player->Ready() && module.Viewport()->HasAnimationScene(), 10000);
         player->SetPlaying(false);
-        QTRY_VERIFY(!player->Busy() && !player->InstancesBusy());
+        WORLD_TRY_VERIFY(*player, !player->Busy() && !player->InstancesBusy());
         QVERIFY(module.Viewport()->HasInstanceRosterSupport());
         // 地形重建会使服务失效而保留已显示的父场景；后续共享事务必须重建，不能用旧登记解引用空服务。
         player->Clear();
@@ -62,7 +62,7 @@ void WorldModuleTests::TerrainModelReloadKeepsCommittedEdits() {
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
     QTRY_VERIFY_WITH_TIMEOUT(player->Ready() && player->Scene()
         && player->Scene()->documentRevision == committedRevision, 10000);
-    QTRY_VERIFY(!player->Busy() && !player->InstancesBusy());
+    WORLD_TRY_VERIFY(*player, !player->Busy() && !player->InstancesBusy());
     auto* terrainToggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(terrainToggle);
     QTRY_VERIFY(terrainToggle->isEnabled());
     QCOMPARE(project.mapEdits_->Terrain(), committedTerrain);

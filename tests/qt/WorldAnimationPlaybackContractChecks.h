@@ -6,12 +6,14 @@
 #include <algorithm>
 
 namespace WorldAnimationPlaybackContractChecks {
-// 等播放器空闲，上限 20 秒（真卡住仍失败）。超过 1 秒仍忙时记一条警告写明卡在哪一步，
+// 等条件成立，上限 20 秒（真卡住仍失败）。动画按刷新率排帧，帧之间的空闲只有几毫秒：QTRY 默认 50 ms 轮询、
+// 5 秒上限会一直错过，所以按 5 ms 轮询。超过 1 秒仍未成立时记一条警告写明播放器卡在哪一步，
 // 测试机上偶发的数秒延迟即使最终通过也留下定位数据。
-inline bool WaitIdle(War3Map::Modules::WorldAnimationPlayer& player, const char* file, int line) {
+template <typename Condition>
+inline bool WaitUntil(Condition condition, War3Map::Modules::WorldAnimationPlayer& player, const char* file, int line) {
     QElapsedTimer timer; timer.start();
     bool reported = false;
-    while (player.Busy()) {
+    while (!condition()) {
         if (!reported && timer.elapsed() > 1000) {
             qWarning("%s(%d) busy over 1 s: %s", file, line, qPrintable(player.BusyReason()));
             reported = true;
@@ -22,8 +24,15 @@ inline bool WaitIdle(War3Map::Modules::WorldAnimationPlayer& player, const char*
     if (reported) qWarning("%s(%d) idle after %lld ms", file, line, static_cast<long long>(timer.elapsed()));
     return true;
 }
+inline bool WaitIdle(War3Map::Modules::WorldAnimationPlayer& player, const char* file, int line) {
+    return WaitUntil([&] { return !player.Busy(); }, player, file, line);
+}
 #define WORLD_WAIT_IDLE(player) \
     QVERIFY2(WorldAnimationPlaybackContractChecks::WaitIdle((player), __FILE__, __LINE__), qPrintable((player).BusyReason()))
+// 含播放器空闲的复合条件（如“空闲且帧号已到”）；失败时附上条件原文与播放器状态。
+#define WORLD_TRY_VERIFY(player, condition) \
+    QVERIFY2(WorldAnimationPlaybackContractChecks::WaitUntil([&] { return static_cast<bool>(condition); }, (player), \
+        __FILE__, __LINE__), qPrintable(QString::fromUtf8(#condition) + QStringLiteral(" · ") + (player).BusyReason()))
 // 调用方先用既有catalog gate建立“plan已就绪、旧pose尚未接受”的次序。
 // 这里只延长真实接受帧的同步UI通知，不处理事件；验证使用实际rebase开始时间，
 // 不把候选排队时间当成worker执行，也不以总耗时作为渲染性能出口。

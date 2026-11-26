@@ -83,15 +83,15 @@ void WorldViewportTests::ModelPreviewUsesGameOrderAndSubmitsMotion() {
     auto* viewport = preview.findChild<WorldViewport*>(); QVERIFY(viewport);
     auto* message = preview.findChild<QLabel*>(QStringLiteral("worldUnitPreviewMessage")); QVERIFY(message);
     QTRY_VERIFY_WITH_TIMEOUT(player->Ready(), 5000);
-    player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
+    player->SetPlaying(false); WORLD_TRY_VERIFY(*player, !player->Busy());
     QCOMPARE(actions->count(), 2);
-    actions->setCurrentIndex(1); QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
+    actions->setCurrentIndex(1); WORLD_TRY_VERIFY(*player, player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{0});
-    actions->setCurrentIndex(0); QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == 0 && !player->Busy());
+    actions->setCurrentIndex(0); WORLD_TRY_VERIFY(*player, player->Frame()->states.front().sequenceIndex == 0 && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{0});
     const auto start = player->Frame(); const auto uploads = state.matrixUploads;
     QVERIFY(step->isEnabled()); step->click();
-    QTRY_VERIFY(player->Frame()->contentVersion > start->contentVersion && !player->Busy());
+    WORLD_TRY_VERIFY(*player, player->Frame()->contentVersion > start->contentVersion && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{33});
     // 帧行写当前动作在模型时间轴上的帧号与区间（不再写局部/全局毫秒和姿势计数）；窄卡片里的动作下拉框只写动作名，
     // 帧区间在悬停详情。
@@ -108,22 +108,22 @@ void WorldViewportTests::ModelPreviewUsesGameOrderAndSubmitsMotion() {
     QVERIFY(state.matrixUploads > uploads);
     QCOMPARE(viewport->AnimationTarget(), player->Frame());
     play->click(); QTRY_VERIFY(player->Frame()->states.front().elapsedMs > 66);
-    QVERIFY(player->Playing()); play->click(); QTRY_VERIFY(!player->Busy());
+    QVERIFY(player->Playing()); play->click(); WORLD_TRY_VERIFY(*player, !player->Busy());
     QVERIFY(!player->Playing());
 
-    actions->setCurrentIndex(1); QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
+    actions->setCurrentIndex(1); WORLD_TRY_VERIFY(*player, player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
     AnimationEdit nearEnd; nearEnd.identity = player->Frame()->states.front().identity; nearEnd.elapsedMs = 999;
-    player->Edit(nearEnd); QTRY_VERIFY(player->Frame()->states.front().elapsedMs == 999 && !player->Busy());
-    step->click(); QTRY_VERIFY(player->Frame()->states.front().elapsedMs == 1000 && !player->Busy());
+    player->Edit(nearEnd); WORLD_TRY_VERIFY(*player, player->Frame()->states.front().elapsedMs == 999 && !player->Busy());
+    step->click(); WORLD_TRY_VERIFY(*player, player->Frame()->states.front().elapsedMs == 1000 && !player->Busy());
     QVERIFY(!player->Frame()->states.front().playing);
     play->click(); QTRY_VERIFY(player->Frame()->states.front().elapsedMs < 1000);
-    QVERIFY(player->Playing()); play->click(); QTRY_VERIFY(!player->Busy());
+    QVERIFY(player->Playing()); play->click(); WORLD_TRY_VERIFY(*player, !player->Busy());
     // 预览卡循环播放：不循环的动作自然播完后从头再来，播放状态不掉。
     play->click(); QTRY_VERIFY(player->Playing());
     AnimationEdit tail; tail.identity = player->Frame()->states.front().identity; tail.elapsedMs = 980;
     player->Edit(tail); QTRY_VERIFY(player->Frame()->states.front().elapsedMs >= 980);
     QTRY_VERIFY_WITH_TIMEOUT(player->Frame()->states.front().elapsedMs < 500 && player->Frame()->states.front().playing, 5000);
-    QVERIFY(player->Playing()); play->click(); QTRY_VERIFY(!player->Busy());
+    QVERIFY(player->Playing()); play->click(); WORLD_TRY_VERIFY(*player, !player->Busy());
     current = false; play->click(); QVERIFY(!player->Ready());
     QVERIFY(!message->text().isEmpty());
     QCOMPARE(Sha256File(sources.archivePath).value, std::optional{sources.archiveSha});
@@ -146,17 +146,17 @@ void WorldViewportTests::ModelPreviewParticleGameOrderStaysStrictAboutInvalidDat
     auto* step = preview.findChild<QPushButton*>(QStringLiteral("worldUnitPreviewStep")); QVERIFY(step);
     auto* message = preview.findChild<QLabel*>(QStringLiteral("worldUnitPreviewMessage")); QVERIFY(message);
     QTRY_VERIFY2_WITH_TIMEOUT(player->Ready(), qPrintable(message->text()), 5000);
-    player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
+    player->SetPlaying(false); WORLD_TRY_VERIFY(*player, !player->Busy());
     QCOMPARE(actions->count(), 2);
     // 等待 Ready 时自动播放可能已经推进；精确单步检查先明确归零，不依赖定时器恰好未触发。
     AnimationEdit rewind; rewind.identity = player->Frame()->states.front().identity;
     rewind.elapsedMs = 0; rewind.globalMs = 0;
     player->Edit(rewind);
-    QTRY_VERIFY(!player->Busy() && player->Frame()->states.front().elapsedMs == 0 &&
+    WORLD_TRY_VERIFY(*player, !player->Busy() && player->Frame()->states.front().elapsedMs == 0 &&
         player->Frame()->states.front().globalMs == 0);
     const auto initial = player->Frame();
     const auto uploads = state.particles.dynamicUploadCount;
-    step->click(); QTRY_VERIFY(player->Frame()->contentVersion > initial->contentVersion && !player->Busy());
+    step->click(); WORLD_TRY_VERIFY(*player, player->Frame()->contentVersion > initial->contentVersion && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{33});
     QVERIFY(!player->Frame()->poses.front().hidden);
     QVERIFY(player->Frame()->poses.front().matrixHash != initial->poses.front().matrixHash);
@@ -167,7 +167,7 @@ void WorldViewportTests::ModelPreviewParticleGameOrderStaysStrictAboutInvalidDat
     QVERIFY(state.particles.dynamicUploadCount > uploads);
     QCOMPARE(state.particles.vertexCount, static_cast<std::uint32_t>(player->Frame()->particleVertices.size()));
     actions->setCurrentIndex(1);
-    QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
+    WORLD_TRY_VERIFY(*player, player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{0});
 
     // 预览卡按预览近似跳过材质无效的发射器、照常显示网格；跳过几个、原因代码都必须写在状态行，不能静默。
@@ -245,7 +245,7 @@ void WorldViewportTests::ModelPreviewRealSequences() {
             .arg(viewport->StatusText()).arg(viewport->RendererFailed()).arg(actions->count());
     };
     QTRY_VERIFY2_WITH_TIMEOUT(player->Ready(), qPrintable(readinessDiagnostic()), 15000);
-    player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
+    player->SetPlaying(false); WORLD_TRY_VERIFY(*player, !player->Busy());
     QCOMPARE(actions->count(), static_cast<int>(parsed.value->sequences.size()));
     std::size_t movedSequences = 0;
     for (std::uint32_t index = 0; index < parsed.value->sequences.size(); ++index) {
@@ -254,15 +254,15 @@ void WorldViewportTests::ModelPreviewRealSequences() {
         const auto item = actions->findData(QVariant::fromValue(index)); QVERIFY(item >= 0);
         if (actions->currentIndex() == item && actions->count() > 1) {
             actions->setCurrentIndex((item + 1) % actions->count());
-            QTRY_VERIFY(!player->Busy());
+            WORLD_TRY_VERIFY(*player, !player->Busy());
         }
         actions->setCurrentIndex(item);
-        QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == index && !player->Busy());
+        WORLD_TRY_VERIFY(*player, player->Frame()->states.front().sequenceIndex == index && !player->Busy());
         const auto first = player->Frame(); const auto submitted = state.matrixUploads;
         play->click();
         QTRY_VERIFY_WITH_TIMEOUT(player->Frame()->contentVersion > first->contentVersion &&
             player->Frame()->states.front().globalMs > first->states.front().globalMs, 5000);
-        player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
+        player->SetPlaying(false); WORLD_TRY_VERIFY(*player, !player->Busy());
         QVERIFY2(player->Ready(), qPrintable(message->text()));
         QVERIFY(state.matrixUploads > submitted);
         QCOMPARE(viewport->AnimationTarget(), player->Frame());
@@ -271,7 +271,7 @@ void WorldViewportTests::ModelPreviewRealSequences() {
             static_cast<std::uint64_t>(sequence.end - sequence.start)}) {
             AnimationEdit seek; seek.identity = first->states.front().identity; seek.elapsedMs = elapsed; seek.globalMs = elapsed;
             player->Edit(seek);
-            QTRY_VERIFY(player->Frame()->states.front().elapsedMs == elapsed && !player->Busy());
+            WORLD_TRY_VERIFY(*player, player->Frame()->states.front().elapsedMs == elapsed && !player->Busy());
             QVERIFY2(player->Ready(), qPrintable(message->text()));
             const auto& pose = player->Frame()->poses.front();
             QVERIFY2(!pose.hidden && pose.animated && !pose.staticForBudget, qPrintable(message->text()));
@@ -286,7 +286,7 @@ void WorldViewportTests::ModelPreviewRealSequences() {
     QVERIFY2(movedSequences != 0, "all sampled matrices stayed static; clock-only success is insufficient");
     qInfo() << "preview_sequences=" << actions->count() << "moving_sequences=" << movedSequences
         << "untextured_layers=" << player->Scene()->geometry.untexturedLayers;
-    preview.ClearSelection(); QTRY_VERIFY(!player->Busy());
+    preview.ClearSelection(); WORLD_TRY_VERIFY(*player, !player->Busy());
     QCOMPARE(Sha256File(original).value, originalSha.value);
     if (mapSha) QCOMPARE(Sha256File(std::filesystem::path(mapInput.toStdWString())).value, mapSha);
 }
