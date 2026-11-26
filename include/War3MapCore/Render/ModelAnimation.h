@@ -59,8 +59,9 @@ struct AnimationLimits {
     std::uint64_t maxFrameBytes = 64ull * 1024 * 1024;
     std::uint64_t maxActivePoseBytes = 16ull * 1024 * 1024; // 共享 Stand 模式中的动态姿势池，不是实例总数。
     std::uint64_t maxVisibilityBytes = 64ull * 1024 * 1024; // 独立持久空间索引/构建临时内存；不限制地图实例数。
-    // 世界浏览：可表达的整模型保留静态，坏资产跳过，局部采样失败仅隐藏该实例。
-    // 来源/身份/预算和宿主输入错误仍整体失败；不做按 geoset 降级。
+    // 世界浏览：可表达的整模型保留静态，坏资产跳过，局部采样失败仅隐藏该实例；
+    // 超出几何/贴图预算的模型与贴图逐项省略并写明原因。来源/身份、帧与资源读取预算和宿主输入错误仍整体失败；
+    // 不做按 geoset 降级。
     // 世界浏览可启用；独立预览/命令默认关闭，不能将静态画面冒充动作验收。
     bool retainUnsupportedStatic = false;
     bool enableParticles = false; // 宿主显式选择；旧插件/旧调用不暗中改变模型预览语义。

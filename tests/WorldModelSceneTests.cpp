@@ -396,6 +396,18 @@ void TestLimitsAndInvalid() {
     const auto result = BuildWorldModelScene(requests, files.Reader(), limits);
     Require(result.Succeeded() && result.value->models.size() == 1 && result.value->skippedInstances == 1
         && HasWarning(*result.value, "WORLD_MODEL_BUDGET"), "预算不足只跳过相关实例");
+    Require(result.value->budgetSkippedRequests == std::vector<std::uint32_t>{1}, "按请求顺序先到先占，后到的被跳过并记下序号");
+    // 几何超预算：清单写出该模型的实例数、顶点/索引，以及合计和场景已用量/上限。
+    WorldModelLimits vertexLimits; vertexLimits.maxVertices = 1;
+    const auto overVertices = BuildWorldModelScene(std::span(requests).first(1), files.Reader(), vertexLimits);
+    Require(overVertices.Succeeded() && overVertices.value->instances.empty() && overVertices.value->skippedInstances == 1
+        && overVertices.value->budgetSkippedRequests == std::vector<std::uint32_t>{0}, "几何超预算只跳过该模型");
+    const auto budget = std::find_if(overVertices.value->warnings.begin(), overVertices.value->warnings.end(),
+        [](const auto& warning) { return warning.code == "WORLD_MODEL_BUDGET"; });
+    Require(budget != overVertices.value->warnings.end()
+        && budget->message.find("Units\\Crate.mdx（1 个实例，顶点 ") != std::string::npos
+        && budget->message.find("，索引 ") != std::string::npos && budget->message.find("未显示模型合计顶点 ") != std::string::npos
+        && budget->message.find("场景已显示顶点 0 / 上限 1，") != std::string::npos, "超预算清单缺少顶点/索引或合计");
     auto invalid = At("Units\\Crate.mdx", 0, 0);
     invalid.position[2] = std::nanf("");
     Require(!BuildWorldModelScene(std::span(&invalid, 1), files.Reader()).Succeeded(), "非有限坐标拒绝");

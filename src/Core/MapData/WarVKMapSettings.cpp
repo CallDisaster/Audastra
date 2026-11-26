@@ -18,6 +18,20 @@ bool ValidRawcode(std::string_view code) {
     });
 }
 
+// 天空模型：相对路径，以 .mdx 或 .mdl 结尾；不含控制字符、引号、盘符冒号、正斜杠，不以分隔符或空格开头/结尾。
+bool ValidSkyModel(std::string_view path) {
+    if (path.size() < 5 || path.front() == '\\' || path.front() == ' ' || path.back() == ' ') return false;
+    if (std::any_of(path.begin(), path.end(), [](char c) {
+        const auto byte = static_cast<unsigned char>(c);
+        return byte < 0x20 || byte == 0x7f || c == '"' || c == ':' || c == '/';
+    })) return false;
+    std::string extension(path.substr(path.size() - 4));
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](char c) {
+        return static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    });
+    return extension == ".mdx" || extension == ".mdl";
+}
+
 // 最短往返的定点十进制（300000、4、0.5），不用指数写法。
 std::string Number(double value) {
     char buffer[64];
@@ -61,6 +75,14 @@ Status ValidateWarVKMapSettings(const WarVKMapSettings& settings) {
         if (!ValidRawcode(code)) return Fail("WARVK_FAR_TYPE_INVALID", "远景装饰物类型“" + code + "”不是四字符物编 ID。");
         if (i && settings.farDoodadTypes[i - 1] >= code)
             return Fail("WARVK_FAR_TYPE_ORDER", "远景装饰物类型须排序且不重复（“" + code + "”）。");
+    }
+    if (!settings.skyModel.empty()) {
+        if (settings.skyModel.size() > kWarVKSkyModelMaxBytes)
+            return Fail("WARVK_SKY_MODEL_LENGTH", "天空模型路径 " + std::to_string(settings.skyModel.size())
+                + " 字节，超过 MPQ 路径上限（含结尾 0 共 260 字节）；请缩短路径。");
+        if (!ValidSkyModel(settings.skyModel))
+            return Fail("WARVK_SKY_MODEL_INVALID", "天空模型路径“" + settings.skyModel
+                + "”须是以 .mdx 或 .mdl 结尾的相对路径（反斜杠分隔），不含引号、冒号或控制字符。");
     }
     if (settings.timing != WarVKInitTiming::AfterInitialization && settings.timing != WarVKInitTiming::MainStart)
         return Fail("WARVK_TIMING_INVALID", "未知的 WarVK 指令执行时机。");
@@ -109,6 +131,9 @@ Result<WarVKMapSettings> ParseWarVKMapSettings(std::span<const std::byte> bytes)
             settings.cameraLimits = limits;
         } else if (key == "doodad.far") {
             if (!value.empty()) for (const auto part : Split(value, ',')) settings.farDoodadTypes.emplace_back(part);
+        } else if (key == "sky.model") {
+            if (value.empty()) return fail("WARVK_SKY_MODEL_INVALID", "sky.model 不能为空；不设置天空模型时省略该行。");
+            settings.skyModel = std::string(value);
         } else {
             return fail("WARVK_SETTINGS_UNKNOWN_KEY", "未知的 WarVK 设置键“" + std::string(key) + "”；不忽略未知内容。");
         }
@@ -132,6 +157,7 @@ Result<std::vector<std::byte>> SerializeWarVKMapSettings(const WarVKMapSettings&
         for (std::size_t i = 0; i < settings.farDoodadTypes.size(); ++i) text += (i ? "," : "") + settings.farDoodadTypes[i];
         text += "\n";
     }
+    if (!settings.skyModel.empty()) text += "sky.model=" + settings.skyModel + "\n";
     const auto* first = reinterpret_cast<const std::byte*>(text.data());
     return Output::Success(std::vector<std::byte>(first, first + text.size()));
 }

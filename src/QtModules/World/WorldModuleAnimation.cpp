@@ -715,6 +715,19 @@ std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
             }
             describeOwners(row); rows.push_back(std::move(row));
         }
+        // 超出模型显示预算的物体：按地图存放顺序先到先占，逐个列出，可定位。
+        const auto& scene = *instanceDiagnosticScene_;
+        for (const auto request : scene.geometry.budgetSkippedRequests) {
+            if (request >= placementIds_.size() || request >= scene.specs.size()) continue;
+            const auto& owner = placementIds_[request];
+            if (!MapData::FindPlacement(*document, owner).Succeeded()) continue;
+            WorldModelDiagnosticRow row; row.owners = {owner}; row.records = 1; row.canMerge = true;
+            row.modelPath = QString::fromStdString(scene.specs[request].model.modelPath);
+            row.reasonCode = QStringLiteral("WORLD_MODEL_BUDGET");
+            row.reason = tr("场景预算 · 超出模型显示预算未显示；按地图存放顺序（悬崖、装饰物、单位）先到先占");
+            row.sourceText = tr("地图存放顺序");
+            describeOwners(row); rows.push_back(std::move(row));
+        }
     }
     // 缺模型的行从未进入scene；单独复用同一个只读捕获，不伪造requestIndex。
     const auto unresolved = CaptureWorldPlacements(project_, *document, std::nullopt, PlacementGround());

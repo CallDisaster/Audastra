@@ -189,8 +189,6 @@ Status PrepareWorkerFinalPathing(MapSaveJob& job,
         const auto verified = plan.VerifyForSave(*frozenEdits, job.sourceSha256, job.replacements, job.removals);
         if (!verified.Succeeded()) return verified;
         job.terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(plan));
-        const auto& diagnostics = job.terrainSavePlan->Diagnostics();
-        job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
     } else {
         if (job.terrainDerivationRequired)
             return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_BASELINE_MISSING",
@@ -275,8 +273,6 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         const auto verified = prepared.value->VerifyForSave(*edits, job.sourceSha256, job.replacements, job.removals);
         if (!verified.Succeeded()) return verified;
         job.terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
-        const auto& diagnostics = job.terrainSavePlan->Diagnostics();
-        job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
     }
     if (automatic || preserve) {
         const auto markers = prepareMarkersAndShadow(edits.get());
@@ -308,8 +304,6 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
     if (!current.Succeeded()) return current;
     job.minimapSave = minimap;
     job.terrainSavePlan = minimap->Plan();
-    const auto& diagnostics = job.terrainSavePlan->Diagnostics();
-    job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
     const auto* task = &job;
     job.beforePublish = [minimap = std::move(minimap), task, previous = std::move(job.beforePublish)] {
         if (previous) {
@@ -347,6 +341,9 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
         status = {std::move(preserved.diagnostics)};
     }
     if (job.terrainSavePlan) {
+        // 小地图、图标、阴影的重建会撤掉计划里对应的“未重建”警告；只在派生准备全部结束后按最终计划记一次。
+        const auto& diagnostics = job.terrainSavePlan->Diagnostics();
+        job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
         job.beforePublish = [&job, previous = std::move(job.beforePublish)] {
             if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
             if (!job.archive)

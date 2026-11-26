@@ -945,18 +945,39 @@ void AssetIsolation() {
     };
     Require(Good(ModelAnimationService::Create({7,33,"texture-budget"},std::span(specs).first(1),textures,limits))->Scene()->geometry.textures.size()==2,
         "budget fixture did not decode real BLP textures");
+    // 严格模式：贴图预算超出整体拒绝。世界浏览：超出的贴图不上传，警告写明原因，模型照常显示（不能静默变白）。
+    const auto hasWarning=[](const auto& geometry,std::string_view code) {
+        return std::any_of(geometry.warnings.begin(),geometry.warnings.end(),[&](const auto& d) { return d.code==code; });
+    };
     bool textureBudgetCasesAccepted=true;
-    for (const bool count:{false,true}) {
-        auto bounded=limits; if (count) bounded.geometry.maxTextures=0; else bounded.geometry.maxTotalTextureBytes=1;
-        const auto rejected=ModelAnimationService::Create({7,33,"texture-budget"},std::span(specs).first(1),textures,bounded);
-        std::cout<<"texture_budget_case count="<<count<<" max_textures="<<bounded.geometry.maxTextures
+    for (const bool strict:{true,false}) for (const bool count:{false,true}) {
+        auto bounded=limits; bounded.retainUnsupportedStatic=!strict;
+        if (count) bounded.geometry.maxTextures=0; else bounded.geometry.maxTotalTextureBytes=1;
+        const auto result=ModelAnimationService::Create({7,33,"texture-budget"},std::span(specs).first(1),textures,bounded);
+        std::cout<<"texture_budget_case strict="<<strict<<" count="<<count<<" max_textures="<<bounded.geometry.maxTextures
             <<" max_total_texture_bytes="<<bounded.geometry.maxTotalTextureBytes
-            <<" succeeded="<<rejected.Succeeded()<<" value_present="<<rejected.value.has_value()<<'\n';
-        for (const auto& diagnostic:rejected.diagnostics)
-            std::cout<<"texture_budget_diagnostic count="<<count<<" code="<<diagnostic.code<<" message="<<diagnostic.message<<'\n';
-        textureBudgetCasesAccepted &= !rejected.Succeeded() && rejected.diagnostics.front().code=="WORLD_MODEL_TEXTURE_BUDGET";
+            <<" succeeded="<<result.Succeeded()<<" value_present="<<result.value.has_value()<<'\n';
+        for (const auto& diagnostic:result.diagnostics)
+            std::cout<<"texture_budget_diagnostic strict="<<strict<<" count="<<count<<" code="<<diagnostic.code<<" message="<<diagnostic.message<<'\n';
+        if (strict) textureBudgetCasesAccepted &= !result.Succeeded() && result.diagnostics.front().code=="WORLD_MODEL_TEXTURE_BUDGET";
+        else {
+            const auto* budgetScene=result.Succeeded() && result.value ? (*result.value)->Scene().get() : nullptr;
+            textureBudgetCasesAccepted &= budgetScene && budgetScene->geometry.textures.empty() && !budgetScene->geometry.instances.empty()
+                && hasWarning(budgetScene->geometry,"WORLD_MODEL_TEXTURE_BUDGET");
+        }
     }
-    Require(textureBudgetCasesAccepted,"decoded texture budget became white fallback");
+    Require(textureBudgetCasesAccepted,"texture budget: strict must reject, browsing must keep the model and report the omitted textures");
+    // 模型几何预算（只容一个模型）：世界浏览跳过超出的那个模型并写明原因，其余照常；严格模式整体拒绝。
+    auto modelBudget=limits; modelBudget.geometry.maxModels=1;
+    const auto modelBudgetResult=ModelAnimationService::Create({7,33,"model-budget"},std::span(specs).first(2),read,modelBudget);
+    const auto* partialScene=modelBudgetResult.Succeeded() && modelBudgetResult.value ? (*modelBudgetResult.value)->Scene().get() : nullptr;
+    Require(partialScene && partialScene->geometry.skippedInstances==1 && partialScene->geometry.instances.size()==1
+        && hasWarning(partialScene->geometry,"WORLD_MODEL_BUDGET"),"model budget overflow failed the whole browsing scene");
+    Require(partialScene->geometry.budgetSkippedRequests==std::vector<std::uint32_t>{1},
+        "budget skip must name the later instance by its request (map storage) order");
+    auto strictModelBudget=modelBudget; strictModelBudget.retainUnsupportedStatic=false;
+    Require(!ModelAnimationService::Create({7,33,"model-budget"},std::span(specs).first(2),read,strictModelBudget).Succeeded(),
+        "strict model budget overflow accepted");
     std::cout<<"world_assets=4 animated=2 retained_static=1 unavailable=1 partial_geoset=1 original_rgb=1 source_budget_fail_closed=1\n";
 }
 std::vector<std::byte> ParticleBytes(bool pure,bool invalidSibling=false,bool invalidBindings=false) {

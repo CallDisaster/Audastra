@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "McpToolInternal.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace War3Map::QtApp {
@@ -22,6 +23,8 @@ QJsonObject SettingsJson(QtProject::EditorProject& project) {
             static_cast<qsizetype>(MapData::kWarVKSettingsMember.size()))},
         {"timing", value.timing == MapData::WarVKInitTiming::MainStart ? "main" : "timer"},
         {"far_doodad_types", far}, {"far_doodad_limit", static_cast<int>(MapData::kWarVKMaxFarDoodadTypes)},
+        {"sky_model", QString::fromStdString(value.skyModel)},
+        {"sky_model_limit_bytes", static_cast<int>(MapData::kWarVKSkyModelMaxBytes)},
         {"commands", commands},
         {"protocol_query", QString::fromUtf8(MapData::kWarVKProtocolQuery.data(), static_cast<qsizetype>(MapData::kWarVKProtocolQuery.size()))},
         {"last_error_query", QString::fromUtf8(MapData::kWarVKLastErrorQuery.data(), static_cast<qsizetype>(MapData::kWarVKLastErrorQuery.size()))},
@@ -30,6 +33,14 @@ QJsonObject SettingsJson(QtProject::EditorProject& project) {
         ? QJsonValue(QJsonObject{{"enabled", true}, {"max_distance", value.cameraLimits->maxDistance},
             {"near_clip", value.cameraLimits->nearClip}})
         : QJsonValue(QJsonObject{{"enabled", false}}));
+    if (!value.skyModel.empty()) {
+        // 是否已在地图里（含待保存导入）；不在时也可能是游戏自带路径，只报告，不拒绝。
+        const auto key = QtProject::EditorProject::AssetKey(QString::fromStdString(value.skyModel));
+        const auto assets = project.AssetEntries();
+        result.insert("sky_model_in_map", std::any_of(assets.begin(), assets.end(), [&](const auto& entry) {
+            return QtProject::EditorProject::AssetKey(entry.path) == key;
+        }));
+    }
     return result;
 }
 
@@ -66,6 +77,12 @@ Result<WarVKMapSettings> Merge(WarVKMapSettings settings, const QJsonObject& arg
         }
         settings.farDoodadTypes = std::move(types);
     }
+    if (arguments.contains("sky_model")) {
+        const auto sky = arguments.value("sky_model");
+        if (!sky.isString()) return fail("WARVK_SKY_MODEL_INVALID", "sky_model 须为字符串；空串取消天空模型。");
+        // 正斜杠统一为原版路径用的反斜杠。
+        settings.skyModel = sky.toString().trimmed().replace(QLatin1Char('/'), QLatin1Char('\\')).toStdString();
+    }
     if (const auto valid = MapData::ValidateWarVKMapSettings(settings); !valid.Succeeded()) return {std::nullopt, valid.diagnostics};
     return Result<WarVKMapSettings>::Success(std::move(settings));
 }
@@ -75,7 +92,7 @@ QJsonObject Rawcode() { return {{"type", "string"}, {"minLength", 4}, {"maxLengt
 
 std::vector<LiveWarVKTool> LiveWarVKTools() {
     std::vector<LiveWarVKTool> tools;
-    tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型及保存时写出的指令。",
+    tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型、天空模型及保存时写出的指令。",
         Mcp::ToolPermission::Query, {}, {}, SettingsJson, {}});
     QJsonObject set{
         {"timing", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"timer", "main"}}}},
@@ -88,9 +105,10 @@ std::vector<LiveWarVKTool> LiveWarVKTools() {
                     {"maximum", MapData::kWarVKCameraNearClipMax}}}}},
             {"required", QJsonArray{"enabled"}}}},
         {"far_doodad_types", QJsonObject{{"type", "array"}, {"maxItems", static_cast<int>(MapData::kWarVKMaxFarDoodadTypes)},
-            {"items", Rawcode()}}}};
+            {"items", Rawcode()}}},
+        {"sky_model", QJsonObject{{"type", "string"}, {"maxLength", static_cast<int>(MapData::kWarVKSkyModelMaxBytes)}}}};
     tools.push_back({"map_warvk_set", "修改地图设置 → WarVK（只改给出的项；camera_limits.enabled=false 取消镜头限制，far_doodad_types 整表替换，"
-        "超过 16 个拒绝）。一次调用是地图设置撤销栈上的一条记录。", Mcp::ToolPermission::Edit, set, {}, {},
+        "超过 16 个拒绝；sky_model 为天空模型路径，空串取消，超过 259 字节拒绝，正斜杠按反斜杠写）。一次调用是地图设置撤销栈上的一条记录。", Mcp::ToolPermission::Edit, set, {}, {},
         [](QtProject::EditorProject& project, const QJsonObject& arguments) -> QJsonObject {
             const auto current = project.QueryWarVKMapSettings();
             if (!current.Succeeded() || !current.value) return Mcp::Failure(current);

@@ -713,8 +713,10 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     });
     if (!resourceFailures.empty()) return {std::nullopt,std::move(resourceFailures)};
     if (!geometry.Succeeded()) return {std::nullopt,std::move(geometry.diagnostics)};
-    for (const auto& d : geometry.value->warnings) if (d.code == "WORLD_MODEL_BUDGET" || d.code == "WORLD_BAKED_BUDGET" ||
-        d.code == "WORLD_MODEL_TEXTURE_BUDGET") return fail(d.code.c_str(), d.message.c_str());
+    // 预算超出：严格模式整体拒绝；世界浏览只跳过超出的模型、不上传超出的贴图，警告写明原因，其余照常显示。
+    if (!limits.retainUnsupportedStatic)
+        for (const auto& d : geometry.value->warnings) if (d.code == "WORLD_MODEL_BUDGET" || d.code == "WORLD_BAKED_BUDGET" ||
+            d.code == "WORLD_MODEL_TEXTURE_BUDGET") return fail(d.code.c_str(), d.message.c_str());
     if (!scene.dynamicMaterialStates && !geometry.value->layerSamplerFlags.empty()) {
         const auto& source = std::as_const(*geometry.value);
         for (std::size_t layer=0;layer<source.layers.size();++layer)
@@ -727,6 +729,7 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     }
     scene.geometry = std::move(*geometry.value);
     for (auto& request : scene.geometry.instanceRequests) if (request != kBakedInstance) request = geometryRequests.at(request);
+    for (auto& request : scene.geometry.budgetSkippedRequests) request = geometryRequests.at(request);
     scene.geometry.requestedInstances = inputs.size();
     scene.geometry.warnings.insert(scene.geometry.warnings.end(),warnings.begin(),warnings.end());
     if ((!limits.retainUnsupportedStatic && scene.geometry.skippedInstances) ||

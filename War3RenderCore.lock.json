@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.1.23",
+  "version": "0.1.24",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "9dfe273b69b98d8ad2a2641ef3466d59d4edd724",
+  "commit": "1e729e480106658c20a7231cab3332380404984a",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "3c972764db5990ea625515e4fef300409a4c1c8bc5f9f64e31dc99144d65c2c0"
+      "sha256": "25afb425ffc9c3373690aa5a57728eb37f79630b2b090dbc23f75ae0b5c0289d"
     },
     {
       "path": "COPYRIGHT.md",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "4fceea9116691f3f09f8cf9573a2e4c1e3d7b4dcc943386db9838c0e56736e0b"
+      "sha256": "fc83a9b8b16fe9ef4d429ec78184ad4266df6ec5d0600e951d6128f6521ba617"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -142,7 +142,7 @@
     },
     {
       "path": "include/War3MapCore/RenderPluginV2.h",
-      "sha256": "eb58b211a2315e02360c79d858e566fd4ad3290f95ca6f6c6b9687365c53da8b"
+      "sha256": "b42db8a5aef337c8ec13fc731c64e45af8341111adf6359e99348960a3312b00"
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
@@ -334,7 +334,7 @@
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.cpp",
-      "sha256": "3b966c6c08d073702a82fda7653c4cd516dec000b06f078ea5957d6b5e6c3a55"
+      "sha256": "5493882805f816177b25e0a88a9a0ff2e7cb2cc16f1ec35544f514bedf62a89c"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.h",
@@ -594,7 +594,7 @@
     },
     {
       "path": "tests/StaticSamplerInputTests.cpp",
-      "sha256": "9e9bd85387be8759dfdc82ef16d85f5154a978206d77acfbb7d331ff8e568187"
+      "sha256": "d2ba04ec2bc5274d873e2bfafce5915d3ad20352d98aeec1691c5ad1b1f7e740"
     },
     {
       "path": "tests/TerrainBlightContractTests.cpp",

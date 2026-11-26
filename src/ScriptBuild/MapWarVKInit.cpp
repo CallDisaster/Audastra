@@ -41,6 +41,7 @@ void WriteWarVKInitFunction(MapContext& context) {
         out.Line("set AudastraWarVKErrors[" + std::to_string(i) + "] = GetLocalizedHotkey( "
             + QuoteJassString(MapData::kWarVKLastErrorQuery) + " )");
     }
+    if (!settings->skyModel.empty()) out.Line("call SetSkyModel( " + QuoteJassString(settings->skyModel) + " )");
     if (timer) out.Line("call DestroyTimer( GetExpiredTimer() )");
     out.End();
     out.Line("endfunction");

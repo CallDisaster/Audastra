@@ -3276,6 +3276,25 @@ void LiveEditorToolsTests::WarVKSettingsUseSettingsUndoAndRefuseSeventeenth() {
     const auto heroKey = EditorProject::AssetKey("war3mapImported\\hero.mdx");
     QVERIFY(std::any_of(f.project.pendingImports_.begin(), f.project.pendingImports_.end(),
         [&](const auto& entry) { return EditorProject::AssetKey(entry.archivePath) == heroKey; }));
+
+    // 天空模型：正斜杠按反斜杠写，报告是否已在地图里；超过 259 字节拒绝且不入栈。
+    auto sky = f.Context(); sky.insert("sky_model", "Sonne/Sky/SonneDawnM11.mdx");
+    const auto skySet = f.tools->Invoke("map_warvk_set", sky);
+    QVERIFY2(skySet.value("ok").toBool(), qPrintable(Explain(skySet)));
+    QCOMPARE(skySet.value("sky_model").toString(), QStringLiteral("Sonne\\Sky\\SonneDawnM11.mdx"));
+    QVERIFY(!skySet.value("sky_model_in_map").toBool());
+    const auto undoAfterSky = settingsUndo->count();
+    auto longSky = f.Context(); longSky.insert("sky_model", QString(256, QChar('a')) + QStringLiteral(".mdx"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_warvk_set", longSky)), QString("WARVK_SKY_MODEL_LENGTH"));
+    QCOMPARE(settingsUndo->count(), undoAfterSky);
+    const auto skyDisk = f.outputs.filePath("sky.mdx");
+    QVERIFY(WriteFile(skyDisk, "MDLX"));
+    auto skyImport = f.Context();
+    skyImport.insert("files", QJsonArray{QJsonObject{{"disk_path", QDir::toNativeSeparators(skyDisk)},
+        {"archive_path", "Sonne\\Sky\\SonneDawnM11.mdx"}}});
+    const auto skyImported = f.tools->Invoke("imports_add", skyImport);
+    QVERIFY2(skyImported.value("ok").toBool(), qPrintable(Explain(skyImported)));
+    QVERIFY(f.tools->Invoke("map_warvk_get", f.Context()).value("sky_model_in_map").toBool());
 }
 
 QTEST_MAIN(LiveEditorToolsTests)

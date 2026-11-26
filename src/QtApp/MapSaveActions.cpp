@@ -72,6 +72,14 @@ QString ChangedMembers(const MapSaveJob& job) {
     for (const auto& [member, label] : known)
         if (std::any_of(job.replacements.begin(), job.replacements.end(), [member](const auto& r) { return r.name == member; }))
             labels << QObject::tr(label);
+    // 导入文件、导入表、编辑器自有成员等；脚本在摘要里另有一行，不重复计数。
+    const auto isScript = [](const std::string& name) {
+        return name == "war3map.j" || name == "war3map.lua" || name == "scripts\\war3map.j" || name == "Scripts\\war3map.j";
+    };
+    const auto others = std::count_if(job.replacements.begin(), job.replacements.end(), [&](const auto& r) {
+        return !isScript(r.name) && std::none_of(std::begin(known), std::end(known), [&](const auto& entry) { return r.name == entry.first; });
+    });
+    if (others) labels << QObject::tr("其他 %1 个文件（导入与资源）").arg(static_cast<qlonglong>(others));
     if (labels.isEmpty()) labels << QObject::tr("地图资源与归档内容");
     if (!job.removals.empty()) labels << QObject::tr("删除 %1 个归档成员").arg(job.removals.size());
     return labels.join(QStringLiteral("、"));

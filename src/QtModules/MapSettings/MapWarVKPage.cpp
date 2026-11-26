@@ -10,6 +10,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPointer>
 #include <QPushButton>
@@ -62,6 +63,13 @@ MapWarVKPage::MapWarVKPage(QtProject::EditorProject& project, QObject* context, 
     timing_->addItem(tr("初始化后 0 秒"), static_cast<int>(WarVKInitTiming::AfterInitialization));
     timing_->addItem(tr("main 开头"), static_cast<int>(WarVKInitTiming::MainStart));
     caption(tr("执行时机"), QStringLiteral("timing"), timing_);
+    // 天空模型：列出地图里（含待保存导入）的模型文件，也可直接输入游戏路径。
+    sky_ = new QComboBox(this);
+    sky_->setObjectName(QStringLiteral("mapWarVKSkyModel"));
+    sky_->setEditable(true);
+    sky_->setInsertPolicy(QComboBox::NoInsert);
+    sky_->setMaxVisibleItems(20);
+    caption(tr("天空模型"), QStringLiteral("sky.model"), sky_);
 
     auto* farBox = new QWidget(this);
     auto* farLayout = new QVBoxLayout(farBox);
@@ -95,6 +103,8 @@ MapWarVKPage::MapWarVKPage(QtProject::EditorProject& project, QObject* context, 
     connect(timing_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
         Commit(Edited(), tr("修改 WarVK 执行时机"));
     });
+    connect(sky_, qOverload<int>(&QComboBox::activated), this, [this](int) { Commit(Edited(), tr("修改天空模型")); });
+    connect(sky_->lineEdit(), &QLineEdit::editingFinished, this, [this] { Commit(Edited(), tr("修改天空模型")); });
     connect(far_, &QListWidget::itemSelectionChanged, this, [this] { removeFar_->setEnabled(!far_->selectedItems().isEmpty()); });
     connect(removeFar_, &QPushButton::clicked, this, [this] {
         auto next = current_;
@@ -121,13 +131,14 @@ MapData::WarVKMapSettings MapWarVKPage::Edited() const {
     next.timing = static_cast<WarVKInitTiming>(timing_->currentData().toInt());
     if (limits_->isChecked()) next.cameraLimits = MapData::WarVKCameraLimits{distance_->value(), near_->value()};
     else next.cameraLimits.reset();
+    next.skyModel = sky_->currentText().trimmed().replace(QLatin1Char('/'), QLatin1Char('\\')).toStdString();
     return next;
 }
 
 void MapWarVKPage::Fill() {
     const auto read = project_.QueryWarVKMapSettings();
     const bool ok = read.Succeeded() && read.value;
-    for (QWidget* widget : std::initializer_list<QWidget*>{limits_, distance_, near_, timing_, far_, removeFar_}) widget->setEnabled(ok);
+    for (QWidget* widget : std::initializer_list<QWidget*>{limits_, distance_, near_, timing_, sky_, far_, removeFar_}) widget->setEnabled(ok);
     problem_->setVisible(!ok);
     if (!ok) {
         problem_->setText(read.diagnostics.empty() ? tr("无法读取 WarVK 设置。")
@@ -142,6 +153,19 @@ void MapWarVKPage::Fill() {
     distance_->setEnabled(current_.cameraLimits.has_value());
     near_->setEnabled(current_.cameraLimits.has_value());
     timing_->setCurrentIndex(current_.timing == WarVKInitTiming::MainStart ? 1 : 0);
+    {
+        const QSignalBlocker skyBlocker(sky_), skyEditBlocker(sky_->lineEdit());
+        QStringList models;
+        for (const auto& entry : project_.AssetEntries()) {
+            const auto lower = entry.path.toLower();
+            if (lower.endsWith(QStringLiteral(".mdx")) || lower.endsWith(QStringLiteral(".mdl"))) models << entry.path;
+        }
+        models.sort(Qt::CaseInsensitive);
+        sky_->clear();
+        sky_->addItem(QString());
+        sky_->addItems(models);
+        sky_->setEditText(QString::fromStdString(current_.skyModel));
+    }
 
     if (!project_.standardCatalog_) (void)QtProject::EnsureProjectObjectCatalog(project_);
     far_->clear();

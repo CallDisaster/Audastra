@@ -13,7 +13,7 @@ class QPushButton;
 namespace War3Map::QtProject { class EditorProject; }
 
 namespace War3Map::Modules {
-// 地图设置“WarVK”页：镜头限制（镜头远距上限、近裁剪）、指令执行时机与远景装饰物类型。
+// 地图设置“WarVK”页：镜头限制（镜头远距上限、近裁剪）、指令执行时机、天空模型与远景装饰物类型。
 // 每次改动经工程共用的 WarVK 设置命令提交，是地图设置撤销栈上的一条记录；物编装饰物的“远景”勾选改的是同一设置。
 class MapWarVKPage final : public QWidget {
 public:
@@ -40,6 +40,7 @@ private:
     QDoubleSpinBox* distance_ = nullptr;
     QDoubleSpinBox* near_ = nullptr;
     QComboBox* timing_ = nullptr;
+    QComboBox* sky_ = nullptr;
     QListWidget* far_ = nullptr;
     QLabel* farCount_ = nullptr;
     QPushButton* removeFar_ = nullptr;

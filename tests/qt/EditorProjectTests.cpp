@@ -2313,6 +2313,8 @@ void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
     if (mode == 5) {
         QVERIFY(job->minimapSave && job->minimapSave->Plan() == job->terrainSavePlan);
         QVERIFY(job->nextSession->ReadMember(minimapName).value != std::optional(originalMinimap));
+        // 已重建的小地图不能在保存诊断里残留计划早期的“未重建”警告。
+        QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_SAVE_MINIMAP_NOT_REBUILT"));
     } else {
         QVERIFY(!job->minimapSave);
         QCOMPARE(job->nextSession->ReadMember(minimapName).value, std::optional(originalMinimap));
@@ -3940,6 +3942,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QVERIFY(job->minimapSave && job->minimapSave->ClassicManifest());
     QCOMPARE(job->minimapSave->Manifest().encodedMipCount, 1u);
     QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+    QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_SAVE_MINIMAP_NOT_REBUILT"));
     const auto generated = job->minimapSave->MinimapReplacement().data;
     QVERIFY(project.CommitMapSave(*job));
     QVERIFY(!project.HasUnsavedMapChanges());
@@ -4058,6 +4061,7 @@ void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit() {
         QVERIFY(job->nextSession && job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
         QVERIFY(job->minimapSave && job->minimapSave->ClassicManifest() && !job->minimapPreserve);
         QVERIFY(!HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
+        QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_SAVE_MINIMAP_NOT_REBUILT"));
         QCOMPARE(job->minimapSave->Plan(), job->terrainSavePlan);
         QCOMPARE(job->terrainSavePlan->Revision(), beforeRevision);
         QCOMPARE(job->terrainSavePlan->TerrainSourceRevision(), beforeSourceRevision);
@@ -4065,6 +4069,7 @@ void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit() {
         QCOMPARE(job->minimapSave->Manifest().encodedMipCount, 1u);
         QCOMPARE(job->minimapSave->DecodedMip0().width, 256u); QCOMPARE(job->minimapSave->DecodedMip0().height, 256u);
         QVERIFY(job->minimapMarkers && job->minimapMarkers->MarkerCount() == 1);
+        QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_SAVE_MARKERS_NOT_REBUILT"));
         const auto dependencies = job->minimapMarkers->Dependencies();
         const auto settingsDependency = std::find_if(dependencies.begin(), dependencies.end(), [](const auto& dependency) {
             return dependency.name == "WAR3MAP.W3I";

@@ -21,6 +21,7 @@ namespace War3Map::Render {
 namespace {
 
 constexpr std::string_view kSubsystem = "Render.WorldModels";
+constexpr std::size_t kListedBudgetModels = 64; // 超预算模型逐个列出顶点/索引，供决定放宽上限或缩小模型
 constexpr std::size_t kListedPaths = 12; // 每类警告最多列出的路径数
 bool InstanceBudget(std::uint64_t count, const WorldModelLimits& limits) {
     return count<=UINT32_MAX && (!limits.maxInstances || count<=limits.maxInstances) &&
@@ -101,7 +102,8 @@ public:
         if (!model->second || !InstanceBudget(scene_.instances.size()+1,limits_)) {
             if (rigidPose_) return Status::Failure(std::string(kSubsystem), "WORLD_MODEL_POSE_BUDGET",
                 "请求刚性姿态的场景超出模型或实例显示预算：" + request.modelPath);
-            ++scene_.skippedInstances; ++budgetModels_[request.modelPath]; return {};
+            ++scene_.skippedInstances; ++budgetModels_[request.modelPath];
+            scene_.budgetSkippedRequests.push_back(requestIndex); return {};
         }
         War3RenderModelInstanceV2 instance{*model->second, {}, {request.tint[0], request.tint[1], request.tint[2]}};
         const auto transform = ModelInstanceTransform(request);
@@ -182,7 +184,7 @@ public:
         scene_.instances = std::move(instances); scene_.instanceRequests = std::move(requests);
         ComputeBounds();
         Summarize(failedModels_, "WORLD_MODEL_UNAVAILABLE", "模型无法读取或解析，相关实例未显示");
-        Summarize(budgetModels_, "WORLD_MODEL_BUDGET", "超出模型显示预算，相关实例未显示");
+        SummarizeModelBudget();
         Summarize(failedTextures_, "WORLD_MODEL_TEXTURE_UNAVAILABLE", "贴图不可用，相关层按白色显示");
         Summarize(budgetTextures_, "WORLD_MODEL_TEXTURE_BUDGET", "贴图数量、文件大小或解码后总字节数超过预算，未上传");
         return Result<WorldModelScene>::Success(std::move(scene_));
@@ -378,7 +380,8 @@ private:
                 request.modelPath + "：编辑器原创静态辅助资产，不读取或解析MDX，不声明原版模型兼容。", std::nullopt});
         }
         if (!model->second || !InstanceBudget(scene_.instances.size() + 1, limits_)) {
-            ++scene_.skippedInstances; ++budgetModels_[request.modelPath]; return {};
+            ++scene_.skippedInstances; ++budgetModels_[request.modelPath];
+            scene_.budgetSkippedRequests.push_back(requestIndex); return {};
         }
         War3RenderModelInstanceV2 instance{*model->second, {}, {request.tint[0], request.tint[1], request.tint[2]}};
         const auto transform = ModelInstanceTransform(request);
@@ -540,8 +543,10 @@ private:
             || scene_.indices.size() > limits_.maxIndices || scene_.meshes.size() > limits_.maxMeshes
             || scene_.layers.size() > limits_.maxLayers || vertices > limits_.maxVertices - scene_.vertices.size()
             || indices > limits_.maxIndices - scene_.indices.size() || meshes > limits_.maxMeshes - scene_.meshes.size()
-            || layers > limits_.maxLayers - scene_.layers.size())
+            || layers > limits_.maxLayers - scene_.layers.size()) {
+            budgetGeometry_[request.modelPath] = {vertices, indices};
             return Result<std::optional<std::uint32_t>>::Success(std::nullopt);
+        }
         std::shared_ptr<const std::vector<ModelTextureBinding>> textureBindings;
         if (materialTextures) {
             const auto bytes=static_cast<std::uint64_t>(model.textures.size())*sizeof(ModelTextureBinding);
@@ -638,6 +643,30 @@ private:
         }
     }
 
+    // 每个超预算模型：未显示实例数，及按一份几何计的顶点/索引；再给合计与场景已用量/上限。
+    void SummarizeModelBudget() {
+        if (budgetModels_.empty()) return;
+        std::string text = "超出模型显示预算，相关实例未显示：";
+        std::uint64_t totalVertices = 0, totalIndices = 0;
+        std::size_t listed = 0;
+        for (const auto& [path, count] : budgetModels_) {
+            const auto geometry = budgetGeometry_.find(path);
+            if (geometry != budgetGeometry_.end()) {
+                totalVertices += geometry->second.vertices; totalIndices += geometry->second.indices;
+            }
+            if (listed++ >= kListedBudgetModels) continue;
+            text += (listed > 1 ? "、" : "") + path + "（" + std::to_string(count) + " 个实例";
+            if (geometry != budgetGeometry_.end())
+                text += "，顶点 " + std::to_string(geometry->second.vertices) + "，索引 " + std::to_string(geometry->second.indices);
+            text += "）";
+        }
+        if (listed > kListedBudgetModels) text += " 等共 " + std::to_string(budgetModels_.size()) + " 个";
+        text += "。未显示模型合计顶点 " + std::to_string(totalVertices) + "、索引 " + std::to_string(totalIndices)
+            + "；场景已显示顶点 " + std::to_string(scene_.vertices.size()) + " / 上限 " + std::to_string(limits_.maxVertices)
+            + "，索引 " + std::to_string(scene_.indices.size()) + " / 上限 " + std::to_string(limits_.maxIndices) + "。";
+        scene_.warnings.push_back({DiagnosticSeverity::Warning, std::string(kSubsystem), "WORLD_MODEL_BUDGET", std::move(text), std::nullopt});
+    }
+
     void Summarize(const std::map<std::string, std::size_t>& paths, const char* code, const char* message) {
         if (paths.empty()) return;
         std::string text = std::string(message) + "：";
@@ -661,6 +690,8 @@ private:
     std::unordered_map<std::string, TextureRequest> textureRequests_;
     std::unordered_map<std::string, std::uint32_t> textures_;
     std::map<std::string, std::size_t> failedModels_, budgetModels_, failedTextures_, budgetTextures_;
+    struct BudgetGeometry { std::uint64_t vertices = 0, indices = 0; };
+    std::map<std::string, BudgetGeometry> budgetGeometry_;
     std::uint64_t textureBytes_ = 0;
     std::uint64_t textureBindingBytes_ = 0;
     bool samplerActive_ = false, samplerBudgetExceeded_ = false;
@@ -961,6 +992,13 @@ bool ReplaceModelInstances(WorldModelScene& scene, std::span<const ModelInstance
         if (source >= previous.size()) return false;
         variants[variantKey(previous[source])] = scene.instances[i].model;
     }
+    // 此前因预算没有模型的变体，替换后仍按预算跳过；其余无模型变体是资产不可用。
+    std::set<std::string> budgetVariants;
+    for (const auto request : scene.budgetSkippedRequests) {
+        if (request >= previous.size()) return false;
+        budgetVariants.insert(variantKey(previous[request]));
+    }
+    std::vector<std::uint32_t> budgetSkipped;
     for (const auto& request : previous) variants.try_emplace(variantKey(request), std::nullopt);
     std::size_t skipped = 0;
     for (std::size_t r = 0; r < next.size(); ++r) {
@@ -970,7 +1008,11 @@ bool ReplaceModelInstances(WorldModelScene& scene, std::span<const ModelInstance
             return false;
         const auto found = variants.find(variantKey(request));
         if (found == variants.end()) return false;
-        if (!found->second) { ++skipped; continue; }
+        if (!found->second) {
+            ++skipped;
+            if (budgetVariants.contains(found->first)) budgetSkipped.push_back(static_cast<std::uint32_t>(r));
+            continue;
+        }
         if (!InstanceBudget(instances.size()+1,limits)) return false;
         War3RenderModelInstanceV2 instance{*found->second, {}, {request.tint[0], request.tint[1], request.tint[2]}};
         const auto transform = ModelInstanceTransform(request);
@@ -986,6 +1028,7 @@ bool ReplaceModelInstances(WorldModelScene& scene, std::span<const ModelInstance
     for (const auto index : order) { scene.instances.push_back(instances[index]); scene.instanceRequests.push_back(requests[index]); }
     scene.requestedInstances = next.size();
     scene.skippedInstances = skipped;
+    scene.budgetSkippedRequests = std::move(budgetSkipped);
     return true;
 }
 

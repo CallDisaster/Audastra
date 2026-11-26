@@ -73,7 +73,8 @@ struct WorldModelLimits {
     // 从上面的总量里为 sampler / 绑定等小型来源元数据预留的字节数。非 0 时贴图只用到“总量 − 预留”，
     // 贴图用满后元数据仍放得下：超出的贴图逐张按未上传处理，不再让整个场景失败。0 保留逐字节严格核算。
     std::uint64_t textureMetadataReserveBytes = 0;
-    std::uint32_t maxVertices = 2097152, maxIndices = 6291456, maxLayers = 131072, maxMeshes = 65536;
+    std::uint32_t maxVertices = WAR3_RENDER_MODEL_MAX_VERTICES, maxIndices = WAR3_RENDER_MODEL_MAX_INDICES;
+    std::uint32_t maxLayers = 131072, maxMeshes = 65536;
     std::uint32_t maxModels = 16384, maxInstances = 0, maxTextures = 4096; // 0：没有场景总数门禁。
     std::uint64_t maxInstanceBytes = 64ull * 1024 * 1024; // 实例与来源索引的实际显示内存预算。
     bool allowRigidStaticPreview = false; // 明确申请MDX800无控制器静态identity子集；默认严格。
@@ -171,6 +172,9 @@ struct WorldModelScene {
     std::optional<ModelSceneRigidPoseRequest> rigidPose; // 几何对应的显式姿态；空为原静态路径
     std::size_t requestedInstances = 0;
     std::size_t skippedInstances = 0;   // 模型不可用或超出预算而未显示的实例
+    // 因模型显示预算未显示的请求序号，升序。请求按给定顺序先到先占预算；世界页的顺序是地图存放顺序
+    // （悬崖烘焙网格 → war3map.doo 装饰物 → war3mapUnits.doo 单位），所以跳过哪些物体是确定的。
+    std::vector<std::uint32_t> budgetSkippedRequests;
     std::size_t untexturedLayers = 0;   // 贴图不可用、按白色显示的层
     std::size_t rigidStaticPreviewAssets = 0, rigidStaticPreviewInstances = 0; // 本次构建已接纳资产/显示实例；预览近似。
     std::vector<Diagnostic> warnings;   // 按路径汇总，不逐实例重复

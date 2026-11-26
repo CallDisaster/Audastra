@@ -502,6 +502,13 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
         scene.geometry.instances.push_back(instance); scene.geometry.instanceRequests.push_back(request);
     }
     scene.geometry.requestedInstances=scene.specs.size();
+    // 增量新增超预算整笔拒绝，不会新出现预算跳过；旧的按存活映射改号，删除的不再列出。
+    std::vector<std::uint32_t> budgetSkipped;
+    for (const auto request:old.geometry.budgetSkippedRequests)
+        if (request<plan->oldToNewRequests_.size() && plan->oldToNewRequests_[request]!=UINT32_MAX)
+            budgetSkipped.push_back(plan->oldToNewRequests_[request]);
+    std::sort(budgetSkipped.begin(),budgetSkipped.end());
+    scene.geometry.budgetSkippedRequests=std::move(budgetSkipped);
     phase.Switch(timings ? &timings->storageNs : nullptr);
     if (auto status=InitializeStorage(*candidate,state_->limits,read,timings); !status.Succeeded())
         return {std::nullopt,std::move(status.diagnostics)};

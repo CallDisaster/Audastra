@@ -94,9 +94,7 @@ constexpr std::uint64_t kMaxTextureBytes = 16ull * 1024 * 1024, kMaxTextureTotal
 constexpr std::uint64_t kMaxTerrainBytes = 128ull * 1024 * 1024;
 constexpr std::uint32_t kMaxMipLevels = 12;
 constexpr std::uint64_t kMaxMipChainBytes = 24ull * 1024 * 1024;
-// 模型场景预算（见 RenderPluginV2.h）。
-constexpr std::uint32_t kMaxModelVertices = 2097152, kMaxModelIndices = 6291456, kMaxModelLayers = 131072,
-    kMaxModelMeshes = 65536, kMaxModels = 16384, kMaxModelTextures = 4096;
+// 模型场景的顶点/索引等几何上限由核心校验（WAR3_RENDER_MODEL_MAX_* 等，见 RenderPluginV2.h），这里不另存一份。
 // 贴图总量随宿主的 WorldModelLimits::maxTotalTextureBytes（2 GiB）放宽，并留出与原先相同比例的余量；
 // 场景总字节 = 贴图 + 几何等其余载荷。
 constexpr std::uint64_t kMaxModelTextureTotal = 2304ull * 1024 * 1024, kMaxModelBytes = 2560ull * 1024 * 1024;

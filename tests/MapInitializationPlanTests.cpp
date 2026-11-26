@@ -447,6 +447,25 @@ void WarVKManagedInitialization() {
     WarVKMapSettings tooMany; tooMany.farDoodadTypes = sixteen; tooMany.farDoodadTypes.push_back("Z000");
     Require(!MapData::WarVKInitCommands(tooMany).Succeeded() && !MapData::SerializeWarVKMapSettings(tooMany).Succeeded(),
         "more than 16 far types never produce partial commands");
+    // 天空模型：一行 sky.model，往返不变；259 字节可用，260 字节拒绝（不截断）；非相对 .mdx/.mdl 路径拒绝。
+    WarVKMapSettings skyOnly; skyOnly.skyModel = "Sonne\\Sky\\SonneDawnM11.mdx";
+    const auto skyBytes = MapData::SerializeWarVKMapSettings(skyOnly);
+    Require(skyBytes.Succeeded() && std::string(reinterpret_cast<const char*>(skyBytes.value->data()), skyBytes.value->size())
+        == "schema=1\ntiming=timer\nsky.model=Sonne\\Sky\\SonneDawnM11.mdx\n", "sky model is one settings line");
+    const auto skyParsed = MapData::ParseWarVKMapSettings(*skyBytes.value);
+    Require(skyParsed.Succeeded() && *skyParsed.value == skyOnly && skyOnly.HasCommands()
+        && MapData::WarVKInitCommands(skyOnly).value->empty(), "sky model round-trips and alone still writes the managed function");
+    WarVKMapSettings skyLimit; skyLimit.skyModel = std::string(255, 'a') + ".mdx";
+    Require(MapData::ValidateWarVKMapSettings(skyLimit).Succeeded(), "259-byte sky model path accepted");
+    skyLimit.skyModel = std::string(256, 'a') + ".mdx";
+    const auto skyOver = MapData::ValidateWarVKMapSettings(skyLimit);
+    Require(!skyOver.Succeeded() && skyOver.diagnostics.front().code == "WARVK_SKY_MODEL_LENGTH", "260-byte sky model path refused");
+    for (const auto* bad : {"C:\\Sky.mdx", "Sky\\\"x.mdx", "Sky\\Sky.blp", "Sky/Sky.mdx", "\\Sky.mdx"}) {
+        WarVKMapSettings badSky; badSky.skyModel = bad;
+        Require(!MapData::ValidateWarVKMapSettings(badSky).Succeeded(), "invalid sky model path accepted");
+    }
+    Require(!parse("schema=1\nsky.model=\n").Succeeded(), "empty sky.model refused");
+    settings.skyModel = "Sonne\\Sky\\SonneDawnM11.mdx";
 
     // JASS：默认在 RunInitializationTriggers 之后起 0 秒计时器；受管函数先读协议版本，再逐条记录结果。
     Fixture fixture;
@@ -471,6 +490,8 @@ void WarVKManagedInitialization() {
     Require(globals != npos && globals < at("endglobals") && function != npos && function < mainAt, "globals and function precede main");
     Require(protocol != npos && protocol < camera && camera < cameraError && cameraError < farTypes && farTypes < farError,
         "protocol first, then each command with its own result");
+    const auto sky = at("call SetSkyModel( \"Sonne\\\\Sky\\\\SonneDawnM11.mdx\" )");
+    Require(sky != npos && farError < sky && sky < at("call DestroyTimer( GetExpiredTimer() )"), "sky model set after the commands");
     Require(at("call DestroyTimer( GetExpiredTimer() )") != npos && start != npos && initialization < start
         && start < script.find("endfunction", mainAt), "timer starts after map initialization inside main");
     Require(at("call AudastraWarVKInit(  )") == npos, "timer timing does not also call at main start");
