@@ -11,13 +11,19 @@
 #include "ModelAnimationMaterialTextures.h"
 #include "ModelPreviewReplacementTests.h"
 #include "War3MapCore/Render/ModelAnimationCapture.h"
+#include "../src/Render/Animation/AnimationWorkers.h"
 #include <fstream>
 #include <algorithm>
 #include <bit>
 #include <cstring>
 #include <cmath>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
+#include <atomic>
+#include <chrono>
+#include <random>
+#include <thread>
 
 namespace {
 using namespace War3Map;
@@ -240,6 +246,49 @@ void ViewAdmission() {
         "legacy unfiltered service acquired hidden view semantics");
     std::cout<<"view_admission=1 outside_pose_work=0 ground_pose_work=0 reentry_current_time=66 legacy_unfiltered=1\n";
 }
+// 放大竞争窗口：在交接点随机让步 0–200 µs（忙等加 yield，Windows 的 sleep 粒度太粗）。每轮换种子；
+// 各线程的随机序列由种子和线程身份决定。逐任务的点只偶尔让步，免得测试太慢。
+std::atomic<std::uint32_t> jitterSeed{0};
+void Jitter(AnimationJitterSite site) noexcept {
+    thread_local std::uint32_t generation=0; thread_local std::minstd_rand random;
+    const auto seed=jitterSeed.load(std::memory_order_relaxed);
+    if (generation!=seed) {
+        generation=seed;
+        random.seed(seed*2654435761u ^ static_cast<std::uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+    }
+    const auto value=static_cast<std::uint32_t>(random());
+    if (site==AnimationJitterSite::Task && value%16) return;
+    const auto until=std::chrono::steady_clock::now()+std::chrono::microseconds((value>>4)%201);
+    while (std::chrono::steady_clock::now()<until) std::this_thread::yield();
+}
+struct JitterScope {
+    explicit JitterScope(std::uint32_t seed) { jitterSeed.store(seed); SetAnimationJitterHook(&Jitter); }
+    ~JitterScope() { SetAnimationJitterHook(nullptr); }
+    JitterScope(const JitterScope&)=delete; JitterScope& operator=(const JitterScope&)=delete;
+};
+void WorkerSharing(bool jitter) {
+    // 几个调用方同时提交普通与后台任务：每个编号恰好执行一次，且调用返回时本组任务已全部做完。
+    constexpr std::uint32_t tasks=4096; const int rounds=jitter ? 40 : 300;
+    std::atomic<bool> wrong{false};
+    for (int round=0;round<rounds;++round) {
+        std::optional<JitterScope> scope; if (jitter) scope.emplace(static_cast<std::uint32_t>(round+1));
+        std::array<std::vector<std::uint8_t>,3> hits;
+        for (auto& h:hits) h.assign(tasks,0);
+        const auto submit=[&](std::size_t k,bool background) {
+            const std::function<void(std::uint32_t)> task=[&hits,k](std::uint32_t i) {
+                volatile std::uint32_t spin=0; for (std::uint32_t n=0;n<(i*7919u)%64u;++n) spin=spin+n;
+                ++hits[k][i];
+            };
+            if (background) RunAnimationBackgroundTasks(tasks,task); else RunAnimationTasks(tasks,task);
+            for (const auto h:hits[k]) if (h!=1) wrong.store(true);
+        };
+        std::thread normal([&] { submit(0,false); }), background([&] { submit(1,true); });
+        submit(2,(round&1)!=0);
+        normal.join(); background.join();
+        Require(!wrong.load(),"shared worker pool ran a task zero or several times, or returned early");
+    }
+    std::cout<<"worker_pool_sharing rounds="<<rounds<<" jitter="<<jitter<<" callers=3 exact=1"<<std::endl;
+}
 void ResidentFrames() {
     // 沿用上一帧数组只重写视野内与刚出视野的实例：随镜头进出视野、整片离开再回来、旧帧回收复用，
     // 结果须与单线程逐实例重建逐位相同。
@@ -258,11 +307,28 @@ void ResidentFrames() {
     // 镜头沿地图移动、拉远：实例依次进入、留在、离开视野；随后整片离开再回到起点。
     const std::array<std::array<float,3>,8> path{{{0,0,900},{2000,0,900},{6000,1200,900},{6000,1200,2500},
         {-100000,0,900},{2000,0,900},{0,0,900},{0,0,900}}};
+    // 编辑：第 2、3 帧把一直在视野外的实例 399 设成同一挪动后的变换（第 3 帧编辑过但逐位不变），第 5 帧改视野外
+    // 实例 39 的颜色，第 6 帧挪动视野内的实例 0。身份与原变换取自一帧未推进的参照。
+    std::array<float,12> moved{},nearMoved{};
+    War3RenderCore::InstanceIdentity farIdentity{},fadedIdentity{},nearIdentity{};
+    {
+        auto probe=create(false,1);
+        const auto first=Good(probe->Prepare(nullptr,AnimationAdvance{}));
+        moved=first->states[399].transform; moved[3]+=1; farIdentity=first->states[399].identity;
+        nearMoved=first->states[0].transform; nearMoved[3]+=5; nearIdentity=first->states[0].identity;
+        fadedIdentity=first->states[39].identity;
+    }
     const auto command=[&](std::size_t f) {
         AnimationAdvance advance; advance.playAll=true; advance.deltaMs=f ? 33 : 0;
         AnimationView view; view.physicalWidth=1200; view.physicalHeight=800;
         view.camera={sizeof(War3RenderCameraV2),path[f][0],path[f][1],0,path[f][2],0,0.8f};
         advance.worldView=view; advance.worldCamera=AnimationWorldCamera(view.camera);
+        const auto edit=[&](War3RenderCore::InstanceIdentity identity) -> AnimationEdit& {
+            advance.edits.emplace_back(); advance.edits.back().identity=identity; return advance.edits.back();
+        };
+        if (f==2 || f==3) edit(farIdentity).transform=moved;
+        if (f==5) edit(fadedIdentity).tint=std::array<float,3>{0.5f,0.75f,1.0f};
+        if (f==6) edit(nearIdentity).transform=nearMoved;
         return advance;
     };
     // 返回第一处不同（空表示逐位相同），失败时直接指出数组或姿势字段与实例序号。
@@ -298,15 +364,43 @@ void ResidentFrames() {
                 field("asset",x.asset==y.asset),field("evaluationEpoch",(x.evaluationEpoch!=0)==(y.evaluationEpoch!=0)),
                 field("warnings",x.warnings.count==y.warnings.count)}) if (!text.empty()) return text;
         }
+        if (a.pickBounds.size()!=b.pickBounds.size()) return "pickBounds size";
+        for (std::size_t i=0;i<a.pickBounds.size();++i) {
+            const auto& x=a.pickBounds[i]; const auto& y=b.pickBounds[i];
+            if (x.available!=y.available || x.collisionIncomplete!=y.collisionIncomplete ||
+                std::memcmp(x.box.data(),y.box.data(),sizeof(x.box))!=0) return "pickBounds["+std::to_string(i)+"]";
+        }
+        if (a.finalizePending || b.finalizePending) return "finalizePending";
+        // 视野内清单：两帧相同，且恰好列出本帧 outsideView 为 false 的链（升序）。
+        if (auto text=bytes("viewInstances",a.viewInstances,b.viewInstances); !text.empty()) return text;
+        if (!a.viewInstancesComplete || !b.viewInstancesComplete) return "viewInstances incomplete";
+        {
+            std::size_t k=0;
+            for (std::uint32_t i=0;i<b.poses.size();++i) if (!b.poses[i].outsideView) {
+                if (k>=b.viewInstances.size() || b.viewInstances[k]!=i) return "viewInstances["+std::to_string(k)+"]";
+                ++k;
+            }
+            if (k!=b.viewInstances.size()) return "viewInstances size";
+        }
         if (a.timings.outputMotionHash!=b.timings.outputMotionHash) return "outputMotionHash";
+        if (a.timings.minElapsedMs!=b.timings.minElapsedMs || a.timings.maxElapsedMs!=b.timings.maxElapsedMs ||
+            a.timings.minGlobalMs!=b.timings.minGlobalMs || a.timings.maxGlobalMs!=b.timings.maxGlobalMs) return "clock range";
         if (a.offscreenPoseInstances!=b.offscreenPoseInstances || a.timings.poseEvaluationRequests!=b.timings.poseEvaluationRequests ||
             a.animatedInstances!=b.animatedInstances || a.hiddenInstances!=b.hiddenInstances ||
             a.retainedStaticInstances!=b.retainedStaticInstances) return "frame counts";
         return {};
     };
+    // 点选列表：只扫视野内清单与逐条扫描全部姿势链逐项相同（同一组请求的场景几何计数相同，借参照服务的场景）。
+    const auto pickService=create(false,1);
     const auto check=[&](const char* run,std::size_t f,const AnimationFrame& expected,const AnimationFrame& actual) {
         if (const auto text=difference(expected,actual); !text.empty())
             throw std::runtime_error(std::string(run)+" frame "+std::to_string(f)+" differs from a single-threaded full rebuild: "+text);
+        WorldModelScene listed,full;
+        AnimationPickingInstances(*pickService->Scene(),actual,listed); AnimationPickingInstances(*pickService->Scene(),actual,full,true);
+        if (listed.instanceRequests!=full.instanceRequests || listed.skippedInstances!=full.skippedInstances ||
+            listed.requestedInstances!=full.requestedInstances || listed.instances.size()!=full.instances.size() ||
+            (!listed.instances.empty() && std::memcmp(listed.instances.data(),full.instances.data(),listed.instances.size()*sizeof(listed.instances[0]))!=0))
+            throw std::runtime_error(std::string(run)+" frame "+std::to_string(f)+" listed picking differs from a full scan");
     };
     // 变化清单：沿用时以传入的上一帧为基，升序；未列出的实例在两帧里全部姿势数据逐字节相同。
     std::size_t listedTotal=0,unlistedTotal=0;
@@ -350,6 +444,11 @@ void ResidentFrames() {
     Require(!rebuilt[0]->sharedPoseRanges && rebuilt[1]->offscreenPoseInstances>0 && rebuilt[1]->timings.poseEvaluationRequests>0 &&
         rebuilt[4]->timings.poseEvaluationRequests==0 && rebuilt[5]->timings.poseEvaluationRequests>0,
         "resident test camera path did not move instances in and out of view");
+    for (std::size_t f=1;f<=5;++f)
+        Require(!rebuilt[f]->requestVisibility.empty() && !rebuilt[f]->requestVisibility[399] && !rebuilt[f]->requestVisibility[39],
+            "edited far instances were not outside the view");
+    Require(rebuilt[3]->states[399].transform==moved && rebuilt[5]->states[39].tint[0]==0.5f && rebuilt[6]->states[0].transform==nearMoved,
+        "resident test edits did not apply");
     std::size_t transitions=0;
     for (std::size_t f=1;f<path.size();++f) for (std::size_t i=0;i<count;++i)
         transitions+=rebuilt[f]->poses[i].outsideView!=rebuilt[f-1]->poses[i].outsideView;
@@ -389,6 +488,99 @@ void ResidentFrames() {
             checkChanges("recycled two behind",f,before.get(),*frame,true);
             older=before;
         }
+    }
+    // 两段准备：本帧在另一线程收尾，同时以尚未收尾的本帧为基求下一帧（播放器的做法）；
+    // 收尾完成后须与整帧重建逐位相同。旧帧放手后回到回收处，沿用路径照常走到。重叠执行的错常是偶发的，多跑几轮。
+    // 前 6 轮不加让步，后 6 轮在交接点随机让步（每轮换种子）。
+    for (int pass=0;pass<12;++pass) {
+        std::optional<JitterScope> scope; if (pass>=6) scope.emplace(static_cast<std::uint32_t>(1000+pass));
+        auto service=create(true,4);
+        AnimationStagedFrame current=Good(service->PrepareStaged(nullptr,command(0)));
+        for (std::size_t f=0;f<path.size();++f) {
+            Require(current.frame->finalizePending && bool(current.finalize),"staged frame was finalized before the caller ran it");
+            std::optional<Result<AnimationStagedFrame>> next;
+            Status finalized;
+            std::thread finisher([&] { finalized=current.finalize(); });
+            if (f+1<path.size()) next.emplace(service->PrepareStaged(current.frame.get(),command(f+1)));
+            finisher.join();
+            Require(finalized.Succeeded(),"staged finalize failed");
+            check("staged",f,*rebuilt[f],*current.frame);
+            if (!next) break;
+            AnimationStagedFrame following=Good(*next);
+            checkChanges("staged",f+1,current.frame.get(),*following.frame,true);
+            current=std::move(following);
+        }
+        Require(!current.finalize().Succeeded(),"staged finalize ran twice");
+    }
+    {
+        // 未收尾即丢弃的帧回到回收处：不作沿用来源，下一帧整帧重写，仍与重建逐位相同。
+        JitterScope scope(77);
+        auto service=create(true,4);
+        AnimationStagedFrame zero=Good(service->PrepareStaged(nullptr,command(0)));
+        Require(zero.finalize().Succeeded(),"staged finalize failed");
+        check("discarded",0,*rebuilt[0],*zero.frame);
+        AnimationStagedFrame one=Good(service->PrepareStaged(zero.frame.get(),command(1)));
+        zero={}; // 第 0 帧（已收尾）回到回收处
+        AnimationStagedFrame two=Good(service->PrepareStaged(one.frame.get(),command(2)));
+        Require(two.finalize().Succeeded(),"staged finalize failed");
+        check("discarded",2,*rebuilt[2],*two.frame);
+        Require(!two.frame->timings.recycledUnfinalized,"finalized frame counted as unfinalized");
+        one={}; // 第 1 帧没有收尾就丢弃
+        AnimationStagedFrame three=Good(service->PrepareStaged(two.frame.get(),command(3)));
+        Require(three.frame->timings.recycledUnfinalized==1 && !three.frame->timings.keptInstances,
+            "unfinalized frame was recycled as a resident source");
+        Require(three.finalize().Succeeded(),"staged finalize failed");
+        check("discarded",3,*rebuilt[3],*three.frame);
+    }
+    // 上一帧在被读时被另一线程收尾、拒收并放手，读完即回到回收处；以它为基算出的下一帧随之作废，再从最后接受的帧重算
+    // （播放器拒收后的做法）。参照服务按同样调用顺序单线程整帧求出（姿势版本号随调用顺序递增），逐帧逐位相同。
+    // 回收处按 f%3 依次留下：比基准帧新的被拒帧、未收尾的作废帧、拖到重算之后才放手的被拒帧（死分支，下一轮取用）；
+    // 都不得错当沿用来源。前 3 轮不加让步，后 3 轮在交接点随机让步。
+    for (int pass=0;pass<6;++pass) {
+        std::optional<JitterScope> scope; if (pass>=3) scope.emplace(static_cast<std::uint32_t>(3000+pass));
+        auto reference=create(false,1);
+        auto service=create(true,4);
+        std::shared_ptr<const AnimationFrame> expected=Good(reference->Prepare(nullptr,command(0)));
+        AnimationStagedFrame accepted=Good(service->PrepareStaged(nullptr,command(0)));
+        Require(accepted.finalize().Succeeded(),"staged finalize failed");
+        check("rejected",0,*expected,*accepted.frame);
+        std::uint64_t unfinalized=0;
+        for (std::size_t f=1;f<path.size();++f) {
+            const auto mode=f%3; const bool chain=f+1<path.size();
+            const auto rejectedExpected=Good(reference->Prepare(expected.get(),command(f)));
+            std::shared_ptr<const AnimationFrame> chainedExpected;
+            if (chain) chainedExpected=Good(reference->Prepare(rejectedExpected.get(),command(f+1)));
+            const auto redoExpected=Good(reference->Prepare(expected.get(),command(f)));
+            AnimationStagedFrame rejected=Good(service->PrepareStaged(accepted.frame.get(),command(f)));
+            std::shared_ptr<const AnimationFrame> reading=rejected.frame; // 读的一方自己持有
+            Status finalized; std::string rejectedDifference;
+            std::thread finisher([&,owned=std::move(rejected)]() mutable {
+                finalized=owned.finalize();
+                if (finalized.Succeeded()) rejectedDifference=difference(*rejectedExpected,*owned.frame);
+                owned={}; // 拒收：收尾的一方放手
+            });
+            std::optional<Result<AnimationStagedFrame>> next;
+            if (chain) next.emplace(service->PrepareStaged(reading.get(),command(f+1)));
+            if (mode==1) next.reset(); // 作废帧未收尾即丢弃，先占回收处
+            if (mode!=2) reading.reset(); // 读完放手，与收尾一方的放手竞争最后一次释放
+            finisher.join();
+            Require(finalized.Succeeded(),"rejected finalize failed");
+            if (!rejectedDifference.empty())
+                throw std::runtime_error("rejected frame "+std::to_string(f)+" differs from a single-threaded full rebuild: "+rejectedDifference);
+            if (next) {
+                AnimationStagedFrame chained=Good(*next); next.reset();
+                Require(chained.finalize().Succeeded(),"chained finalize failed");
+                check("rejected chained",f+1,*chainedExpected,*chained.frame);
+            }
+            AnimationStagedFrame redo=Good(service->PrepareStaged(accepted.frame.get(),command(f)));
+            unfinalized+=redo.frame->timings.recycledUnfinalized;
+            Require(redo.finalize().Succeeded(),"redo finalize failed");
+            check("rejected redo",f,*redoExpected,*redo.frame);
+            checkChanges("rejected redo",f,accepted.frame.get(),*redo.frame,true);
+            reading.reset(); // 死分支的被拒帧最后放手
+            accepted=std::move(redo); expected=redoExpected;
+        }
+        Require(unfinalized>0,"no unfinalized chained frame reached the recycle slot");
     }
     // 静止镜头的帧里多数实例不在清单上；全部列出就失去意义。
     Require(unlistedTotal>listedTotal,"change lists listed almost every instance");
@@ -1208,7 +1400,7 @@ void Submission() {
 }
 int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
-    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); ParallelPoses(2600); ParallelPoses(2600,true); ResidentFrames(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
+    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); ParallelPoses(2600); ParallelPoses(2600,true); WorkerSharing(false); WorkerSharing(true); ResidentFrames(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
     else if(which=="submission") Submission();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();

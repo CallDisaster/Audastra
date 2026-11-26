@@ -223,11 +223,12 @@ bool PrepareOnePickBounds(const AnimatedModelScene& scene, AnimationFrame& frame
 }
 } // namespace
 
-Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFrame& frame) {
+Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFrame& frame, std::span<const std::uint8_t> kept, bool background) {
     const auto fail=[] { return AnimationFailure("ANIMATION_PICK_MAPPING","点选来源、实际网格或 owned 帧片段不一致。"); };
     if (scene.pickModels.size()!=scene.models.size() || scene.pickMeshGroups.size()!=scene.meshes.size() ||
         scene.geometry.meshGeosets.size()!=scene.meshes.size() || frame.poses.size()!=frame.instances.size()) return fail();
-    frame.pickBounds.assign(frame.poses.size(),{});
+    const bool reuse=!kept.empty() && kept.size()==frame.poses.size() && frame.pickBounds.size()==frame.poses.size();
+    if (!reuse) frame.pickBounds.assign(frame.poses.size(),{});
     // 每个实例只写自己的包围盒，按固定分段并行；任一段映射不一致即整帧失败，结果与线程数无关。
     constexpr std::size_t chunk=128; // 可见实例常按模型扎堆，小段才能分匀。
     const auto count=frame.poses.size();
@@ -236,10 +237,12 @@ Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFram
         const auto end=std::min(count,(std::size_t(task)+1)*chunk);
         for (std::size_t i=std::size_t(task)*chunk;i<end;++i) {
             if (failed.load(std::memory_order_relaxed)) return;
+            if (reuse) { if (kept[i]==1) continue; frame.pickBounds[i]={}; }
             if (!PrepareOnePickBounds(scene,frame,i)) { failed.store(true,std::memory_order_relaxed); return; }
         }
     };
-    RunAnimationTasks(static_cast<std::uint32_t>((count+chunk-1)/chunk),prepare);
+    const auto tasks=static_cast<std::uint32_t>((count+chunk-1)/chunk);
+    if (background) RunAnimationBackgroundTasks(tasks,prepare); else RunAnimationTasks(tasks,prepare);
     return failed.load() ? fail() : Status::Ok();
 }
 

@@ -219,6 +219,12 @@ void WorldViewport::PublishPrepareLease() {
         : reinterpret_cast<Render::War3SubmitPreparedEditorVisibilityV1>(library_.resolve(Render::kSubmitPreparedEditorVisibilityExportV1));
     const auto prepareChanges = injected_ ? nullptr
         : reinterpret_cast<Render::War3PrepareEditorUpdateChangesV1>(library_.resolve(Render::kPrepareEditorUpdateChangesExportV1));
+    const auto setDeferred = injected_ ? nullptr
+        : reinterpret_cast<Render::War3SetCapturePixelsDeferredV1>(library_.resolve(Render::kSetCapturePixelsDeferredExportV1));
+    const auto collectDeferred = injected_ ? nullptr
+        : reinterpret_cast<Render::War3CollectDeferredCapturePixelsV1>(library_.resolve(Render::kCollectDeferredCapturePixelsExportV1));
+    setCaptureDeferred_ = setDeferred && collectDeferred ? setDeferred : nullptr;
+    collectDeferredCapture_ = setDeferred && collectDeferred ? collectDeferred : nullptr;
     preparedSubmit_ = prepare && submit ? submit : nullptr;
     if (!preparedSubmit_) return;
     std::unique_lock lock(prepareLease_->mutex);
@@ -232,7 +238,7 @@ void WorldViewport::DestroyRenderer() {
         std::unique_lock lock(prepareLease_->mutex);
         prepareLease_->handle = nullptr; prepareLease_->prepare = nullptr; prepareLease_->prepareChanges = nullptr;
     }
-    preparedSubmit_ = nullptr;
+    preparedSubmit_ = nullptr; setCaptureDeferred_ = nullptr; collectDeferredCapture_ = nullptr;
     ++measurementRendererEpoch_;
     animationPickHistory_.clear();
     bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
@@ -659,21 +665,17 @@ void WorldViewport::RetainAnimationPickFrame(AnimationFramePreparation* prepared
     constexpr std::size_t maximumFrames = 3;
     const auto bytes = prepared && prepared->retainedFrame == &source ? prepared->retainedBytes
         : Render::AnimationFrameRetainedBytes(source);
-    const auto retire = [this] {
-        auto retired = std::move(animationPickHistory_.front().frame);
-        animationPickHistory_.pop_front();
-        ReleaseAnimationFrameInBackground(std::move(retired));
-    };
-    if (bytes > budget) { while (!animationPickHistory_.empty()) retire(); return; }
+    if (bytes > budget) { while (!animationPickHistory_.empty()) RetireOldestAnimationPick(); return; }
     std::uint64_t retained = 0;
     for (const auto& owner : animationPickHistory_) retained += owner.ownedBytes;
     while (!animationPickHistory_.empty() && (animationPickHistory_.size() >= maximumFrames || retained > budget - bytes)) {
-        retained -= animationPickHistory_.front().ownedBytes; retire();
+        retained -= animationPickHistory_.front().ownedBytes; RetireOldestAnimationPick();
     }
     const AnimationCompletionIdentity identity{*editorPresentationTarget_, editorPresentationRevision_, measurementRendererEpoch_,
         pickPolicyRevision_, source.sceneVersion, source.contentVersion, source.documentRevision, source.instances.size(),
         static_cast<std::uint32_t>(source.particleVertices.size()), static_cast<std::uint32_t>(source.particleDraws.size())};
     animationPickHistory_.push_back({identity, animationFrame_, static_cast<std::size_t>(bytes)});
+    PruneAnimationPickHistory();
 } catch (...) {
     // 点选历史是有界旁路；分配失败时拒绝点选，不能中止仍有效的播放/绘制。
     animationPickHistory_.clear();

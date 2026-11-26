@@ -43,6 +43,9 @@ struct CapturedFrameRgba {
     std::vector<War3RenderModelLayerStatusV2> modelLayers;
     std::vector<std::shared_ptr<const AnimationFrame>> modelLayerFrames; // 与 modelLayers 同序，绑定实例/姿势身份。
     std::optional<TerrainGridCaptureReceipt> terrainGrid;
+    // 推迟取像素（见 WorldViewport::CollectDeferredCapturePixels）：非零时 rgba 尚未写入，取回后清零；
+    // 渲染器代次不同（期间重建过渲染器）的票据不能取。
+    std::uint64_t deferredPixelsTicket = 0, deferredRendererEpoch = 0;
 };
 
 inline constexpr std::size_t kDefaultFrameCaptureBytes = 16 * 1024 * 1024;

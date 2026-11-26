@@ -132,7 +132,7 @@ Result<std::shared_ptr<const WorldModelBugReadOnlySource>> WorldModelBugReadOnly
         "WORLD_BUG_PLACEHOLDER_READONLY_SOURCE_FAILED", "无法拥有完整只读占位来源，未生成不完整快照。");
 }
 Result<WorldModelBugPlaceholderFrameSnapshot> CaptureWorldModelBugPlaceholderFrame(
-    const std::shared_ptr<const Render::AnimatedModelScene>& scene, const Render::AnimationFrame& frame) try {
+    const std::shared_ptr<const Render::AnimatedModelScene>& scene, const Render::AnimationFrame& frame, bool fullScan) try {
     using Output = Result<WorldModelBugPlaceholderFrameSnapshot>;
     const auto fail = [](const char* message) { return Output::Failure("World.BugPlaceholder",
         "WORLD_BUG_PLACEHOLDER_SOURCE_STALE", message); };
@@ -173,7 +173,11 @@ Result<WorldModelBugPlaceholderFrameSnapshot> CaptureWorldModelBugPlaceholderFra
     for (const auto& missing : scene->unavailableInstances)
         if (!append(missing.requestIndex, missing.identity, missing.code, "原模型资产未被场景接收；保留原始拒绝代码。"))
             return Output::Failure("World.BugPlaceholder", "WORLD_BUG_PLACEHOLDER_SNAPSHOT_BUDGET", "占位来源观察超出独立CPU快照预算。");
-    for (std::size_t index = 0; index < frame.poses.size(); ++index) {
+    const bool listed = !fullScan && frame.viewInstancesComplete && frame.viewInstances.size() <= frame.poses.size();
+    const auto scanned = listed ? frame.viewInstances.size() : frame.poses.size();
+    for (std::size_t k = 0; k < scanned; ++k) {
+        const std::size_t index = listed ? frame.viewInstances[k] : k;
+        if (index >= frame.poses.size()) return fail("视野内实例清单越界。");
         const auto& pose = frame.poses[index];
         if (!pose.hidden || pose.outsideView || pose.staticForBudget || !pose.rejectionCode.empty()
             || pose.rejection.code == War3RenderCore::Code::Ok) continue;

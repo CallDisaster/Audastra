@@ -7,6 +7,7 @@
 #include "../SkinPoseChanges.h"
 #include <memory>
 #include <mutex>
+#include <span>
 #include <unordered_map>
 
 namespace War3Map::Render {
@@ -150,12 +151,21 @@ public:
     // 取一份可写的新帧（有备用就复用其容量），交出时绑定回收删除器。
     // residentContentVersion 非空且备用帧是逐实例固定布局时，五个姿势数组（矩阵组、透明度、颜色、层透明度、材质状态）
     // 连内容一起留下并写出其内容版本，调用方按变化记录补齐；否则写 0，数组为空。
+    // recycledUnfinalized 非空时写出备用帧是否为未收尾即被丢弃的帧（这种帧不留姿势数组）。
     [[nodiscard]] std::shared_ptr<AnimationFrame> Take(AnimationParticleHost* particles,
-        std::uint64_t* residentContentVersion = nullptr);
+        std::uint64_t* residentContentVersion = nullptr, bool* recycledUnfinalized = nullptr);
+    [[nodiscard]] AnimationFrameCounts Count() noexcept;
+    [[nodiscard]] bool HasRoom() noexcept; // 放回一帧时有备用位可放（不必析构）
 private:
     void Return(AnimationFrame* frame) noexcept;
     std::mutex mutex_;
-    std::unique_ptr<AnimationFrame> spare_;
+    // 回收处至多留四帧（可按测量对照降到 1–3），先放回的先取用（只有一帧时与只留一帧取到的相同）。
+    // 界面接收偶尔晚于下一帧开算、或编辑时接续链排空再填满时，备用帧免得新建整帧（首次写入缺页，约多 10 ms）。
+    // 回收处只收放回的帧、空了才新建，帧对象总数不超过同时在用的峰值。
+    static constexpr std::size_t kMaxSpares = 4;
+    std::array<std::unique_ptr<AnimationFrame>, kMaxSpares> spares_;
+    std::size_t spareCount_ = 0; // spares_ 前 spareCount_ 个有效，[0] 最先放回
+    std::size_t live_ = 0; // 已交出、尚未放回的帧（mutex_ 保护）
 };
 struct ModelAnimationService::State {
     std::shared_ptr<AnimationFramePool> framePool = std::make_shared<AnimationFramePool>();
@@ -187,6 +197,15 @@ struct ModelAnimationService::State {
     std::vector<std::vector<std::uint32_t>> modelSlots;
     std::uint32_t sharedGroupCount = 0, sharedAlphaCount = 0, sharedLayerAlphaCount = 0;
     std::uint64_t staticPoseVersion = 0;
+    // 不共享片段时的逐实例固定布局：组矩阵/透明度/层透明度偏移只由场景决定，按场景版本与实例表身份缓存；
+    // 碰撞偏移随视野每帧重写，只遍历带点选来源的实例（fixedPickInstances 升序，fixedPickShapes 为其碰撞 shape 数）。
+    struct FixedLayoutSlot { std::uint32_t group = 0, alpha = 0, layer = 0, collision = 0; };
+    std::vector<FixedLayoutSlot> fixedLayout;
+    std::vector<std::uint32_t> fixedPickInstances, fixedPickShapes;
+    std::vector<std::uint32_t> fixedModels; // 与 fixedLayout 平行：实例的模型序号（紧凑副本，打包时不读整条实例记录）
+    std::uint64_t fixedLayoutScene = 0;
+    const void* fixedLayoutTable = nullptr;
+    std::uint32_t fixedGroups = 0, fixedAlphas = 0, fixedLayers = 0;
     std::uint64_t epoch = 0;
     std::uint32_t batchWidth = 64;
     bool retainUnsupportedStatic = false;
@@ -217,8 +236,11 @@ inline constexpr std::uint64_t kAnimationPoseHelperBytes = 128ull * 1024 * 1024;
 [[nodiscard]] Result<AnimationInstanceState> MakeAnimationInitialState(const AnimationInstanceSpec& input,
     const AnimationAsset& asset, bool retainUnsupported, std::vector<Diagnostic>& warnings);
 // workers 同 AnimationLimits::poseWorkers：1 时逐个推进（对照测试用），否则分段并行，结果相同。
+// source 非空时 states 须与它等长：各分段先从 source 复制本段再套编辑、推进，与先整份复制再推进逐位相同；
+// 调用方须在整个调用期间保持 source 存活且不被改写。edited 非空时写出本次编辑过的请求序号（升序、不重复）。
 [[nodiscard]] Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states,
-    const AnimatedModelScene& scene, const AnimationAdvance& advance, std::uint32_t workers = 0);
+    const AnimatedModelScene& scene, const AnimationAdvance& advance, std::uint32_t workers = 0,
+    std::span<const AnimationInstanceState> source = {}, std::vector<std::uint32_t>* edited = nullptr);
 // boundedPreview：交互预览把有限但超出核心有界范围的局部相机收回到范围内（方向不变）；
 // 严格回放保持原值，由核心如实拒绝。
 [[nodiscard]] Result<War3RenderCore::LocalCamera> ToAnimationLocalCamera(
@@ -235,5 +257,8 @@ inline constexpr std::uint64_t kAnimationPoseHelperBytes = 128ull * 1024 * 1024;
     std::span<const std::uint32_t> evaluated = {}, std::span<const War3RenderCore::UvTransform> uvTransforms = {});
 [[nodiscard]] bool AnimationHasVisibleLayers(const AnimatedModelScene& scene, const AnimationFrame& frame,
     const AnimationPoseLink& pose, std::uint32_t model) noexcept;
-[[nodiscard]] Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFrame& frame);
+// kept[i]==1 的实例沿用帧里已有的包围盒（调用方保证与重算逐位相同），其余清空后重算。
+// background：作为后台任务只用空闲线程（两段准备的收尾与下一帧求值同时进行时）。
+[[nodiscard]] Status PrepareAnimationPickBounds(const AnimatedModelScene& scene, AnimationFrame& frame,
+    std::span<const std::uint8_t> kept = {}, bool background = false);
 } // namespace War3Map::Render

@@ -1,6 +1,7 @@
 #include "War3MapCore/RenderPluginV2.h"
 #include "War3MapCore/RenderPluginFrameMetrics.h"
 #include "War3MapCore/Render/AnimationRenderer.h"
+#include "War3MapCore/Render/RenderDeferredCapturePlugin.h"
 #include "War3MapCore/RenderPluginEditorVisibility.h"
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/RenderPluginTerrainBlight.h"
@@ -367,6 +368,74 @@ void TestAtomicCapture(const War3RenderPluginApiV2* api, const War3RenderCreateI
         "new frames mutated an already returned capture snapshot");
     // 保留旧调用路径；两种接口共享递增 ticket，而旧结构不要求新增字段。
     Require(Capture(renderer, 160, 120, 9002) == resized.pixels, "legacy capture no longer preserves pixels");
+}
+
+// 截图推迟取像素（见 RenderDeferredCapturePlugin.h）：回执身份与同步截图相同，调用时不写像素；像素随后凭票据取回，
+// 与同步截图逐字节相同；新的推迟截图使旧票据失效，取过的票据不能再取；关闭后恢复同步。
+void TestDeferredCapture(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info) {
+    const auto plugin = GetModuleHandleW(L"war3-render-d3d11.dll");
+    const auto setDeferred = reinterpret_cast<War3Map::Render::War3SetCapturePixelsDeferredV1>(
+        GetProcAddress(plugin, War3Map::Render::kSetCapturePixelsDeferredExportV1));
+    const auto collect = reinterpret_cast<War3Map::Render::War3CollectDeferredCapturePixelsV1>(
+        GetProcAddress(plugin, War3Map::Render::kCollectDeferredCapturePixelsExportV1));
+    Require(setDeferred && collect, "deferred capture exports missing");
+    RendererOwner renderer{api, api->createRenderer(&info)};
+    Require(renderer.handle != nullptr, "deferred capture renderer unavailable");
+    const War3RenderVertexV2 vertices[]{{-1000,-1000,0,1,0,0},{1000,-1000,0,0,1,0},{0,1000,700,0,0,1}};
+    const std::uint32_t indices[]{0,1,2};
+    War3RenderMeshV2 mesh{sizeof(mesh),3,3,9101,vertices,indices};
+    War3RenderCameraV2 camera{sizeof(camera),0,0,0,3500,-1.1f,0.8f};
+    Require(api->submitMesh(renderer.handle, &mesh) == 0 && api->setCamera(renderer.handle, &camera) == 0,
+        "deferred capture inputs rejected");
+    const auto sync = CaptureFrame(renderer, 320, 240, 9101, camera);
+    Require(Colors(sync.pixels) > 1500, "deferred capture reference has no rendered pixels");
+    const auto deferredCapture = [&](std::vector<std::uint8_t>& pixels) {
+        War3RenderCapturedFrameV2 receipt{sizeof(receipt)};
+        Require(setDeferred(renderer.handle, 1) == 0, "deferred capture could not be enabled");
+        const auto result = api->captureFrameRgba(renderer.handle, pixels.data(), pixels.size(), &receipt);
+        Require(setDeferred(renderer.handle, 0) == 0, "deferred capture could not be disabled");
+        Require(result == 0 && receipt.capture.ticket != 0 && receipt.capture.width == 320 && receipt.capture.height == 240
+            && receipt.capture.documentRevision == 9101 && receipt.view.frameCount == receipt.capture.frameCount
+            && std::memcmp(&receipt.camera, &camera, sizeof(camera)) == 0, "deferred capture receipt lost its identity");
+        RequireExactMatrix(receipt.view, camera);
+        Require(std::all_of(pixels.begin(), pixels.end(), [](auto value) { return value == 0x3c; }),
+            "deferred capture wrote caller pixels during the call");
+        return receipt;
+    };
+    const auto collectUntilDone = [&](std::uint64_t ticket, std::vector<std::uint8_t>& pixels) {
+        const auto deadline = GetTickCount64() + 5000;
+        for (;;) {
+            std::uint32_t state = 9;
+            Require(collect(renderer.handle, ticket, pixels.data(), pixels.size(), &state) == 0 && state <= 2,
+                "deferred pixel collection failed");
+            if (state != 0) return state;
+            Require(GetTickCount64() < deadline, "deferred pixels never became ready");
+            Sleep(1);
+        }
+    };
+    std::vector<std::uint8_t> first(320 * 240 * 4, 0x3c), second(320 * 240 * 4, 0x3c);
+    const auto firstReceipt = deferredCapture(first);
+    const auto secondReceipt = deferredCapture(second);
+    Require(secondReceipt.capture.ticket > firstReceipt.capture.ticket, "deferred capture tickets did not advance");
+    Require(collectUntilDone(firstReceipt.capture.ticket, first) == 2
+        && std::all_of(first.begin(), first.end(), [](auto value) { return value == 0x3c; }),
+        "superseded deferred ticket returned pixels");
+    std::vector<std::uint8_t> shortBuffer(320 * 240 * 4 - 1, 0x3c);
+    std::uint32_t state = 9;
+    const auto shortResult = collect(renderer.handle, secondReceipt.capture.ticket, shortBuffer.data(), shortBuffer.size(), &state);
+    Require((shortResult != 0 || state == 0)
+        && std::all_of(shortBuffer.begin(), shortBuffer.end(), [](auto value) { return value == 0x3c; }),
+        "short deferred buffer was written");
+    Require(collectUntilDone(secondReceipt.capture.ticket, second) == 1 && second == sync.pixels,
+        "deferred pixels differ from the synchronous capture of the same frame");
+    Require(collectUntilDone(secondReceipt.capture.ticket, second) == 2, "collected deferred ticket was reusable");
+    std::vector<std::uint8_t> again(320 * 240 * 4, 0x3c);
+    War3RenderCapturedFrameV2 receipt{sizeof(receipt)};
+    Require(api->captureFrameRgba(renderer.handle, again.data(), again.size(), &receipt) == 0 && again == sync.pixels,
+        "capture after disabling deferral was not synchronous");
+    Require(setDeferred(renderer.handle, 2) != 0 && setDeferred(nullptr, 1) != 0
+        && collect(renderer.handle, 0, again.data(), again.size(), &state) != 0,
+        "invalid deferred capture arguments accepted");
 }
 
 void SaveBmp(const std::filesystem::path& path, const std::vector<std::uint8_t>& pixels, LONG width, LONG height) {
@@ -2325,6 +2394,7 @@ int wmain(int argc, wchar_t** argv) {
         TestOldPrefix(api, info);
         TestFrameMetrics(api, info);
         TestAtomicCapture(api, info);
+        TestDeferredCapture(api, info);
         TestSkinnedModels(api, info);
         TestMaterialLayerAlphas(api, info);
         TestMaterialStates(api, info);

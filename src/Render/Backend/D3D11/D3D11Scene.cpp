@@ -771,7 +771,7 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
     return E_INVALIDARG;
 }
 HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint8_t>* capture, const std::atomic<bool>& closing,
-    float (&viewProjection)[16], DrawTimings* timings) {
+    float (&viewProjection)[16], DrawTimings* timings, bool deferCapture) {
     using Clock = std::chrono::steady_clock;
     const auto nanoseconds = [](Clock::duration duration) {
         return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());
@@ -880,24 +880,32 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
         if (FAILED(hr)) return hr;
         context_->CopyResource(staging.Get(), target_.Get());
         context_->Flush();
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        for (;;) {
-            if (closing.load()) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
-            hr = context_->Map(staging.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
-            if (hr != DXGI_ERROR_WAS_STILL_DRAWING) break;
-            if (std::chrono::steady_clock::now() >= deadline) return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
-            Sleep(1);
+        if (deferCapture) {
+            // 推迟读回：不等 GPU，暂存拷贝留到 TryCollectCapture；替换尚未取走的旧拷贝。
+            deferredStaging_ = std::move(staging); deferredWidth_ = width_; deferredHeight_ = height_;
+            deferredDeadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            capture->clear();
+            measured.readbackCpuNs = nanoseconds(Clock::now() - readbackStart);
+        } else {
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            for (;;) {
+                if (closing.load()) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+                hr = context_->Map(staging.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+                if (hr != DXGI_ERROR_WAS_STILL_DRAWING) break;
+                if (std::chrono::steady_clock::now() >= deadline) return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+                Sleep(1);
+            }
+            if (FAILED(hr)) return hr;
+            // 尺寸由 ABI 上限约束；分配失败也必须先 Unmap。
+            try {
+                capture->resize(static_cast<std::size_t>(width_) * height_ * 4);
+                for (UINT row = 0; row < height_; ++row) std::memcpy(capture->data() + static_cast<std::size_t>(row) * width_ * 4,
+                    static_cast<const std::uint8_t*>(mapped.pData) + static_cast<std::size_t>(row) * mapped.RowPitch, static_cast<std::size_t>(width_) * 4);
+            } catch (...) { context_->Unmap(staging.Get(), 0); throw; }
+            context_->Unmap(staging.Get(), 0);
+            measured.readbackCpuNs = nanoseconds(Clock::now() - readbackStart);
         }
-        if (FAILED(hr)) return hr;
-        // 尺寸由 ABI 上限约束；分配失败也必须先 Unmap。
-        try {
-            capture->resize(static_cast<std::size_t>(width_) * height_ * 4);
-            for (UINT row = 0; row < height_; ++row) std::memcpy(capture->data() + static_cast<std::size_t>(row) * width_ * 4,
-                static_cast<const std::uint8_t*>(mapped.pData) + static_cast<std::size_t>(row) * mapped.RowPitch, static_cast<std::size_t>(width_) * 4);
-        } catch (...) { context_->Unmap(staging.Get(), 0); throw; }
-        context_->Unmap(staging.Get(), 0);
-        measured.readbackCpuNs = nanoseconds(Clock::now() - readbackStart);
     }
     const auto presentStart = Clock::now();
     measured.presentResult = swap_ ? swap_->Present(0, 0) : device_->GetDeviceRemovedReason();
@@ -906,6 +914,26 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     measured.completedSteadyNs = nanoseconds(completed.time_since_epoch());
     if (timings) *timings = measured;
     return measured.presentResult;
+}
+HRESULT D3D11Scene::TryCollectCapture(std::vector<std::uint8_t>& output) {
+    if (!deferredStaging_) return E_UNEXPECTED;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    const auto hr = context_->Map(deferredStaging_.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+        if (std::chrono::steady_clock::now() < deferredDeadline_) return S_FALSE;
+        deferredStaging_.Reset(); return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+    }
+    if (FAILED(hr)) { deferredStaging_.Reset(); return hr; }
+    const auto width = deferredWidth_, height = deferredHeight_;
+    HRESULT result = S_OK;
+    try {
+        output.resize(static_cast<std::size_t>(width) * height * 4);
+        for (UINT row = 0; row < height; ++row) std::memcpy(output.data() + static_cast<std::size_t>(row) * width * 4,
+            static_cast<const std::uint8_t*>(mapped.pData) + static_cast<std::size_t>(row) * mapped.RowPitch, static_cast<std::size_t>(width) * 4);
+    } catch (...) { result = E_OUTOFMEMORY; }
+    context_->Unmap(deferredStaging_.Get(), 0);
+    deferredStaging_.Reset();
+    return result;
 }
 void D3D11Scene::PollGpuTimings(std::vector<GpuTiming>& output) {
     // 从最旧的在途查询开始；按提交顺序完成，遇到未完成的即停。

@@ -78,8 +78,9 @@ struct WorldModelBugPlaceholderFrameSnapshot {
     std::size_t stateCount = 0, instanceCount = 0, ownedBytes = 0;
     std::vector<WorldModelBugObservation> observations;
 };
+// 帧给出完整视野内清单时只看清单里的姿势链（视野外的链不产生观察）；fullScan 为 true 时逐条扫描（等价核对用）。
 [[nodiscard]] Result<WorldModelBugPlaceholderFrameSnapshot> CaptureWorldModelBugPlaceholderFrame(
-    const std::shared_ptr<const Render::AnimatedModelScene>& scene, const Render::AnimationFrame& frame);
+    const std::shared_ptr<const Render::AnimatedModelScene>& scene, const Render::AnimationFrame& frame, bool fullScan = false);
 struct WorldModelBugPlaceholderCapturedFacts {
     std::uint64_t frameCount = 0, parentModelEpoch = 0, layersRevision = 0, layerRevision = 0;
     std::uint64_t layerSceneVersion = 0, layerContentVersion = 0;

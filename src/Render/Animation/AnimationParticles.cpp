@@ -4,9 +4,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <iterator>
+#include <new>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -32,6 +35,20 @@ struct Hash {
         for (std::size_t i = 0; i < sizeof(v); ++i) { value ^= bytes[i]; value *= 1099511628211ull; }
     }
 };
+// 粒子几何指纹：FNV-1a 的混合步骤按 8 字节字做（末尾不足 8 字节逐字节）。任一字节不同都会留在结果里
+// （异或后乘奇数是一一映射），只用于判断几何是否变化；每帧十几万顶点时比逐字节快约八倍。
+struct WordHash {
+    std::uint64_t value = 14695981039346656037ull;
+    void Bytes(const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (; size >= 8; bytes += 8, size -= 8) {
+            std::uint64_t word; std::memcpy(&word, bytes, 8); value ^= word; value *= 1099511628211ull;
+        }
+        for (; size; ++bytes, --size) { value ^= *bytes; value *= 1099511628211ull; }
+    }
+    template<class T> void Add(const T& v) { Bytes(&v, sizeof(v)); }
+};
+static_assert(sizeof(War3RenderParticleVertexV2) == 9 * sizeof(float), "粒子输出顶点须是紧密排列的 9 个 float");
 std::uint64_t StateHash(const Particles::State& s) {
     Hash h; h.Add(s.tickMs); h.Add(s.timeMs); h.Add(s.instance); h.Add(s.generation); h.Add(s.sequenceIndex);
     h.Add(s.globalStartMs.value_or(0));
@@ -60,11 +77,14 @@ struct ParticleWork {
     std::exception_ptr exception;
     std::uint64_t sampledElapsed = 0, sampledGlobal = 0, simulationNs = 0, geometryNs = 0;
     Particles::Counts counts;
-    std::uint64_t stateHash = 0, geometryHash = 0;
+    std::uint64_t stateHash = 0;
     std::uint32_t budget = 0, vertexCount = 0;
+    std::size_t vertexOffset = 0; // 合并时排定的帧内首顶点（交互预览合并后并行写出）
+    std::size_t linkIndex = 0; // 合并后本实例回执在 frame.particleLinks 中的位置（并行写出后补几何哈希）
+    std::uint64_t stateBytesDelta = 0; // 提交新状态时检查点存储字节的增量（模 2^64，可为负）
     std::vector<Diagnostic> geometryDiagnostics;
     std::vector<Particles::Draw> draws;
-    std::vector<War3RenderParticleVertexV2> vertices;
+    std::vector<Particles::Vertex> geometry; // 生成的几何（内部格式），写出到帧缓冲后释放
 };
 // 把数组容量调成恰好 capacity（不小于元素数）：与“复制得到恰好元素数、再 reserve”同一结果。
 template<class T> void ExactCapacity(std::vector<T>& values, std::size_t capacity) {
@@ -160,6 +180,11 @@ void CaptureAnimationParticleAnchors(AnimationParticleHost& host, std::uint32_t 
 Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedModelScene& scene,
     std::span<const AnimationAsset> assets, std::span<const std::uint32_t> requestAssets,
     AnimationFrame& frame, const AnimationFrame* previous) {
+    const auto prologueStarted=std::chrono::steady_clock::now();
+    const auto wallSince=[](std::chrono::steady_clock::time_point start) {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-start).count());
+    };
     if (previous && (!previous->particleCheckpoint || previous->particleCheckpoint->sceneVersion != scene.sceneVersion ||
         previous->particleCheckpoint->contentVersion != previous->contentVersion ||
         previous->particleCheckpoint->instances.size() != host.bindings.size() ||
@@ -179,7 +204,17 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             && b<host.anchorOffsets.size();
     };
     struct CloseAnchors { AnimationParticleHost& host; ~CloseAnchors() { ++host.anchorSerial; } } closeAnchors{host};
-    for (std::uint32_t r=0;r<scene.particleCapabilities.size();++r) {
+    if (host.capabilitySceneVersion!=scene.sceneVersion || host.capabilityTable!=scene.particleCapabilities.data() ||
+        host.capabilityCount!=scene.particleCapabilities.size()) {
+        host.capabilityRequests.clear();
+        for (std::uint32_t r=0;r<scene.particleCapabilities.size();++r) {
+            const auto& c=scene.particleCapabilities[r];
+            if (c.particle2Count || c.ribbonCount || c.premCount) host.capabilityRequests.push_back(r);
+        }
+        host.capabilitySceneVersion=scene.sceneVersion; host.capabilityTable=scene.particleCapabilities.data();
+        host.capabilityCount=scene.particleCapabilities.size();
+    }
+    for (const auto r:host.capabilityRequests) {
         const auto& capability=scene.particleCapabilities[r];
         if (outside(r) && (capability.particle2Count || capability.ribbonCount || capability.premCount))
             ++frame.offscreenParticleInstances;
@@ -202,12 +237,16 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
     frame.particleLinks.reserve(host.bindings.size());
     std::vector<std::uint32_t> rendered;
     if (!host.bindings.empty()) {
+        // 姿势链的请求序号在打包时取自场景的 instanceRequests，两者逐项相同；读连续数组，不逐条读姿势链。
+        const auto& requests=scene.geometry.instanceRequests;
+        if (requests.size()!=frame.poses.size())
+            return AnimationFailure("ANIMATION_PARTICLE_MAPPING", "渲染实例与请求映射数量不一致。");
         rendered.assign(scene.specs.size(),UINT32_MAX);
-        for (std::uint32_t i=0;i<frame.poses.size();++i)
-            if (frame.poses[i].requestIndex!=kBakedInstance) rendered[frame.poses[i].requestIndex]=i;
+        for (std::uint32_t i=0;i<requests.size();++i)
+            if (requests[i]!=kBakedInstance) rendered[requests[i]]=i;
     }
     std::uint64_t anchorSamples = 0, nodeVisits = 0;
-    for (std::uint32_t r = 0; r < scene.particleCapabilities.size(); ++r) {
+    for (const auto r : host.capabilityRequests) {
         const auto& c = scene.particleCapabilities[r];
         if (c.available || (!c.particle2Count && !c.ribbonCount && c.premCount == c.premPreparedCount)) continue;
         if (outside(r)) {
@@ -237,6 +276,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         frame.particleLinks.push_back(std::move(link));
     }
     // 稳定距离桶内按实例身份排序，微小镜头移动不改变同桶预算胜者。
+    const auto admissionStarted=std::chrono::steady_clock::now();
     std::vector<std::size_t> order,outsideOrder;
     order.reserve(host.bindings.size());
     for (std::size_t b=0;b<host.bindings.size();++b) {
@@ -260,46 +300,66 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             return x.generation<y.generation;
         });
     }
-    std::vector<AnimationParticleAdmission> admissions;
+    // 交互预览的整帧准入：各实例的配额与成本只取决于本实例（资产、旧检查点、主姿势状态），先按固定分段并行估算；
+    // 再按距离序串行累加预算，判定顺序与逐个计算相同。计划存储跨帧复用（配额数组只清空不释放）。
+    auto& admissions=host.admissions;
     if (world) {
-        admissions.resize(host.bindings.size());
+        if (admissions.size()!=host.bindings.size()) admissions.resize(host.bindings.size());
         std::uint64_t reservedAnchors=0,reservedNodes=0,reservedVertices=0,reservedDraws=0,reservedStates=0;
         std::uint64_t reservedParticles=0,reservedSegments=0;
         std::uint64_t admittedInstances=0;
         const auto oldGeometry=previous ? AnimationParticleOutputBytes(*previous) : 0;
+        {
+            constexpr std::size_t chunk=64;
+            std::atomic<bool> failed{false};
+            const std::function<void(std::uint32_t)> estimate=[&](std::uint32_t task) {
+                try {
+                    const auto last=std::min(order.size(),(std::size_t(task)+1)*chunk);
+                    for (auto p=std::size_t(task)*chunk;p<last;++p) {
+                        const auto b=order[p]; auto& plan=admissions[b];
+                        plan.admitted=false; plan.code.clear(); plan.quotas.clear();
+                        plan.anchors=plan.nodes=plan.stateBytes=plan.vertices=plan.draws=plan.particles=plan.segments=0;
+                        const auto& binding=host.bindings[b];const auto r=binding.requestIndex;
+                        const auto* model=rendered[r]==UINT32_MAX ? nullptr : &frame.poses[rendered[r]];
+                        plan.eligible=!outside(r) && !(model && (model->hidden || model->staticForBudget));
+                        if (!plan.eligible) continue;
+                        const auto& asset=assets[binding.assetIndex];
+                        // 固定时间成本与显示帧间隔无关；慢帧也不改变同一可见集合的准入胜者。
+                        // 固定步在前后两帧节点之间插值；本帧主姿势已给出节点时不再单独求骨架，否则只求当前一次。
+                        plan.anchors=anchorsReused(b) ? 0 : 1;
+                        // 节点安全上限按每个模拟实例的整副骨骼计，节点取自主姿势时也计入，
+                        // 一帧模拟的骨骼规模始终受同一上限约束。
+                        plan.nodes=asset.compiled.NodeCount();
+                        const auto* old=checkpoint->instances[b].get();
+                        plan.stateBytes=sizeof(AnimationParticleState)+asset.particles->emitters.size()*sizeof(Particles::EmitterState)
+                            +asset.emitterNodes.size()*sizeof(Particles::Anchor);
+                        for (std::size_t e=0;e<asset.particles->emitters.size();++e) {
+                            const auto& emitter=asset.particles->emitters[e];
+                            const auto quota=old ? old->state.emitters[e].quota : ExpectedQuota(emitter,host.limits.maxPerEmitter);
+                            plan.quotas.push_back(quota);
+                            const bool particle=emitter.kind==Particles::Kind::Particle2;
+                            if (particle) plan.particles+=quota;else plan.segments+=quota;
+                            plan.stateBytes+=std::uint64_t(quota)*(particle ? sizeof(Particles::Particle) : sizeof(Particles::Segment));
+                            plan.vertices+=std::uint64_t(quota)*(particle && emitter.headOrTail==2 ? 12u : 6u);
+                        }
+                        plan.draws=asset.particles->emitters.size();
+                    }
+                } catch (...) { failed.store(true,std::memory_order_relaxed); }
+            };
+            RunAnimationTasksWith(host.workers,static_cast<std::uint32_t>((order.size()+chunk-1)/chunk),estimate);
+            if (failed.load()) throw std::bad_alloc();
+        }
         for (const auto b:order) {
-            const auto& binding=host.bindings[b];const auto r=binding.requestIndex;
-            if (outside(r)) continue;
-            const auto* model=rendered[r]==UINT32_MAX ? nullptr : &frame.poses[rendered[r]];
-            if (model && (model->hidden || model->staticForBudget)) continue;
-            const auto& asset=assets[binding.assetIndex];auto& plan=admissions[b];
+            auto& plan=admissions[b];
+            if (!plan.eligible) continue;
             if (preview && admittedInstances>=preview->maxInstances) {
                 plan.code="ANIMATION_PARTICLE_PREVIEW_TIME_BUDGET";continue;
             }
-            // 固定时间成本与显示帧间隔无关；慢帧也不改变同一可见集合的准入胜者。
-            // 固定步在前后两帧节点之间插值；本帧主姿势已给出节点时不再单独求骨架，否则只求当前一次。
-            plan.anchors=anchorsReused(b) ? 0 : 1;
-            // 节点安全上限按每个模拟实例的整副骨骼计，节点取自主姿势时也计入，
-            // 一帧模拟的骨骼规模始终受同一上限约束。
-            plan.nodes=asset.compiled.NodeCount();
             if (plan.anchors>maximumAnchors-reservedAnchors ||
                 plan.nodes>host.limits.maxAnchorNodeVisits-reservedNodes) {
                 plan.code="ANIMATION_PARTICLE_ANCHOR_BUDGET";continue;
             }
-            const auto* old=checkpoint->instances[b].get();
-            std::uint64_t particles=0,segments=0;
-            plan.stateBytes=sizeof(AnimationParticleState)+asset.particles->emitters.size()*sizeof(Particles::EmitterState)
-                +asset.emitterNodes.size()*sizeof(Particles::Anchor);
-            for (std::size_t e=0;e<asset.particles->emitters.size();++e) {
-                const auto& emitter=asset.particles->emitters[e];
-                const auto quota=old ? old->state.emitters[e].quota : ExpectedQuota(emitter,host.limits.maxPerEmitter);
-                plan.quotas.push_back(quota);
-                const bool particle=emitter.kind==Particles::Kind::Particle2;
-                if (particle) particles+=quota;else segments+=quota;
-                plan.stateBytes+=std::uint64_t(quota)*(particle ? sizeof(Particles::Particle) : sizeof(Particles::Segment));
-                plan.vertices+=std::uint64_t(quota)*(particle && emitter.headOrTail==2 ? 12u : 6u);
-            }
-            plan.draws=asset.particles->emitters.size();
+            const auto particles=plan.particles, segments=plan.segments;
             if (particles>host.limits.maxParticles-reservedParticles || segments>host.limits.maxRibbonSegments-reservedSegments ||
                 plan.vertices>host.limits.maxVertices-reservedVertices || plan.draws>host.limits.maxDraws-reservedDraws) {
                 plan.code="ANIMATION_PARTICLE_INSTANCE_BUDGET";continue;
@@ -318,11 +378,13 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             reservedParticles+=particles;reservedSegments+=segments;
             reservedVertices+=plan.vertices;reservedDraws+=plan.draws;reservedStates+=plan.stateBytes;
         }
-        frame.particleVertices.reserve(static_cast<std::size_t>(reservedVertices));
+        // 顶点不按准入预留（最坏情况）预留：合并后按实际顶点数一次定长，回收帧保留实际用量的峰值。
+        // 帧预算照旧按准入预留计算。
         frame.particleDraws.reserve(static_cast<std::size_t>(reservedDraws));
         frame.particleMaterialFlags.reserve(static_cast<std::size_t>(reservedDraws));
     }
     order.insert(order.end(),outsideOrder.begin(),outsideOrder.end());
+    frame.timings.particleAdmissionNs=wallSince(admissionStarted);
     const auto freeze=[&](AnimationParticleLink& link, std::size_t b) {
         link.skippedTimelineMs=0;
         const auto* old=checkpoint->instances[b].get();
@@ -539,48 +601,77 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             : Particles::Advance(*asset.particles, w.candidate.state, w.timeline, current.elapsedMs, sampler, host.simulation);
         if (w.status.Succeeded()) { w.counts=Particles::Count(w.candidate.state);w.stateHash=StateHash(w.candidate.state); }
     };
-    // 生成几何、换成输出顶点并算几何哈希。并行时先按整帧上限生成；合并时若失败或超出剩余额度，再按剩余额度重做。
+    // 生成几何（内部格式）并检查发射器映射。并行时先按整帧上限生成；合并时若失败或超出剩余额度，再按剩余额度重做。
     // 每次加顶点前的额度检查在两种上限下同样通过，所以未重做的结果与按剩余额度生成相同。
     const auto build=[&](ParticleWork& w, std::uint32_t budget) {
         CpuPhase phase{w.geometryNs};
         const auto& binding=host.bindings[w.binding];const auto& asset=assets[binding.assetIndex];
-        const auto& current=frame.states[binding.requestIndex];
         w.built=true;w.budget=budget;w.mappingFailed=false;
-        w.vertices.clear();w.draws.clear();w.geometryDiagnostics.clear();
+        w.geometry.clear();w.draws.clear();w.geometryDiagnostics.clear();
         auto geometry = Particles::Build(*asset.particles, w.candidate.state, w.timeline, frame.worldCamera->eye,
             frame.worldCamera->up, budget, w.currentAnchors);
         w.geometryOk=geometry.Succeeded();
         if (!w.geometryOk) { w.geometryDiagnostics=std::move(geometry.diagnostics);return; }
         w.vertexCount = static_cast<std::uint32_t>(geometry.value->vertices.size());
         w.draws=std::move(geometry.value->draws);
-        w.vertices.reserve(geometry.value->vertices.size());
-        Hash geometryHash;
-        for (const auto& draw : w.draws) {
+        w.geometry=std::move(geometry.value->vertices);
+        for (const auto& draw : w.draws)
             if (draw.emitter >= binding.textures.size() || draw.emitter >= binding.layerAlpha.size()
                 || !binding.materialFlags || draw.emitter >= binding.materialFlags->size()) { w.mappingFailed=true;return; }
+    };
+    // 把生成的几何换成输出顶点（乘实例色与层透明度）写到 out，并算几何哈希。各批顶点按绘制顺序连续存放：
+    // 先写出，再整段计入哈希。写完释放几何暂存。
+    const auto emit=[&](ParticleWork& w, War3RenderParticleVertexV2* out) -> std::uint64_t {
+        const auto& binding=host.bindings[w.binding];
+        const auto& current=frame.states[binding.requestIndex];
+        WordHash geometryHash;
+        std::size_t written = 0;
+        for (const auto& draw : w.draws) {
             const auto materialFlags=(*binding.materialFlags)[draw.emitter];
             geometryHash.Add(draw.first); geometryHash.Add(draw.count); geometryHash.Add(draw.emitter); geometryHash.Add(draw.filter);
             geometryHash.Add(materialFlags);
+            const auto firstOutput = written;
             for (std::uint32_t i = 0; i < draw.count; ++i) {
-                auto vertex = geometry.value->vertices[draw.first + i];
+                auto vertex = w.geometry[draw.first + i];
                 for (std::size_t c = 0; c < 3; ++c) vertex.color[c] *= current.tint[c];
                 vertex.color[3] *= binding.layerAlpha[draw.emitter];
-                geometryHash.Add(vertex.position); geometryHash.Add(vertex.uv); geometryHash.Add(vertex.color);
                 War3RenderParticleVertexV2 output{};
                 std::copy(vertex.position.begin(), vertex.position.end(), output.position);
                 std::copy(vertex.uv.begin(), vertex.uv.end(), output.uv);
-                std::copy(vertex.color.begin(), vertex.color.end(), output.color); w.vertices.push_back(output);
+                std::copy(vertex.color.begin(), vertex.color.end(), output.color);
+                out[written++] = output;
             }
+            geometryHash.Bytes(out + firstOutput, std::size_t(draw.count) * sizeof(War3RenderParticleVertexV2));
         }
-        w.geometryHash=geometryHash.value;
+        // 绘制批次未覆盖的生成顶点（若有）补零：回收数组留着旧内容，须与新建数组逐位相同。
+        if (written < w.vertexCount) std::fill(out + written, out + w.vertexCount, War3RenderParticleVertexV2{});
+        std::vector<Particles::Vertex>().swap(w.geometry);
+        std::vector<Particles::Draw>().swap(w.draws);
+        return geometryHash.value;
     };
-    // 按实例顺序合并：失败处理、整帧绘制额度、追加几何与提交检查点都在这里串行完成。
+    // 提交本实例的新模拟状态：交出锚点、记下计数与指纹、算存储字节并建只读共享对象，写入检查点本实例位置。
+    // 只写本实例的检查点位置与 w，可在各实例并行；检查点存储字节由调用方按 stateBytesDelta 累加。
+    const auto commit=[&](ParticleWork& w) {
+        const auto b=w.binding;
+        const auto& current=frame.states[host.bindings[b].requestIndex];
+        const auto* old=checkpoint->instances[b].get();
+        auto& candidate=w.candidate;
+        if (world) { candidate.anchors = std::move(w.currentAnchors); candidate.anchorElapsedMs = current.elapsedMs; }
+        candidate.counts=w.counts;candidate.stateHash=w.stateHash;candidate.storageBytes=StateBytes(candidate);
+        w.stateBytesDelta=candidate.storageBytes-(old ? old->storageBytes : 0);
+        // 对象本身可写，回收时才能借用其数组；对外仍只以只读指针共享。
+        checkpoint->instances[b]=std::make_shared<AnimationParticleState>(std::move(candidate));
+    };
+    // 按实例顺序合并：失败处理、整帧绘制额度、排定几何位置都在这里串行完成；严格回放同时提交检查点。
+    // 已合并顶点数单独计数：交互预览只排定各实例在帧内的偏移，顶点在合并后并行写出（deferredCopies 非空）。
+    // 回收帧的顶点数组留着旧长度与内容：从 0 起排定，各实例整段覆盖，最后按已合并顶点数定长。
+    std::size_t mergedVertices = 0;
+    std::vector<ParticleWork*>* deferredCopies = nullptr;
     const auto finish=[&](ParticleWork& w) -> Status {
         if (w.exception) std::rethrow_exception(w.exception);
         if (!w.fatal.Succeeded()) return w.fatal;
         const auto b=w.binding;const auto& binding=host.bindings[b];const auto r=binding.requestIndex;
         const auto& asset=assets[binding.assetIndex];const auto& current=frame.states[r];
-        const auto* old=checkpoint->instances[b].get();
         auto& link=w.link;
         ++frame.timings.particleSimulationRequests;
         if (w.anchorsReused) ++frame.timings.particleAnchorReuses;
@@ -613,7 +704,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         w.sampledElapsed = current.elapsedMs; w.sampledGlobal = current.globalMs;
         frame.timings.particleGeometryNs+=std::exchange(w.geometryNs,0);
         CpuPhase geometryPhase{frame.timings.particleGeometryNs};
-        const auto remaining=host.limits.maxVertices - static_cast<std::uint32_t>(frame.particleVertices.size());
+        const auto remaining=host.limits.maxVertices - static_cast<std::uint32_t>(mergedVertices);
         if (!w.built || (w.budget!=remaining && (!w.geometryOk || w.vertexCount>remaining))) build(w, remaining);
         if (!w.geometryOk) {
             if (auto result = reject(w.geometryDiagnostics); !result.Succeeded()) return result;
@@ -631,30 +722,33 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         const auto& counts = w.counts;
         link.simulated = true; link.particleCount = counts.particles; link.ribbonSegmentCount = counts.ribbonSegments;
         link.spawned = counts.spawned; link.suppressed = counts.suppressed; link.budgetLimited |= counts.budgetLimited;
-        link.stateHash = w.stateHash; link.firstVertex = static_cast<std::uint32_t>(frame.particleVertices.size());
+        link.stateHash = w.stateHash; link.firstVertex = static_cast<std::uint32_t>(mergedVertices);
         link.firstDraw = static_cast<std::uint32_t>(frame.particleDraws.size());
         link.vertexCount = w.vertexCount;
         link.drawCount = static_cast<std::uint32_t>(w.draws.size());
-        frame.particleVertices.insert(frame.particleVertices.end(), w.vertices.begin(), w.vertices.end());
         for (const auto& draw : w.draws) {
             frame.particleDraws.push_back({link.firstVertex + draw.first, draw.count, binding.textures[draw.emitter], static_cast<std::uint32_t>(draw.filter)});
             frame.particleMaterialFlags.push_back((*binding.materialFlags)[draw.emitter]);
         }
-        link.geometryHash = w.geometryHash;
-        std::vector<War3RenderParticleVertexV2>().swap(w.vertices);
-        auto& candidate=w.candidate;
-        if (world) { candidate.anchors = std::move(w.currentAnchors); candidate.anchorElapsedMs = current.elapsedMs; }
-        candidate.counts=counts;candidate.stateHash=link.stateHash;candidate.storageBytes=StateBytes(candidate);
-        checkpoint->stateBytes-=old ? old->storageBytes : 0;checkpoint->stateBytes+=candidate.storageBytes;
-        // 对象本身可写，回收时才能借用其数组；对外仍只以只读指针共享。
-        checkpoint->instances[b]=std::make_shared<AnimationParticleState>(std::move(candidate));
+        if (deferredCopies) {
+            w.vertexOffset = mergedVertices; w.linkIndex = frame.particleLinks.size(); deferredCopies->push_back(&w);
+        } else {
+            frame.particleVertices.resize(mergedVertices + w.vertexCount);
+            link.geometryHash = emit(w, frame.particleVertices.data() + mergedVertices);
+        }
+        mergedVertices += w.vertexCount;
+        // 交互预览：新状态在合并后与几何写出一起并行提交（见 write）；之前的实例不读本实例的检查点位置。
+        if (!deferredCopies) { commit(w); checkpoint->stateBytes+=w.stateBytesDelta; }
         frame.timings.particleSkippedTimelineMs+=link.skippedTimelineMs;
         checkpoint->frozen[b]=0;frame.particleLinks.push_back(std::move(link));
         return {};
     };
+    auto tailStarted=std::chrono::steady_clock::now();
     if (world) {
         // 只为进入模拟的实例建中间结果；动作序号越界的实例放在末尾占位，合并到它时抛出。
         std::vector<ParticleWork> works;
+        works.reserve(order.size()); // 合并时按地址记下待复制的实例，之后不再扩容。
+        const auto earlyStarted=std::chrono::steady_clock::now();
         bool invalid=false;
         for (const auto b:order) {
             AnimationParticleLink link;
@@ -662,6 +756,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             else if (invalid) { auto& w=works.emplace_back();w.binding=b;w.invalidSequence=true;break; }
             else frame.particleLinks.push_back(std::move(link));
         }
+        frame.timings.particleEarlyNs=wallSince(earlyStarted);
         const auto tasks=[&](std::size_t count, const std::function<void(ParticleWork&)>& step) {
             const auto run=[&](std::uint32_t i) {
                 auto& w=works[i];
@@ -670,18 +765,43 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             RunAnimationTasksWith(host.workers, static_cast<std::uint32_t>(count), run);
         };
         const auto simulated=works.size()-(invalid ? 1 : 0);
+        frame.timings.particlePrologueNs=wallSince(prologueStarted);
+        auto phaseStarted=std::chrono::steady_clock::now();
         tasks(simulated, setup);
+        frame.timings.particleSetupNs=wallSince(phaseStarted);phaseStarted=std::chrono::steady_clock::now();
         std::size_t stop=simulated;
         for (std::size_t i=0;i<simulated;++i) {
             auto& w=works[i];
             if (w.exception || !w.fatal.Succeeded()) { stop=i;break; }
             if (!w.anchorsReused) sampleCurrent(w);
         }
+        frame.timings.particleSampleNs=wallSince(phaseStarted);phaseStarted=std::chrono::steady_clock::now();
         tasks(stop, [&](ParticleWork& w) { advance(w); if (w.status.Succeeded()) build(w, host.limits.maxVertices); });
+        frame.timings.particleAdvanceBuildNs=wallSince(phaseStarted);phaseStarted=std::chrono::steady_clock::now();
+        std::vector<ParticleWork*> copies;
+        copies.reserve(works.size());
+        deferredCopies = &copies;
         for (auto& w:works) {
             if (w.invalidSequence) throwInvalidSequence(w.binding);
             if (auto result=finish(w); !result.Succeeded()) return result;
         }
+        deferredCopies = nullptr;
+        // 各实例把几何直接写到帧内互不重叠的区间，与按序追加逐位相同；写完补回执的几何哈希并释放暂存，
+        // 再提交本实例的新模拟状态（只写检查点本实例位置）。分配失败在并行段后按 bad_alloc 报出。
+        frame.timings.particleVertexRealloc=ReserveAnimationParticleVertices(host.vertexCapacity, frame.particleVertices, mergedVertices);
+        frame.timings.particleVertexCapacity=frame.particleVertices.capacity();
+        frame.particleVertices.resize(mergedVertices);
+        std::atomic<bool> commitFailed{false};
+        const std::function<void(std::uint32_t)> write=[&](std::uint32_t i) {
+            auto& w=*copies[i];
+            frame.particleLinks[w.linkIndex].geometryHash = emit(w, frame.particleVertices.data() + w.vertexOffset);
+            try { commit(w); } catch (...) { commitFailed.store(true, std::memory_order_relaxed); }
+        };
+        RunAnimationTasksWith(host.workers, static_cast<std::uint32_t>(copies.size()), write);
+        if (commitFailed.load()) throw std::bad_alloc();
+        for (const auto* w:copies) checkpoint->stateBytes+=w->stateBytesDelta;
+        frame.timings.particleMergeNs=wallSince(phaseStarted);
+        tailStarted=std::chrono::steady_clock::now();
     } else for (const auto b:order) {
         ParticleWork w;w.binding=b;
         bool invalid=false;
@@ -694,8 +814,47 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         if (w.fatal.Succeeded()) advance(w);
         if (auto result=finish(w); !result.Succeeded()) return result;
     }
-    std::sort(frame.particleLinks.begin(), frame.particleLinks.end(), [](const auto& a, const auto& b) { return a.requestIndex < b.requestIndex; });
+    frame.particleVertices.resize(mergedVertices); // 严格回放：去掉回收数组超出部分（交互预览已定长）
+    {
+        // 回执按请求序排列（每个请求至多一条，次序唯一）：先排下标，再沿置换环原地搬动，每条回执只移动一次。
+        auto& links=frame.particleLinks;
+        std::vector<std::uint32_t> source(links.size());
+        std::iota(source.begin(), source.end(), 0u);
+        std::sort(source.begin(), source.end(), [&](auto a, auto b) { return links[a].requestIndex < links[b].requestIndex; });
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            if (source[i] == i) continue;
+            auto first = std::move(links[i]);
+            for (std::size_t j = i;;) {
+                const std::size_t from = source[j]; source[j] = static_cast<std::uint32_t>(j);
+                if (from == i) { links[j] = std::move(first); break; }
+                links[j] = std::move(links[from]); j = from;
+            }
+        }
+    }
     frame.particleCheckpoint = std::move(checkpoint);
+    if (world) frame.timings.particleTailNs=wallSince(tailStarted);
     return {};
+}
+std::uint32_t ReserveAnimationParticleVertices(AnimationParticleVertexCapacity& capacity,
+    std::vector<War3RenderParticleVertexV2>& vertices, std::size_t used) {
+    constexpr std::uint32_t kShrinkFrames = 120;
+    auto& target = capacity.target;
+    if (used > target) {
+        target = used + used / 4; capacity.lowFrames = 0; capacity.lowPeak = 0;
+    } else if (used * 2 < target) {
+        capacity.lowPeak = std::max(capacity.lowPeak, used);
+        if (++capacity.lowFrames >= kShrinkFrames) {
+            target = capacity.lowPeak + capacity.lowPeak / 4; capacity.lowFrames = 0; capacity.lowPeak = 0;
+        }
+    } else {
+        capacity.lowFrames = 0; capacity.lowPeak = 0;
+    }
+    const auto have = vertices.capacity();
+    if (have >= used && have <= target + target / 2) return 0;
+    const std::uint32_t kind = have == 0 ? 3u : have < used ? 1u : 2u;
+    std::vector<War3RenderParticleVertexV2> resized;
+    resized.reserve(std::max(target, used));
+    vertices.swap(resized);
+    return kind;
 }
 } // namespace War3Map::Render

@@ -7,7 +7,7 @@ qt_add_library(War3MapQtModuleWorld STATIC WorldModule.cpp WorldModule.h WorldMo
     WorldStartLocations.cpp WorldStartLocations.h
     WorldPanels.cpp WorldToolbarLayout.cpp WorldPanelWidgets.cpp WorldPanelWidgets.h WorldTerrainPanel.cpp WorldTerrainBounds.cpp WorldTerrainResize.cpp WorldTerrainBlockTools.cpp WorldTerrainHeightfield.cpp WorldPlacementImport.cpp WorldPathingBrush.cpp WorldInspector.cpp
     WorldModelPreview.cpp WorldModelPreview.h
-    WorldAnimationPlayer.cpp WorldAnimationPlayer.h WorldAnimationInstances.cpp WorldViewportAnimation.cpp WorldModuleAnimation.cpp WorldModuleInstances.cpp
+    WorldAnimationPlayer.cpp WorldAnimationPlayer.h WorldPlaybackClock.h WorldAnimationInstances.cpp WorldViewportAnimation.cpp WorldModuleAnimation.cpp WorldModuleInstances.cpp
     WorldAnimationDiagnostics.cpp WorldAnimationDiagnostics.h WorldInstanceTiming.h WorldAnimationPrefetch.cpp
     WorldSelectionPresentation.cpp WorldSelectionPresentation.h WorldSelectionPresenter.cpp WorldSelectionPresenter.h
     WorldBuildingSplatPresenter.cpp WorldBuildingSplatPresenter.h

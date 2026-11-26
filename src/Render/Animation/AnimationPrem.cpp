@@ -47,7 +47,7 @@ std::uint64_t SceneBytes(const AnimatedModelScene& scene) {
 std::uint64_t FrameBytes(const AnimationFrame& frame) {
     return sizeof(frame) + Bytes(frame.states) + Bytes(frame.instances) + Bytes(frame.groups) + Bytes(frame.alphas) +
         Bytes(frame.colors) + Bytes(frame.layerAlphas) + Bytes(frame.layerSlices) + Bytes(frame.materialStates) +
-        Bytes(frame.materialStateSlices) + Bytes(frame.poses) + Bytes(frame.changedInstances) +
+        Bytes(frame.materialStateSlices) + Bytes(frame.poses) + Bytes(frame.changedInstances) + Bytes(frame.viewInstances) +
         Bytes(frame.geosetIssues) + Bytes(frame.materialIssues) +
         Bytes(frame.collisionMatrices) + Bytes(frame.pickBounds) + Bytes(frame.diagnostics) + Bytes(frame.requestVisibility);
 }
@@ -495,34 +495,53 @@ Status PrepareAnimationPrem(ModelAnimationService::State& state, AnimationFrame&
         output->budget = host.budget;
         // 空清单已在 Create 完整扫描；每帧只绑定身份，不重新遍历全图请求。
         if (host.capabilities->empty()) { frame.prem = std::move(output); return Status::Ok(); }
-        for (std::uint32_t r = 0; r < state.requestAssets.size(); ++r) {
-            const auto a = state.requestAssets[r];
-            if (a >= host.assetCapabilities.size()) continue;
-            for (const auto index : host.assetCapabilities[a]) {
-                if ((*host.capabilities)[index].prepared) ++output->supportedEmitterInstances;
-                else ++output->unsupportedEmitterInstances;
+        // 计数、相关请求与其渲染实例只由场景、请求资产与能力表决定：同一场景只扫一次全图，之后每帧沿用。
+        auto& cache = state.prem->requestCache;
+        if (cache.sceneVersion != scene.sceneVersion || cache.requestTable != state.requestAssets.data() ||
+            cache.requestCount != state.requestAssets.size() || cache.assetCount != state.assets.size()) {
+            cache = {};
+            for (std::uint32_t r = 0; r < state.requestAssets.size(); ++r) {
+                const auto a = state.requestAssets[r];
+                if (a >= host.assetCapabilities.size()) continue;
+                bool relevant = false;
+                for (const auto index : host.assetCapabilities[a]) {
+                    const auto& capability = (*host.capabilities)[index];
+                    if (capability.prepared) ++cache.supported; else ++cache.unsupported;
+                    relevant |= a < state.assets.size() && capability.prepared &&
+                        capability.parentAsset == state.assets[a].compiled.Identity() &&
+                        SameSource(capability.parentSource, state.assets[a].source);
+                }
+                if (relevant && r < scene.sequences.size() && r < scene.specs.size() && state.assets[a].compiled.Valid())
+                    cache.requests.push_back(r);
             }
+            if (!cache.requests.empty()) {
+                std::vector<std::uint8_t> marked(state.requestAssets.size(), 0);
+                for (const auto r : cache.requests) marked[r] = 1;
+                const auto& owners = scene.geometry.instanceRequests;
+                for (std::uint32_t i = 0; i < owners.size(); ++i)
+                    if (owners[i] < marked.size() && marked[owners[i]]) cache.rendered.push_back(i);
+            }
+            cache.sceneVersion = scene.sceneVersion; cache.requestTable = state.requestAssets.data();
+            cache.requestCount = state.requestAssets.size(); cache.assetCount = state.assets.size();
         }
+        output->supportedEmitterInstances = cache.supported; output->unsupportedEmitterInstances = cache.unsupported;
         if (!host.evaluator || !host.childStand || !host.childService) { frame.prem = std::move(output); return Status::Ok(); }
         // lifespan checkpoint 属于真实父请求，不属于当帧可见/动态槽集合。
         // 离屏、临时隐藏或预算Stand仍连续保留尾时钟和暂停，重入不能把Death重置到终点复活碎块。
-        for (std::uint32_t r = 0; r < state.requestAssets.size(); ++r) {
+        // 只有缓存里的请求可能相关；逐帧仍核对身份与当前动作序号。
+        for (const auto r : cache.requests) {
             const auto a = state.requestAssets[r];
-            if (a >= state.assets.size() || a >= host.assetCapabilities.size() || r >= scene.sequences.size() ||
-                frame.states[r].identity != scene.specs[r].identity || !state.assets[a].compiled.Valid() ||
+            if (frame.states[r].identity != scene.specs[r].identity ||
                 frame.states[r].sequenceIndex >= scene.sequences[r].size()) continue;
-            bool relevant = false;
-            for (const auto index : host.assetCapabilities[a]) {
-                const auto& capability = (*host.capabilities)[index];
-                relevant |= capability.prepared && capability.parentAsset == state.assets[a].compiled.Identity() &&
-                    SameSource(capability.parentSource, state.assets[a].source);
-            }
-            if (relevant) output->requestClocks.push_back(ClockFor(host, scene, frame, r,
+            output->requestClocks.push_back(ClockFor(host, scene, frame, r,
                 state.assets[a].compiled.Identity(), previous, advance));
         }
         Prem::Limits limits;
         std::vector<Prem::Request> requests; requests.reserve(limits.maxRequests);
-        for (const auto& pose : frame.poses) {
+        // 其余实例的请求不在时钟表里，原逐实例循环也会跳过；按渲染序只看缓存的实例，请求顺序不变。
+        for (const auto i : cache.rendered) {
+            if (i >= frame.poses.size()) return AnimationFailure("PREM_FRAME_STALE", "PREM 实例缓存超出当前帧。");
+            const auto& pose = frame.poses[i];
             const auto r = pose.requestIndex;
             if (r >= frame.states.size() || r >= state.requestAssets.size() || !pose.animated || pose.hidden || pose.outsideView ||
                 pose.staticForBudget || !pose.poseVersion || pose.evaluationEpoch != host.epoch) continue;

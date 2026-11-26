@@ -355,6 +355,11 @@ public:
     static std::weak_ptr<const Render::AnimationFrame> Observe(const WorldViewport& viewport, std::size_t index) {
         return viewport.animationPickHistory_.at(index).frame;
     }
+    // 与点选同一入口取实际完成帧，持有期间等同一次点选正在读它。
+    static std::shared_ptr<const Render::AnimationFrame> HoldPickFrame(const WorldViewport& viewport) {
+        const auto completed = viewport.ReadCompletedModelPickFrame();
+        return completed.Succeeded() ? completed.value->frame : nullptr;
+    }
     static void ClearLegacyHeightStorage(WorldViewport& viewport) {
         viewport.vertices_.clear(); viewport.indices_.clear();
     }
@@ -364,6 +369,12 @@ public:
 class WorldViewportTests : public QObject {
     Q_OBJECT
 private slots:
+    // 后台接收准备每帧都与整份扫描逐项比对；全部用例跑完须核对过且没有不一致。
+    void initTestCase() { WorldViewport::SetAcceptPreparationCheckInterval(1); }
+    void cleanupTestCase() {
+        const auto counts = WorldViewport::AcceptPreparationChecks();
+        QVERIFY(counts.checks > 0); QCOMPARE(counts.mismatches, std::uint64_t{0});
+    }
     void PluginFailuresPreserveOperationAndBoundedRawStatus_data();
     void PluginFailuresPreserveOperationAndBoundedRawStatus();
     void OptionalCapabilitiesAndPhysicalLimitDoNotEmitPluginFailure();
@@ -1209,6 +1220,72 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     picked.clear(); QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(160, 120));
     QCOMPARE(picked.size(), qsizetype{1}); QCOMPARE(picked.first()[0].toInt(), 0);
     state.freezeCompletedDraw = false; Frame(&state);
+    {
+        // 点选历史只留仍可能在屏幕上的帧：比最近一次成功呈现的完成帧更旧的历史随下一帧接收退回，
+        // 不靠三帧上限挤出；显示中的帧与尚未画完的新帧都保留，渲染滞后时点选仍对准屏幕上的姿势。
+        using History = WorldViewportPickHistoryTestAccess;
+        const auto shown = state.editor.completed.skin.contentVersion;
+        state.freezeCompletedDraw = true;
+        player.Step(); QTRY_VERIFY(player.Frame()->contentVersion > shown);
+        QCOMPARE(History::Count(viewport), std::size_t{2}); // 屏幕上的一帧 + 刚接收的一帧，更早的已退回。
+        QCOMPARE(History::Borrow(viewport, 0)->contentVersion, shown);
+        QCOMPARE(History::Borrow(viewport, 1).get(), viewport.AnimationTarget().get());
+        const auto lagging = player.Frame()->contentVersion;
+        player.Step(); QTRY_VERIFY(player.Frame()->contentVersion > lagging);
+        QCOMPARE(History::Count(viewport), std::size_t{3}); // 新帧都没画完，屏幕上的帧仍保留。
+        QCOMPARE(History::Borrow(viewport, 0)->contentVersion, shown);
+        picked.clear(); QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(160, 120));
+        QCOMPARE(picked.size(), qsizetype{1});
+        state.freezeCompletedDraw = false; Frame(&state);
+        picked.clear(); QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(160, 120));
+        QCOMPARE(picked.size(), qsizetype{1});
+
+        // 点选正读着选中的历史帧时新帧到达：裁剪只放手历史这一份引用，帧要等点选放手才回帧池，
+        // 期间不会被再借出、改写。（点选与接收新帧本就都在界面线程串行执行，这里用持有引用模拟点选未结束。）
+        auto held = History::HoldPickFrame(viewport); QVERIFY(held); QVERIFY(!held->groups.empty());
+        const auto heldVersion = held->contentVersion;
+        const auto heldElapsed = held->states.front().elapsedMs;
+        const QByteArray heldGroups(reinterpret_cast<const char*>(held->groups.data()),
+            static_cast<qsizetype>(held->groups.size() * sizeof(held->groups.front())));
+        for (int step = 0; step < 4; ++step) {
+            const auto before = player.Frame()->contentVersion;
+            player.Step(); QTRY_VERIFY(player.Frame()->contentVersion > before); Frame(&state);
+            QVERIFY(player.Frame().get() != held.get()); // 被持有的帧没有被帧池再借出。
+        }
+        QCOMPARE(History::Count(viewport), std::size_t{2}); // 历史里只剩显示中的帧与最新帧，held 已退出历史。
+        for (std::size_t i = 0; i < History::Count(viewport); ++i) QVERIFY(History::Borrow(viewport, i).get() != held.get());
+        QCOMPARE(held->contentVersion, heldVersion); // 持有期间内容未被改写。
+        QCOMPARE(held->states.front().elapsedMs, heldElapsed);
+        QCOMPARE(QByteArray(reinterpret_cast<const char*>(held->groups.data()),
+            static_cast<qsizetype>(held->groups.size() * sizeof(held->groups.front()))), heldGroups);
+        held.reset(); // 点选结束放手后帧才回帧池，可以再被借出。
+        const auto afterRelease = player.Frame()->contentVersion;
+        player.Step(); QTRY_VERIFY(player.Frame()->contentVersion > afterRelease); Frame(&state);
+        picked.clear(); QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(160, 120));
+        QCOMPARE(picked.size(), qsizetype{1});
+
+        // 窗口被遮挡（每次 Present 都是 DXGI_STATUS_OCCLUDED）：成功呈现的完成帧滑出最近四条后，
+        // 以最近画完的帧为准裁剪，历史回到“画完的一帧 + 新帧”；遮挡期间点选照旧不可用，取消遮挡画完即恢复。
+        state.editor.occluded = true; state.editor.presentResult = 0x087A0001;
+        for (int step = 0; step < 5; ++step) {
+            const auto before = player.Frame()->contentVersion;
+            player.Step(); QTRY_VERIFY(player.Frame()->contentVersion > before); Frame(&state);
+        }
+        const auto occludedLatest = player.Frame()->contentVersion;
+        const auto beforeStep = occludedLatest;
+        player.Step(); QTRY_VERIFY(player.Frame()->contentVersion > beforeStep);
+        QCOMPARE(History::Count(viewport), std::size_t{2});
+        QCOMPARE(History::Borrow(viewport, 0)->contentVersion, occludedLatest);
+        picked.clear(); QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(160, 120));
+        QCOMPARE(picked.size(), qsizetype{0});
+        state.editor.occluded = false; state.editor.presentResult = 0; Frame(&state);
+        QTRY_COMPARE(picked.size(), qsizetype{1}); // 等待中的点选在第一张成功呈现的完成帧上完成。
+        // 上面多推的帧让第二个实例越过动作循环进入零缩放段；拨回它的原播放时间，后续断言沿用原夹具时间线。
+        AnimationEdit rewind; rewind.identity = specs[1].identity; rewind.elapsedMs = 500; player.Edit(rewind);
+        QTRY_VERIFY(std::any_of(player.Frame()->states.begin(), player.Frame()->states.end(), [&](const auto& instance) {
+            return instance.identity.value == specs[1].identity.value && instance.elapsedMs == 500; }));
+        Frame(&state);
+    }
     QSignalSpy boxed(&viewport, &WorldViewport::InstancesBoxSelected);
     QTest::mousePress(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(20, 20));
     QMouseEvent boxMove(QEvent::MouseMove, QPointF(300, 220), QPointF(300, 220), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
@@ -1305,7 +1382,7 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     QVERIFY(viewport.ModelPresentationCurrent()); // 同来源新场景提交失败不能先 Clear 原播放器。
     QSignalSpy animationMessage(&player, &WorldAnimationPlayer::Message);
     player.Edit(edit);
-    QTRY_VERIFY(!player.Busy());
+    WORLD_WAIT_IDLE(player);
     QVERIFY(player.Ready()); QVERIFY(!player.Playing()); QCOMPARE(player.Frame(), dragged);
     QVERIFY(viewport.ModelPresentationCurrent());
     QVERIFY(std::any_of(animationMessage.begin(), animationMessage.end(), [](const auto& row) {
@@ -1316,9 +1393,9 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     player.SetPlaying(true);
     player.Edit(edit);
     QTRY_COMPARE(cancelled, 1);
-    QTRY_VERIFY(!player.Busy());
+    WORLD_WAIT_IDLE(player);
     QVERIFY(player.Playing()); // 合法慢帧只降频，拖动补偿仍继续提交。
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     // 550ms 提交后的实时时钟允许继续推进；隐藏必须绑定实际取消拖动的帧，不能要求更晚的当前帧仍隐藏。
     QVERIFY(cancelledFrame && cancelledFrame->poses[0].hidden);
     QCOMPARE(cancelledFrame->states[0].elapsedMs, std::uint64_t{100});
@@ -1343,7 +1420,7 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     QVERIFY(!viewport.SelectedInstance().has_value());
     player.SetPlaying(true);
     QTRY_VERIFY(player.Frame() && player.Frame()->hiddenInstances == 0); // 全隐藏仍推进到合法区间。
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     QCOMPARE(picking->instances.size(), std::size_t{2});
     QCOMPARE(state.skinUploads, std::uint64_t{1});
     const auto pausedBeforeHide=player.Frame();
@@ -1360,7 +1437,7 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     QVERIFY(!player.Playing()); // 隐藏安装不推进时间，保留播放意图。
     viewport.show(); QTRY_VERIFY(player.Playing());
     QTRY_VERIFY(player.Frame()->contentVersion>1);
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     const auto phase=WorldStandStartMs("units:0:hfoo:17",1000);
     QVERIFY(phase<1000); QCOMPARE(WorldStandStartMs("units:0:hfoo:17",1000),phase);
     QVERIFY(WorldStandStartMs("units:1:hfoo:18",1000)!=phase);
@@ -1376,6 +1453,8 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     QVERIFY(player.Install(*bounded.value,*boundedFirst.value,{},[&]{return current;}));
     WorldAnimationViewContractChecks::MovingViewKeepsScheduling(viewport,player);
     WorldAnimationPlaybackContractChecks::ResumeDuringPausedWork(player);
+    WorldAnimationPlaybackContractChecks::PlaybackClockKeepsTime();
+    WorldAnimationPlaybackContractChecks::ChainSkipsOnRevoke(player);
     WorldAnimationViewContractChecks::OffscreenKeepsScheduling(viewport,player);
     const auto frozen = viewport.AnimationTarget(); const auto frozenUploads = state.skinUploads;
     current = false; player.SetPlaying(true);

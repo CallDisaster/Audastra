@@ -155,7 +155,26 @@ inline void ParallelParticles() {
     }
     std::cout<<"parallel_particle_instances="<<count<<" frames="<<serial.size()<<" simulated="<<simulated<<" recycled=1 identical=1\n";
 }
+inline void VertexCapacityHysteresis() {
+    AnimationParticleVertexCapacity capacity;
+    std::vector<War3RenderParticleVertexV2> a, b;
+    Check(ReserveAnimationParticleVertices(capacity,a,0)==0 && a.capacity()==0,"empty particle buffer allocated");
+    Check(ReserveAnimationParticleVertices(capacity,a,1000)==3 && a.capacity()==1250,"first particle buffer not sized to 1.25x");
+    a.resize(1000);
+    Check(ReserveAnimationParticleVertices(capacity,a,1200)==0 && a.size()==1000,"particle buffer reallocated within capacity");
+    Check(ReserveAnimationParticleVertices(capacity,b,1100)==3 && b.capacity()==1250,"second frame not sized to target");
+    Check(ReserveAnimationParticleVertices(capacity,a,1300)==1 && a.capacity()==1625 && a.empty(),"particle buffer did not grow to 1.25x");
+    Check(ReserveAnimationParticleVertices(capacity,b,900)==0,"older frame below new target reallocated");
+    for (int i=0;i<119;++i) Check(ReserveAnimationParticleVertices(capacity,a,i==50 ? 500 : 400)==0,"particle buffer shrank early");
+    Check(ReserveAnimationParticleVertices(capacity,a,900)==0,"half-used frame reallocated");
+    for (int i=0;i<119;++i) Check(ReserveAnimationParticleVertices(capacity,a,400)==0,"low streak not reset by half-used frame");
+    Check(ReserveAnimationParticleVertices(capacity,a,500)==2 && a.capacity()==625 && capacity.target==625,"particle buffer did not shrink after 120 low frames");
+    Check(ReserveAnimationParticleVertices(capacity,b,600)==2 && b.capacity()==625,"older large frame kept after shrink");
+    Check(ReserveAnimationParticleVertices(capacity,a,600)==0,"shrunk buffer reallocated again");
+    std::cout<<"particle_vertex_capacity_hysteresis=1\n";
+}
 inline void Run() {
+    VertexCapacityHysteresis();
     ExplicitPlaybackPolicy();
     ParallelParticles();
     const auto model=Model(),texture=Texture();

@@ -8,6 +8,8 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -15,8 +17,13 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
 
-bool MainWindow::EnableWorldMeasurement(const QString& directory, int backgroundSeconds, bool cameraTour) {
+bool MainWindow::EnableWorldMeasurement(const QString& directory, int backgroundSeconds, bool cameraTour, bool periodicEdits) {
     if (!worldModule_ || directory.isEmpty() || worldFrameRecorder_) return false;
     ActivateModule("world");
     auto* viewport = worldModule_->Viewport();
@@ -74,7 +81,8 @@ bool MainWindow::EnableWorldMeasurement(const QString& directory, int background
         auto* readyTimer = new QTimer(recorder);
         readyTimer->setInterval(100);
         auto deadline = std::make_shared<QElapsedTimer>(); deadline->start();
-        connect(readyTimer, &QTimer::timeout, this, [this, readyTimer, deadline, recorder, start, backgroundSeconds, cameraTour] {
+        connect(readyTimer, &QTimer::timeout, this, [this, readyTimer, deadline, recorder, start, backgroundSeconds, cameraTour,
+                                                     periodicEdits, directory] {
             if (deadline->elapsed() > 180000 || worldModule_->Viewport()->RendererFailed()) {
                 readyTimer->stop(); QCoreApplication::exit(4); return;
             }
@@ -91,8 +99,8 @@ bool MainWindow::EnableWorldMeasurement(const QString& directory, int background
                     auto clock = std::make_shared<QElapsedTimer>(); clock->start();
                     tour->setInterval(16);
                     recorder->SetPhase(QStringLiteral("后台连续平移旋转，非可见验收"));
-                    connect(tour, &QTimer::timeout, recorder, [view, base, clock, recorder, tour] {
-                        if (!recorder->Running()) { tour->stop(); return; }
+                    // 记录器因字节预算提前停止后巡游照常继续到定时退出：进程内存时间线需要整段负载。
+                    connect(tour, &QTimer::timeout, recorder, [view, base, clock] {
                         const double seconds = clock->elapsed() / 1000.0;
                         auto camera = base;
                         camera.targetX += static_cast<float>(384 * std::sin(seconds * 0.7));
@@ -103,6 +111,66 @@ bool MainWindow::EnableWorldMeasurement(const QString& directory, int background
                     });
                     tour->start();
                 }
+                if (periodicEdits) {
+                    // 测编辑到首帧时延：每 700 ms 把一个实例的播放速度在 1.25 与 1 之间切换（轮换实例），只改本进程预览状态，
+                    // 不改地图、不保存；尝试日志的 edit_latency_ns 记下含这笔编辑的首帧接收时距排队的时长。
+                    auto* edits = new QTimer(recorder);
+                    auto count = std::make_shared<std::uint64_t>(0);
+                    edits->setInterval(700);
+                    // 同上：记录停止后编辑照常继续到定时退出。
+                    connect(edits, &QTimer::timeout, recorder, [this, count] {
+                        auto* player = worldModule_->AnimationPlayer();
+                        const auto frame = player ? player->Frame() : nullptr;
+                        if (!frame || frame->states.empty()) return;
+                        const auto n = (*count)++;
+                        War3Map::Render::AnimationEdit edit;
+                        edit.identity = frame->states[(n * 7919) % frame->states.size()].identity;
+                        edit.speed = n % 2 ? 1.0 : 1.25;
+                        player->Edit(std::move(edit));
+                    });
+                    edits->start();
+                }
+                // 每 30 秒在记录目录写一行各持有方的计数与字节，加进程私有内存/工作集；记录器因字节预算停止后照常继续，
+                // 长跑内存时间线按持有方拆分用。只读本进程状态，不改地图。
+                const auto holderDirectory = recorder->OutputDirectory().isEmpty() ? directory : recorder->OutputDirectory();
+                const auto holderPath = QDir(holderDirectory).filePath(QStringLiteral("holders.csv"));
+                {
+                    QFile file(holderPath);
+                    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                        file.write("seconds,private_mib,working_set_mib,frames_alive,service_live,service_spare,pick_frames,pick_bytes,"
+                                   "pick_extra_frames,pick_extra_bytes,bug_bytes,frame_bytes,particle_vertex_capacity,"
+                                   "readback_bytes,readback_holds_frame,encoder_busy,recording\n");
+                }
+                auto* holders = new QTimer(recorder);
+                auto holderClock = std::make_shared<QElapsedTimer>(); holderClock->start();
+                holders->setInterval(30000);
+                connect(holders, &QTimer::timeout, recorder, [this, recorder, holderPath, holderClock] {
+                    auto* animation = worldModule_->AnimationPlayer();
+                    auto* view = worldModule_->Viewport();
+                    if (!animation || !view) return;
+                    PROCESS_MEMORY_COUNTERS_EX process{}; process.cb = sizeof(process);
+                    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&process), sizeof(process)))
+                        process = {};
+                    const auto counts = animation->ServiceFrameCounts();
+                    const auto history = view->AnimationHistoryMemoryUse();
+                    const auto frame = animation->Frame();
+                    const auto capture = recorder->InFlightCaptureUse();
+                    const auto line = QStringLiteral("%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,%16,%17\n")
+                        .arg(holderClock->elapsed() / 1000)
+                        .arg(static_cast<qulonglong>(process.PrivateUsage >> 20)).arg(static_cast<qulonglong>(process.WorkingSetSize >> 20))
+                        .arg(static_cast<qulonglong>(War3Map::Render::AnimationFramesAlive()))
+                        .arg(static_cast<qulonglong>(counts.live)).arg(static_cast<qulonglong>(counts.spares))
+                        .arg(static_cast<qulonglong>(view->AnimationPickHistoryFrames())).arg(static_cast<qulonglong>(history.pickBytes))
+                        .arg(static_cast<qulonglong>(history.extraFrames)).arg(static_cast<qulonglong>(history.extraBytes))
+                        .arg(static_cast<qulonglong>(history.bugBytes))
+                        .arg(static_cast<qulonglong>(frame ? War3Map::Render::AnimationFrameRetainedBytes(*frame) : 0))
+                        .arg(static_cast<qulonglong>(frame ? frame->particleVertices.capacity() : 0))
+                        .arg(static_cast<qulonglong>(capture.readbackBytes)).arg(capture.readbackHoldsFrame ? 1 : 0)
+                        .arg(capture.encoderBusy ? 1 : 0).arg(recorder->Running() ? 1 : 0);
+                    QFile file(holderPath);
+                    if (file.open(QIODevice::Append)) file.write(line.toLatin1());
+                });
+                holders->start();
                 QTimer::singleShot(std::clamp(backgroundSeconds, 1, 3600) * 1000, recorder, [recorder] {
                     recorder->Stop(QStringLiteral("后台隔离测量结束，非可见验收")); QCoreApplication::quit();
                 });

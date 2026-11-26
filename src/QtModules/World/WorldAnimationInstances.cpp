@@ -41,6 +41,7 @@ bool WorldAnimationPlayer::RecordInstanceOutlinerTiming(const WorldInstanceTimin
 bool WorldAnimationPlayer::QueueInstances(InstanceChange change) {
     if (clearPending_ || !Current() || !catalog_ || !accepted_ || !source_ || InstancesBusy() || !viewport_.HasInstanceRosterSupport()
         || !change.valid || !change.valid() || !change.completed) return false;
+    RevokeChain(); // 实例增删改变下一帧的输入：求值线程不再接续
     instanceChange_ = std::move(change); ++instanceSerial_; instancePollFailed_ = false;
     auto& timing = instanceChange_->timing;
     timing.operation = instanceSerial_; timing.queuedNs = WorldInstanceNowNs();
@@ -154,7 +155,7 @@ bool WorldAnimationPlayer::StartInstanceWork() {
     if (service_->PlaybackPolicy() == Render::AnimationPlaybackPolicy::InteractivePreview)
         advance.previewParticleBudget = effectBudget_.ParticleBudget();
     instanceActivatesPlayback_ = advance.playAll.value_or(false);
-    if (playing_ && elapsed_.isValid()) advance.deltaMs = static_cast<std::uint64_t>(std::clamp<qint64>(elapsed_.restart(), 0, 1000));
+    if (playing_ && PlaybackClockValid()) advance.deltaMs = ConsumePlaybackClockMs();
     struct Work {
         Result<Render::AnimationInstanceDeltaResult> result;
         std::shared_ptr<const Render::ModelAnimationService> catalog;

@@ -23,22 +23,24 @@ std::uint64_t ElapsedNs(TimingClock::time_point start) noexcept {
 }
 // 清空回收帧：各数组只留容量，其余字段取新建默认值，之后的准备与新建帧走完全相同的写入路径。
 // 新增数组字段不在此列也照样正确，只是不复用其容量。
-// 逐实例数组（实例、姿势链、两种层片段）连元素一起留下：Prepare 打包时逐个整体重写，
+// 逐实例数组（实例状态、实例、姿势链、两种层片段）连元素一起留下：Prepare 打包时逐个整体重写，
 // 省掉每帧串行析构/构造几万条姿势链，改由打包分段并行覆盖。
-// keepPose 时五个姿势数组连内容留下（见 AnimationFramePool::Take）。
+// keepPose 时五个姿势数组与点选包围盒连内容留下（见 AnimationFramePool::Take）。
 void ResetAnimationFrameKeepingCapacity(AnimationFrame& frame, bool keepPose) noexcept {
     AnimationFrame fresh;
     const auto keep=[](auto& from,auto& to) noexcept { from.clear(); to.swap(from); };
     const auto keepElements=[](auto& from,auto& to) noexcept { to.swap(from); };
     const auto keepPoseArray=[&](auto& from,auto& to) noexcept { if (keepPose) keepElements(from,to); else keep(from,to); };
-    keep(frame.requestVisibility,fresh.requestVisibility); keep(frame.states,fresh.states); keepElements(frame.instances,fresh.instances);
+    keep(frame.requestVisibility,fresh.requestVisibility); keepElements(frame.states,fresh.states); keepElements(frame.instances,fresh.instances);
     keepPoseArray(frame.groups,fresh.groups); keepPoseArray(frame.alphas,fresh.alphas); keepPoseArray(frame.colors,fresh.colors);
     keepPoseArray(frame.layerAlphas,fresh.layerAlphas); keepElements(frame.layerSlices,fresh.layerSlices);
     keepPoseArray(frame.materialStates,fresh.materialStates); keepElements(frame.materialStateSlices,fresh.materialStateSlices);
     keepElements(frame.poses,fresh.poses); keep(frame.changedInstances,fresh.changedInstances);
+    keep(frame.viewInstances,fresh.viewInstances);
     keep(frame.geosetIssues,fresh.geosetIssues); keep(frame.materialIssues,fresh.materialIssues);
-    keep(frame.collisionMatrices,fresh.collisionMatrices); keep(frame.pickBounds,fresh.pickBounds);
-    keep(frame.particleVertices,fresh.particleVertices); keep(frame.particleDraws,fresh.particleDraws);
+    keep(frame.collisionMatrices,fresh.collisionMatrices); keepPoseArray(frame.pickBounds,fresh.pickBounds);
+    // 粒子顶点连元素留下：合并时从 0 起整段覆盖再定长，只为超出旧长度的部分清零。
+    keepElements(frame.particleVertices,fresh.particleVertices); keep(frame.particleDraws,fresh.particleDraws);
     keep(frame.particleMaterialFlags,fresh.particleMaterialFlags); keep(frame.particleLinks,fresh.particleLinks);
     keep(frame.diagnostics,fresh.diagnostics);
     frame=std::move(fresh);
@@ -48,56 +50,98 @@ void AddMotionHash(std::uint64_t& hash, const void* data, std::size_t size) noex
     for (std::size_t i=0;i<size;++i) { hash^=bytes[i]; hash*=1099511628211ull; }
 }
 }
-std::shared_ptr<AnimationFrame> AnimationFramePool::Take(AnimationParticleHost* particles, std::uint64_t* residentContentVersion) {
+namespace {
+std::atomic<std::uint32_t> framePoolSpares{4};
+}
+void SetAnimationFramePoolSparesOverride(std::uint32_t frames) noexcept {
+    framePoolSpares.store(std::clamp(frames,1u,4u),std::memory_order_relaxed);
+}
+std::shared_ptr<AnimationFrame> AnimationFramePool::Take(AnimationParticleHost* particles, std::uint64_t* residentContentVersion,
+    bool* recycledUnfinalized) {
     if (residentContentVersion) *residentContentVersion=0;
+    if (recycledUnfinalized) *recycledUnfinalized=false;
+    AnimationJitter(AnimationJitterSite::Take);
     std::unique_ptr<AnimationFrame> frame;
-    { std::lock_guard lock(mutex_); frame=std::move(spare_); }
+    {
+        std::lock_guard lock(mutex_);
+        if (spareCount_) {
+            frame=std::move(spares_[0]);
+            std::move(spares_.begin()+1, spares_.begin()+spareCount_, spares_.begin());
+            --spareCount_;
+        }
+    }
     if (frame) {
         // 回收帧已无其他持有者：其中只剩本服务持有的粒子状态交给对应绑定借用容量。
         if (particles) RetireAnimationParticleCheckpoint(*particles,std::move(frame->particleCheckpoint));
-        const bool resident=residentContentVersion && !frame->sharedPoseRanges && frame->contentVersion;
+        // 两段准备未收尾的帧（发布前被丢弃）点选包围盒与指纹不属于其内容版本，不能作沿用来源。
+        const bool resident=residentContentVersion && !frame->sharedPoseRanges && frame->contentVersion && !frame->finalizePending;
+        if (recycledUnfinalized) *recycledUnfinalized=frame->finalizePending;
         if (resident) *residentContentVersion=frame->contentVersion;
         ResetAnimationFrameKeepingCapacity(*frame,resident);
     } else frame=std::make_unique<AnimationFrame>();
+    { std::lock_guard lock(mutex_); ++live_; } // 之后交出失败时删除器照常放回并减一
     auto self=shared_from_this();
     // 控制块分配失败时标准库会对指针调用删除器，帧回到备用位，不泄漏。
     return std::shared_ptr<AnimationFrame>(frame.release(),[self](AnimationFrame* returned) noexcept { self->Return(returned); });
 }
 void AnimationFramePool::Return(AnimationFrame* frame) noexcept {
     std::unique_ptr<AnimationFrame> owned(frame);
+    AnimationJitter(AnimationJitterSite::Return);
     try {
         std::lock_guard lock(mutex_);
-        if (!spare_) spare_=std::move(owned);
+        if (live_) --live_;
+        if (spareCount_ < std::min<std::size_t>(framePoolSpares.load(std::memory_order_relaxed), kMaxSpares))
+            spares_[spareCount_++]=std::move(owned);
     } catch (...) {}
-    // 已有备用时这一帧照常在此释放（锁外）。
+    // 备用位都占着时这一帧照常在此释放（锁外）。
 }
-std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept {
-    std::uint64_t bytes=sizeof(AnimationFrame);
-    const auto charge=[&](const auto& values) {
-        bytes+=std::uint64_t(values.capacity())*sizeof(typename std::decay_t<decltype(values)>::value_type);
+AnimationFrameCounts AnimationFramePool::Count() noexcept {
+    std::lock_guard lock(mutex_);
+    return {live_, spareCount_};
+}
+bool AnimationFramePool::HasRoom() noexcept {
+    std::lock_guard lock(mutex_);
+    return spareCount_ < std::min<std::size_t>(framePoolSpares.load(std::memory_order_relaxed), kMaxSpares);
+}
+AnimationFrameCounts ModelAnimationService::FrameCounts() const noexcept { return state_->framePool->Count(); }
+bool ModelAnimationService::FramePoolHasRoom() const noexcept { return state_->framePool->HasRoom(); }
+AnimationFrameMemory AnimationFrameRetainedMemory(const AnimationFrame& frame) noexcept {
+    AnimationFrameMemory m;
+    const auto bytes=[](const auto& values) {
+        return std::uint64_t(values.capacity())*sizeof(typename std::decay_t<decltype(values)>::value_type);
     };
-    const auto chargeString=[&](const std::string& value) { bytes+=value.capacity()+1; };
-    charge(frame.requestVisibility); charge(frame.states); charge(frame.instances); charge(frame.groups);
-    charge(frame.alphas); charge(frame.colors); charge(frame.layerAlphas); charge(frame.layerSlices); charge(frame.changedInstances);
-    charge(frame.materialStates); charge(frame.materialStateSlices); charge(frame.geosetIssues);
-    charge(frame.materialIssues); charge(frame.collisionMatrices); charge(frame.pickBounds);
-    charge(frame.particleVertices); charge(frame.particleDraws); charge(frame.particleMaterialFlags);
-    charge(frame.particleLinks); charge(frame.diagnostics);
+    const auto text=[](const std::string& value) { return std::uint64_t(value.capacity())+1; };
+    m.states=bytes(frame.states);
+    m.instances=bytes(frame.instances)+bytes(frame.requestVisibility)+bytes(frame.changedInstances)+bytes(frame.viewInstances);
+    m.groups=bytes(frame.groups);
+    m.colors=bytes(frame.alphas)+bytes(frame.colors);
+    m.layers=bytes(frame.layerAlphas)+bytes(frame.layerSlices)+bytes(frame.materialStates)+bytes(frame.materialStateSlices);
+    m.pick=bytes(frame.collisionMatrices)+bytes(frame.pickBounds);
+    m.other=sizeof(AnimationFrame)+bytes(frame.geosetIssues)+bytes(frame.materialIssues)+bytes(frame.diagnostics);
     // 姿势链按帧预算同一口径（含可能独占的警告记录），不逐个探查共享状态。
-    bytes+=std::uint64_t(frame.poses.capacity())*(kAnimationPoseLinkBudgetBytes-sizeof(AnimationPoseLink));
-    bytes+=std::uint64_t(frame.poses.capacity())*sizeof(AnimationPoseLink);
-    for (const auto& pose:frame.poses) { chargeString(pose.rejectionCode); chargeString(pose.rejectionMessage); }
-    for (const auto& link:frame.particleLinks) {
-        chargeString(link.rejectionCode); chargeString(link.rejectionMessage); chargeString(link.resetReason);
-    }
+    m.poses=std::uint64_t(frame.poses.capacity())*kAnimationPoseLinkBudgetBytes;
+    for (const auto& pose:frame.poses) m.poses+=text(pose.rejectionCode)+text(pose.rejectionMessage);
+    m.particles=bytes(frame.particleVertices)+bytes(frame.particleDraws)+bytes(frame.particleMaterialFlags)+bytes(frame.particleLinks);
+    for (const auto& link:frame.particleLinks) m.particles+=text(link.rejectionCode)+text(link.rejectionMessage)+text(link.resetReason);
     if (frame.particleCheckpoint) {
         const auto& checkpoint=*frame.particleCheckpoint;
-        bytes+=sizeof(checkpoint)+checkpoint.stateBytes+checkpoint.frozen.capacity()+
+        m.particleCheckpoint=sizeof(checkpoint)+checkpoint.stateBytes+checkpoint.frozen.capacity()+
             std::uint64_t(checkpoint.instances.capacity())*sizeof(std::shared_ptr<const AnimationParticleState>);
     }
-    if (frame.prem) bytes+=sizeof(AnimationPremFrame)+frame.prem->storageBytes+frame.prem->workingBytes;
-    return bytes;
+    if (frame.prem) m.prem=sizeof(AnimationPremFrame)+frame.prem->storageBytes+frame.prem->workingBytes;
+    return m;
 }
+std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept {
+    const auto m=AnimationFrameRetainedMemory(frame);
+    return m.states+m.instances+m.poses+m.groups+m.colors+m.layers+m.pick+m.particles+m.particleCheckpoint+m.prem+m.other;
+}
+namespace {
+std::atomic<std::uint64_t> framesAlive{0};
+}
+AnimationFrameLiveCount::AnimationFrameLiveCount() noexcept { framesAlive.fetch_add(1,std::memory_order_relaxed); }
+AnimationFrameLiveCount::AnimationFrameLiveCount(const AnimationFrameLiveCount&) noexcept { framesAlive.fetch_add(1,std::memory_order_relaxed); }
+AnimationFrameLiveCount::~AnimationFrameLiveCount() { framesAlive.fetch_sub(1,std::memory_order_relaxed); }
+std::uint64_t AnimationFramesAlive() noexcept { return framesAlive.load(std::memory_order_relaxed); }
 War3RenderSkinUpdateV2 AnimationFrame::Describe() const noexcept {
     return {sizeof(War3RenderSkinUpdateV2),static_cast<std::uint32_t>(instances.size()),
         static_cast<std::uint32_t>(groups.size()),static_cast<std::uint32_t>(alphas.size()),sceneVersion,contentVersion,
@@ -159,24 +203,33 @@ std::shared_ptr<WorldModelScene> AnimationPickingScene(const AnimatedModelScene&
     AnimationPickingInstances(scene,frame,*result);
     return result;
 }
-void AnimationPickingInstances(const AnimatedModelScene& scene, const AnimationFrame& frame, WorldModelScene& output) {
+void AnimationPickingInstances(const AnimatedModelScene& scene, const AnimationFrame& frame, WorldModelScene& output, bool fullScan) {
     output.instances.clear(); output.instanceRequests.clear();
     std::size_t noGeometry=0;
-    for (std::size_t i=0;i<frame.instances.size();++i) if (!frame.poses.at(i).hidden && !frame.poses.at(i).outsideView) {
-        const auto& pose=frame.poses[i];
+    const auto visit=[&](std::size_t i) {
+        const auto& pose=frame.poses.at(i);
+        if (pose.hidden || pose.outsideView) return;
         if (pose.noVisibleGeometry) {
             const auto particle=std::lower_bound(frame.particleLinks.begin(),frame.particleLinks.end(),pose.requestIndex,
                 [](const auto& link,auto request) { return link.requestIndex<request; });
             const bool drawable=particle!=frame.particleLinks.end() && particle->requestIndex==pose.requestIndex &&
                 particle->identity==pose.identity && particle->simulated && !particle->hidden && particle->vertexCount && particle->drawCount;
-            if (!drawable) { ++noGeometry; continue; }
+            if (!drawable) { ++noGeometry; return; }
         }
-        output.instances.push_back(frame.instances[i].instance);
-        output.instanceRequests.push_back(frame.poses[i].requestIndex);
+        output.instances.push_back(frame.instances.at(i).instance);
+        output.instanceRequests.push_back(pose.requestIndex);
+    };
+    // 视野外的链既不可点选也不隐藏计数之外的东西：清单完整时只扫清单，视野外数量即其余链数。
+    std::size_t outside=0;
+    if (!fullScan && frame.viewInstancesComplete && frame.viewInstances.size()<=frame.poses.size()) {
+        for (const auto i:frame.viewInstances) visit(i);
+        outside=frame.poses.size()-frame.viewInstances.size();
+    } else {
+        for (std::size_t i=0;i<frame.instances.size();++i) visit(i);
+        outside=static_cast<std::size_t>(std::count_if(frame.poses.begin(),frame.poses.end(),[](const auto& pose) { return pose.outsideView; }));
     }
     output.requestedInstances=scene.geometry.requestedInstances;
-    output.skippedInstances=scene.geometry.skippedInstances+frame.hiddenInstances+noGeometry+
-        static_cast<std::size_t>(std::count_if(frame.poses.begin(),frame.poses.end(),[](const auto& pose) { return pose.outsideView; }));
+    output.skippedInstances=scene.geometry.skippedInstances+frame.hiddenInstances+noGeometry+outside;
 }
 Status ModelAnimationService::PrepareStandStorage(State& s, std::uint64_t frameBudget, std::uint64_t activeBudget) {
     const auto& scene=*s.scene; const auto& geometry=scene.geometry;
@@ -389,7 +442,18 @@ Status ModelAnimationService::PrepareStandStorage(State& s, std::uint64_t frameB
 }
 AnimationPlaybackPolicy ModelAnimationService::PlaybackPolicy() const noexcept { return state_->limits.playbackPolicy; }
 Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(const AnimationFrame* previous,
-    const AnimationAdvance& advance) try {
+    const AnimationAdvance& advance) {
+    return PrepareFrame(previous,advance,nullptr);
+}
+Result<AnimationStagedFrame> ModelAnimationService::PrepareStaged(const AnimationFrame* previous,
+    const AnimationAdvance& advance) {
+    std::function<Status()> finalize;
+    auto frame=PrepareFrame(previous,advance,&finalize);
+    if (!frame.Succeeded()) return {std::nullopt,std::move(frame.diagnostics)};
+    return Result<AnimationStagedFrame>::Success(AnimationStagedFrame{std::move(*frame.value),std::move(finalize)});
+}
+Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::PrepareFrame(const AnimationFrame* previous,
+    const AnimationAdvance& advance, std::function<Status()>* deferred) try {
     const auto prepareStarted=TimingClock::now();
     using Output=Result<std::shared_ptr<const AnimationFrame>>;
     const auto fail=[](const char* code,const char* text) { return Output::Failure("Render.Animation",code,text); };
@@ -401,17 +465,30 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     if (previous && (previous->sceneVersion!=scene.sceneVersion || previous->documentRevision!=scene.documentRevision))
         return fail("ANIMATION_FRAME_STALE","旧帧不属于当前模型场景或地图修订。");
     std::uint64_t residentVersion=0; // 回收帧留着的姿势数组属于哪一帧；0 = 没有留下
-    auto frame=s.framePool->Take(s.particles.get(),&residentVersion);
+    bool recycledUnfinalized=false;
+    auto frame=s.framePool->Take(s.particles.get(),&residentVersion,&recycledUnfinalized);
+    frame->timings.recycledUnfinalized=recycledUnfinalized ? 1 : 0;
     frame->sceneVersion=scene.sceneVersion; frame->documentRevision=scene.documentRevision;
     frame->previewParticleBudget=advance.previewParticleBudget;
     frame->timings.candidateInstances=g.instances.size();
+    AnimationJitter(AnimationJitterSite::PrepareStart);
+    // 本次编辑过的请求（升序）：其余请求的变换与颜色与上一帧（推进来源）逐位相同。
+    std::vector<std::uint32_t> editedRequests;
     const auto stateStarted=TimingClock::now();
-    frame->states=previous ? previous->states : s.initial;
     frame->worldCamera=advance.worldCamera ? advance.worldCamera : previous ? previous->worldCamera : std::nullopt;
     frame->worldView=advance.worldView ? advance.worldView : previous ? previous->worldView : std::nullopt;
     if (frame->worldView) frame->worldCamera=AnimationWorldCamera(frame->worldView->camera);
-    if (auto check=AdvanceAnimationStates(frame->states,scene,advance,s.limits.poseWorkers); !check.Succeeded())
-        return {std::nullopt,std::move(check.diagnostics)};
+    {
+        // 回收帧留着上一轮的状态数组：数量相同时各分段直接从上一帧复制本段、套编辑并推进（一遍），否则先整份复制。
+        // 两者结果相同。上一帧由调用方持有到 Prepare 返回，收尾也不写状态数组。
+        const auto& source=previous ? previous->states : s.initial;
+        Status check;
+        if (frame->states.size()!=source.size()) {
+            frame->states=source;
+            check=AdvanceAnimationStates(frame->states,scene,advance,s.limits.poseWorkers,{},&editedRequests);
+        } else check=AdvanceAnimationStates(frame->states,scene,advance,s.limits.poseWorkers,source,&editedRequests);
+        if (!check.Succeeded()) return {std::nullopt,std::move(check.diagnostics)};
+    }
     frame->timings.stateAdvanceNs=ElapsedNs(stateStarted);
     const auto visibilityStarted=TimingClock::now();
     if (auto visibility=PrepareAnimationVisibility(s.visibility,scene,s.assets,s.requestAssets,*frame,advance.edits,s.maxVisibilityBytes); !visibility.Succeeded())
@@ -476,21 +553,36 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     const auto outsideAt=[&](std::uint32_t request) {
         return request!=kBakedInstance && !frame->requestVisibility.empty() && !frame->requestVisibility[request];
     };
-    // 不共享片段时布局逐实例累加：先顺序算出各实例的片段与碰撞偏移（只做加法与预算检查），
-    // 之后的逐实例打包与共享模式一样按固定分段并行。
-    struct FixedSlot { std::uint32_t group=0, alpha=0, layer=0, collision=0; };
-    std::vector<FixedSlot> fixed;
+    // 不共享片段时布局逐实例累加：组/透明度/层偏移只由场景决定，同一场景只算一次；碰撞偏移只计视野内实例，
+    // 每帧按实例顺序重算（只做加法与预算检查）。之后的逐实例打包与共享模式一样按固定分段并行。
+    auto& fixed=s.fixedLayout;
+    const auto layoutStarted=TimingClock::now();
     if (!s.sharedPoseRanges) {
-        fixed.resize(g.instances.size());
+        if (s.fixedLayoutScene!=scene.sceneVersion || s.fixedLayoutTable!=g.instances.data() || fixed.size()!=g.instances.size()) {
+            s.fixedLayoutScene=0; fixed.assign(g.instances.size(),{}); s.fixedModels.assign(g.instances.size(),0);
+            s.fixedPickInstances.clear(); s.fixedPickShapes.clear();
+            std::uint32_t groups=0,alphas=0,layers=0;
+            for (std::uint32_t i=0;i<g.instances.size();++i) {
+                const auto m=g.instances[i].model;
+                fixed[i]={groups,alphas,layers,0}; s.fixedModels[i]=m;
+                groups+=scene.models[m].groupCount; alphas+=g.models[m].meshCount;
+                if (scene.dynamicMaterialAlphas) layers+=scene.modelLayerRanges[m].count;
+                if (const auto& pick=scene.pickModels[m]; pick.source) {
+                    s.fixedPickInstances.push_back(i);
+                    s.fixedPickShapes.push_back(static_cast<std::uint32_t>(pick.source->collisionShapes.size()));
+                }
+            }
+            s.fixedGroups=groups; s.fixedAlphas=alphas; s.fixedLayers=layers;
+            s.fixedLayoutScene=scene.sceneVersion; s.fixedLayoutTable=g.instances.data();
+        }
+        groupCount=s.fixedGroups; alphaCount=s.fixedAlphas; layerAlphaCount=s.fixedLayers;
+        // 只有带点选来源且在视野内的实例读自己的碰撞偏移（打包时），其余实例的值不被使用。
         std::size_t collisions=frame->collisionMatrices.size();
-        for (std::uint32_t i=0;i<g.instances.size();++i) {
-            const auto m=g.instances[i].model;
-            fixed[i]={groupCount,alphaCount,layerAlphaCount,static_cast<std::uint32_t>(collisions)};
-            groupCount+=scene.models[m].groupCount; alphaCount+=g.models[m].meshCount;
-            if (scene.dynamicMaterialAlphas) layerAlphaCount+=scene.modelLayerRanges[m].count;
-            const auto& pick=scene.pickModels[m];
-            if (pick.source && !outsideAt(g.instanceRequests[i])) {
-                const auto count=pick.source->collisionShapes.size();
+        for (std::size_t k=0;k<s.fixedPickInstances.size();++k) {
+            const auto i=s.fixedPickInstances[k];
+            fixed[i].collision=static_cast<std::uint32_t>(collisions);
+            if (!outsideAt(g.instanceRequests[i])) {
+                const std::size_t count=s.fixedPickShapes[k];
                 if (count>s.maxCollisionMatrices-collisions)
                     return fail("ANIMATION_PICK_COLLISION_BUDGET","碰撞节点 owned 帧超出冻结预算。");
                 collisions+=count;
@@ -498,15 +590,72 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         }
         frame->collisionMatrices.resize(collisions);
     }
+    frame->timings.poseLayoutNs=ElapsedNs(layoutStarted);
+    // 不共享片段时布局只由场景决定。上一帧同布局时整段沿用其数组，只重写视野内实例和刚出视野/布局变化的实例；
+    // 一直在视野外的实例本就是单位矩阵、alpha 1、颜色 1、材质沿用上一帧，与逐实例重建逐位相同。
+    const bool forward=s.limits.reusePreviousFrame && !s.sharedPoseRanges && previous && !previous->sharedPoseRanges &&
+        previous->poses.size()==frame->poses.size() && previous->groups.size()==groupCount &&
+        previous->alphas.size()==alphaCount && previous->colors.size()==alphaCount &&
+        previous->dynamicMaterialAlphas==scene.dynamicMaterialAlphas && previous->dynamicMaterialStates==scene.dynamicMaterialStates &&
+        previous->layerAlphas.size()==layerAlphaCount && (!scene.dynamicMaterialStates || previous->materialStates.size()==layerAlphaCount);
+    const auto sameRange=[](War3RenderCore::Range32 a,War3RenderCore::Range32 b) { return a.offset==b.offset && a.count==b.count; };
+    const auto sameLayout=[&](const AnimationPoseLink& old,const AnimationPoseLink& link) {
+        return old.identity==link.identity && old.requestIndex==link.requestIndex &&
+            old.firstGroup==link.firstGroup && old.groupCount==link.groupCount &&
+            old.firstAlpha==link.firstAlpha && old.alphaCount==link.alphaCount &&
+            sameRange(old.materialAlphas,link.materialAlphas) && sameRange(old.materialStates,link.materialStates);
+    };
+    // 回收帧留着较早一帧的姿势数组、且变化记录能接到上一帧时，不整段复制上一帧：只把其间变化、本帧又在视野外的实例
+    // 补成上一帧内容。本帧视野内实例的各片段在下面（默认值、求值或占位）整段重写，不必先补。
+    std::vector<std::uint32_t> residentChanges;
+    const bool resident=forward && residentVersion && frame->groups.size()==previous->groups.size() &&
+        frame->alphas.size()==previous->alphas.size() && frame->colors.size()==previous->colors.size() &&
+        frame->layerAlphas.size()==previous->layerAlphas.size() && frame->materialStates.size()==previous->materialStates.size() &&
+        CollectSkinPoseChanges(s.changeHistory.get(),scene.sceneVersion,residentVersion,previous->contentVersion,&residentChanges) &&
+        (residentChanges.empty() || residentChanges.back()<frame->poses.size());
+    // 回收帧接得上时，其间各帧一直在视野外、没有变化的实例（不在变化记录里），回收帧里的姿势链、实例记录、层片段与点选
+    // 包围盒已与上一帧逐位相同。本帧它仍在视野外、上一帧未隐藏、变换与颜色未被编辑时，本帧要写的内容也逐位相同
+    // （视野外只写身份、资产、场景决定的布局与当前变换颜色），下面打包、默认值、扫描、指纹、变化清单与点选都直接跳过。
+    // kept：1=沿用；2=其间变化过（打包时改回 0，照常重写）。
+    std::vector<std::uint8_t> kept;
+    if (resident) {
+        kept.assign(frame->poses.size(),0);
+        for (const auto i:residentChanges) kept[i]=2;
+    }
+    // 上一帧该请求是否在视野外：读上一帧打包时用的请求可见性，它与上一帧姿势链的 outsideView 同一版本、逐项相同；
+    // 本帧一侧用本帧按当前镜头算出的可见性。上一帧隐藏过的实例必在变化记录里（kept 已是 2），不必再查隐藏。
+    const auto previousOutside=[&](std::uint32_t request) {
+        return request!=kBakedInstance && !previous->requestVisibility.empty() && !previous->requestVisibility[request];
+    };
+    const auto sameRecord=[](const AnimationInstanceState& a,const AnimationInstanceState& b) {
+        return std::memcmp(a.transform.data(),b.transform.data(),sizeof(a.transform))==0 &&
+            std::memcmp(a.tint.data(),b.tint.data(),sizeof(a.tint))==0;
+    };
     // 逐实例打包：各实例只写自己的姿势链、实例与片段描述，按固定分段并行，计数分段累加，结果与线程数无关。
-    struct PackCounts { std::uint64_t offscreen=0, eligible=0; };
+    struct PackCounts { std::uint64_t offscreen=0, eligible=0, kept=0; };
+    // 每模型的资产能否求值本帧只算一次；固定布局时实例的模型序号读紧凑副本，不读整条实例记录。
+    std::vector<std::uint8_t> modelEligible(scene.models.size());
+    for (std::uint32_t m=0;m<modelEligible.size();++m) {
+        const auto asset=s.modelAssets[m];
+        modelEligible[m]=asset!=UINT32_MAX && s.assets[asset].compiled.Valid();
+    }
+    const bool compactModels=!s.sharedPoseRanges && s.fixedModels.size()==g.instances.size();
+    const auto editedAt=[&](std::uint32_t request) {
+        return !editedRequests.empty() && std::binary_search(editedRequests.begin(),editedRequests.end(),request);
+    };
     const auto packOne=[&](std::uint32_t i, PackCounts& counts) {
-        const auto m=g.instances[i].model, request=g.instanceRequests[i];
-        const auto candidateAsset=s.modelAssets[m];
+        const auto request=g.instanceRequests[i];
+        const auto m=compactModels ? s.fixedModels[i] : g.instances[i].model;
         const bool outside=outsideAt(request);
-        if (request!=kBakedInstance && candidateAsset!=UINT32_MAX && s.assets[candidateAsset].compiled.Valid()) {
+        if (request!=kBakedInstance && modelEligible[m]) {
             if (outside) ++counts.offscreen;
             else ++counts.eligible;
+        }
+        if (!kept.empty()) {
+            if (kept[i]==2) kept[i]=0;
+            // 沿用时上一帧存在，本帧状态由它复制推进而来：没编辑过的请求变换与颜色逐位不变，只有编辑过的才比对。
+            else if (outside && previousOutside(request) && (!editedAt(request) ||
+                sameRecord(frame->states[request],previous->states[request]))) { kept[i]=1; ++counts.kept; return; }
         }
         auto& link=frame->poses[i];
         if (s.sharedPoseRanges) {
@@ -558,6 +707,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (failed.load()) throw std::bad_alloc();
         for (const auto& counts:counted) {
             frame->offscreenPoseInstances+=counts.offscreen; frame->timings.eligiblePoseInstances+=counts.eligible;
+            frame->timings.keptInstances+=counts.kept;
         }
     }
     frame->timings.posePackNs=ElapsedNs(packStarted);
@@ -566,28 +716,6 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         for (std::uint32_t k=0;k<link.groupCount;++k)
             frame->groups[link.firstGroup+k]={{1,0,0,0,1,0,0,0,1,0,0,0}};
     };
-    // 不共享片段时布局只由场景决定。上一帧同布局时整段沿用其数组，只重写视野内实例和刚出视野/布局变化的实例；
-    // 一直在视野外的实例本就是单位矩阵、alpha 1、颜色 1、材质沿用上一帧，与逐实例重建逐位相同。
-    const bool forward=s.limits.reusePreviousFrame && !s.sharedPoseRanges && previous && !previous->sharedPoseRanges &&
-        previous->poses.size()==frame->poses.size() && previous->groups.size()==groupCount &&
-        previous->alphas.size()==alphaCount && previous->colors.size()==alphaCount &&
-        previous->dynamicMaterialAlphas==scene.dynamicMaterialAlphas && previous->dynamicMaterialStates==scene.dynamicMaterialStates &&
-        previous->layerAlphas.size()==layerAlphaCount && (!scene.dynamicMaterialStates || previous->materialStates.size()==layerAlphaCount);
-    const auto sameRange=[](War3RenderCore::Range32 a,War3RenderCore::Range32 b) { return a.offset==b.offset && a.count==b.count; };
-    const auto sameLayout=[&](const AnimationPoseLink& old,const AnimationPoseLink& link) {
-        return old.identity==link.identity && old.requestIndex==link.requestIndex &&
-            old.firstGroup==link.firstGroup && old.groupCount==link.groupCount &&
-            old.firstAlpha==link.firstAlpha && old.alphaCount==link.alphaCount &&
-            sameRange(old.materialAlphas,link.materialAlphas) && sameRange(old.materialStates,link.materialStates);
-    };
-    // 回收帧留着较早一帧的姿势数组、且变化记录能接到上一帧时，不整段复制上一帧：只把其间变化、本帧又在视野外的实例
-    // 补成上一帧内容。本帧视野内实例的各片段在下面（默认值、求值或占位）整段重写，不必先补。
-    std::vector<std::uint32_t> residentChanges;
-    const bool resident=forward && residentVersion && frame->groups.size()==previous->groups.size() &&
-        frame->alphas.size()==previous->alphas.size() && frame->colors.size()==previous->colors.size() &&
-        frame->layerAlphas.size()==previous->layerAlphas.size() && frame->materialStates.size()==previous->materialStates.size() &&
-        CollectSkinPoseChanges(s.changeHistory.get(),scene.sceneVersion,residentVersion,previous->contentVersion,&residentChanges) &&
-        (residentChanges.empty() || residentChanges.back()<frame->poses.size());
     // 沿用路径对该实例没有任何写入（两帧都在视野外、布局相同、上一帧未隐藏）；变化清单据此只再看隐藏与实例记录。
     std::vector<std::uint8_t> steady;
     if (forward) steady.assign(frame->poses.size(),0);
@@ -625,6 +753,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             try {
                 const auto last=std::min(count,(task+1)*chunk);
                 for (auto i=task*chunk;i<last;++i) {
+                    if (!kept.empty() && kept[i]==1) { steady[i]=1; continue; }
                     const auto& link=frame->poses[i]; const auto& old=previous->poses[i];
                     const bool kept=sameLayout(old,link);
                     if (link.outsideView && kept && old.outsideView && !old.hidden) { steady[i]=1; continue; }
@@ -704,9 +833,71 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         return batch==0 ? *s.evaluator : s.poseHelpers[batch-1];
     };
     if (s.evaluator) frame->timings.poseWorkers=s.poseHelpers.size()+1;
+    // 求值结果中逐实例的数组（碰撞矩阵、矩阵组、层透明度、材质状态、mesh 透明度与颜色）只写本实例的区间，
+    // 在各批求值任务里紧接着求值写入；版本编号、警告、问题清单、诊断与隐藏占位仍在 flush 里按请求顺序合并。
+    // 复制中的映射错误按原合并顺序报告：1=原在 GEOA 问题清单之前（碰撞），2=之后（其余），3=分配失败。
+    std::vector<std::uint8_t> copyStage(s.requests.size());
+    std::atomic<bool> evaluatedInvalid{false}; // 沿用时：本帧求值写入的矩阵组有超出插件有限值预算的值
+    std::vector<Status> copyStatus(s.requests.size());
+    const auto copyOutputs=[&](std::uint32_t k,const War3RenderCore::PoseBatchEvaluator& evaluator,std::uint32_t local) noexcept {
+        copyStage[k]=0;
+        try {
+            const auto fail=[&](std::uint8_t stage,Status status) { copyStage[k]=stage; copyStatus[k]=std::move(status); };
+            if (evaluator.Receipts()[local].error!=Code::Ok) return; // 隐藏占位或整帧失败在合并时处理。
+            const auto i=s.renderedIndices[k]; const auto& link=frame->poses[i];
+            const auto modelIndex=frame->instances[i].instance.model;
+            const auto groups=evaluator.Groups(local); const auto alphas=evaluator.Alphas(local); const auto colors=evaluator.Colors(local);
+            const auto& pick=scene.pickModels[modelIndex];
+            if (pick.collisionNodes) {
+                const auto nodes=evaluator.Nodes(local);
+                if (pick.collisionNodes->size()!=link.collisionMatrices.count)
+                    return fail(1,AnimationFailure("ANIMATION_PICK_COLLISION_MAPPING","碰撞 shape 与节点来源数量不一致。"));
+                constexpr std::array<unsigned,12> columns{0,1,2,4,5,6,8,9,10,12,13,14};
+                for (std::uint32_t c=0;c<link.collisionMatrices.count;++c) {
+                    const auto node=(*pick.collisionNodes)[c];
+                    if (node==NoIndex) continue; // 没有实际节点输出不能拿组矩阵或 identity 代替。
+                    if (node>=nodes.size()) return fail(1,AnimationFailure("ANIMATION_PICK_COLLISION_MAPPING","碰撞节点没有当前完整姿势输出。"));
+                    auto& output=frame->collisionMatrices[link.collisionMatrices.offset+c];
+                    for (std::size_t q=0;q<columns.size();++q) output.matrix.values[q]=nodes[node].worldMatrix[columns[q]];
+                    output.available=true;
+                }
+            }
+            if (groups.size()!=link.groupCount) return fail(2,AnimationFailure("ANIMATION_GROUP_MAPPING","实例矩阵组映射不一致。"));
+            for (std::size_t q=0;q<groups.size();++q) {
+                std::copy(groups[q].values.begin(),groups[q].values.end(),frame->groups[link.firstGroup+q].values);
+                if (forward) for (const auto f:groups[q].values)
+                    if (!std::isfinite(f) || std::abs(f)>1e7f) evaluatedInvalid.store(true,std::memory_order_relaxed);
+            }
+            const auto& model=g.models[modelIndex];
+            if (scene.dynamicMaterialAlphas) {
+                const auto assetIndex=s.modelAssets[modelIndex];
+                if (assetIndex==UINT32_MAX || evaluator.LayerAlphas(local).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
+                    return fail(2,AnimationFailure("ANIMATION_LAYER_ALPHA_MAPPING","材质输出与当前姿势资产布局不同。"));
+                if (auto status=FillAnimationLayerAlphas(scene,modelIndex,link.materialAlphas,frame->layerAlphas,
+                    evaluator.LayerAlphas(local)); !status.Succeeded()) return fail(2,std::move(status));
+            }
+            if (scene.dynamicMaterialStates) {
+                const auto assetIndex=s.modelAssets[modelIndex];
+                if (assetIndex==UINT32_MAX || evaluator.LayerTextureIds(local).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
+                    return fail(2,AnimationFailure("ANIMATION_TEXTURE_MAPPING","贴图输出与当前姿势资产布局不同。"));
+                if (auto status=FillAnimationMaterialStates(scene,modelIndex,link.materialStates,frame->materialStates,
+                    evaluator.LayerTextureIds(local),evaluator.LayerUvTransforms(local)); !status.Succeeded()) return fail(2,std::move(status));
+            }
+            for (std::uint32_t mesh=0;mesh<model.meshCount;++mesh) {
+                const auto geoset=g.meshGeosets[model.firstMesh+mesh];
+                if (geoset>=alphas.size() || geoset>=colors.size())
+                    return fail(2,AnimationFailure("ANIMATION_COLOR_MAPPING","颜色/透明度片段缺少geoset。"));
+                frame->alphas[link.firstAlpha+mesh]=alphas[geoset];
+                std::copy(colors[geoset].begin(),colors[geoset].end(),frame->colors[link.firstAlpha+mesh].rgb);
+            }
+        } catch (...) { copyStage[k]=3; }
+    };
     const std::function<void(std::uint32_t)> evaluateBatch=[&](std::uint32_t batch) {
-        const auto first=batch*width;
-        outcomes[batch]=evaluatorFor(batch).Evaluate(std::span(s.requests.data()+first,std::min(width,active-first)));
+        const auto first=batch*width, count=std::min(width,active-first);
+        auto& evaluator=evaluatorFor(batch);
+        outcomes[batch]=evaluator.Evaluate(std::span(s.requests.data()+first,count));
+        if (outcomes[batch].error!=Code::Ok) return; // 整批失败在合并时按原顺序报告。
+        for (std::uint32_t local=0;local<count;++local) copyOutputs(first+local,evaluator,local);
     };
     const auto flush=[&]() -> Status {
         if (!active) return {};
@@ -773,22 +964,10 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                 const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
                 CaptureAnimationParticleAnchors(*s.particles,link.requestIndex,assetIndex,s.assets[assetIndex],evaluator.Nodes(local));
             }
-            const auto groups=evaluator.Groups(local); const auto alphas=evaluator.Alphas(local); const auto colors=evaluator.Colors(local);
-            const auto& pick=scene.pickModels[frame->instances[i].instance.model];
-            if (pick.collisionNodes) {
-                const auto nodes=evaluator.Nodes(local);
-                if (pick.collisionNodes->size()!=link.collisionMatrices.count)
-                    return AnimationFailure("ANIMATION_PICK_COLLISION_MAPPING","碰撞 shape 与节点来源数量不一致。");
-                constexpr std::array<unsigned,12> columns{0,1,2,4,5,6,8,9,10,12,13,14};
-                for (std::uint32_t c=0;c<link.collisionMatrices.count;++c) {
-                    const auto node=(*pick.collisionNodes)[c];
-                    if (node==NoIndex) continue; // 没有实际节点输出不能拿组矩阵或 identity 代替。
-                    if (node>=nodes.size()) return AnimationFailure("ANIMATION_PICK_COLLISION_MAPPING","碰撞节点没有当前完整姿势输出。");
-                    auto& output=frame->collisionMatrices[link.collisionMatrices.offset+c];
-                    for (std::size_t q=0;q<columns.size();++q) output.matrix.values[q]=nodes[node].worldMatrix[columns[q]];
-                    output.available=true;
-                }
-            }
+            // 数组已在求值任务里写入；这里按原顺序报告其中的映射错误。
+            if (copyStage[k]==3) throw std::bad_alloc();
+            if (copyStage[k]==1) return std::move(copyStatus[k]);
+            const auto alphas=evaluator.Alphas(local);
             const auto issues=evaluator.GeosetIssues(local);
             if (issues.size()>s.maxGeosetIssues-frame->geosetIssues.size())
                 return AnimationFailure("ANIMATION_GEOSET_ISSUE_BUDGET","当前 GEOA 来源记录超出冻结帧预算。");
@@ -799,30 +978,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
                     return AnimationFailure("ANIMATION_GEOSET_ISSUE_MAPPING","局部来源记录没有对应的原 geoset。");
                 frame->geosetIssues.push_back({issue.geosetIndex,issue.diagnostic});
             }
-            if (groups.size()!=link.groupCount) return AnimationFailure("ANIMATION_GROUP_MAPPING","实例矩阵组映射不一致。");
-            for (std::size_t q=0;q<groups.size();++q)
-                std::copy(groups[q].values.begin(),groups[q].values.end(),frame->groups[link.firstGroup+q].values);
-            const auto& model=g.models[frame->instances[i].instance.model];
-            if (scene.dynamicMaterialAlphas) {
-                const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
-                if (assetIndex==UINT32_MAX || evaluator.LayerAlphas(local).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
-                    return AnimationFailure("ANIMATION_LAYER_ALPHA_MAPPING","材质输出与当前姿势资产布局不同。");
-                if (auto status=FillAnimationLayerAlphas(scene,frame->instances[i].instance.model,link.materialAlphas,frame->layerAlphas,
-                    evaluator.LayerAlphas(local)); !status.Succeeded()) return status;
-            }
-            if (scene.dynamicMaterialStates) {
-                const auto assetIndex=s.modelAssets[frame->instances[i].instance.model];
-                if (assetIndex==UINT32_MAX || evaluator.LayerTextureIds(local).size()!=s.assets[assetIndex].compiled.MaterialLayerCount())
-                    return AnimationFailure("ANIMATION_TEXTURE_MAPPING","贴图输出与当前姿势资产布局不同。");
-                if (auto status=FillAnimationMaterialStates(scene,frame->instances[i].instance.model,link.materialStates,frame->materialStates,
-                    evaluator.LayerTextureIds(local),evaluator.LayerUvTransforms(local)); !status.Succeeded()) return status;
-            }
-            for (std::uint32_t mesh=0;mesh<model.meshCount;++mesh) {
-                const auto geoset=g.meshGeosets[model.firstMesh+mesh];
-                if (geoset>=alphas.size() || geoset>=colors.size()) return AnimationFailure("ANIMATION_COLOR_MAPPING","颜色/透明度片段缺少geoset。");
-                frame->alphas[link.firstAlpha+mesh]=alphas[geoset];
-                std::copy(colors[geoset].begin(),colors[geoset].end(),frame->colors[link.firstAlpha+mesh].rgb);
-            }
+            if (copyStage[k]==2) return std::move(copyStatus[k]);
             appendDiagnostics(evaluator.Diagnostics(local));
         }
         frame->timings.poseMergeNs+=ElapsedNs(mergeStarted);
@@ -830,6 +986,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     };
     const auto scanStarted=TimingClock::now();
     for (std::uint32_t i=0;i<g.instances.size();++i) {
+        if (!kept.empty() && kept[i]==1) continue;
         auto& link=frame->poses[i]; const auto m=g.instances[i].model, assetIndex=s.modelAssets[m];
         const auto* asset=assetIndex==UINT32_MAX ? nullptr : &s.assets[assetIndex];
         if (link.outsideView) {
@@ -838,6 +995,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             if (asset) link.asset={static_cast<std::uint64_t>(assetIndex)+1,scene.generation};
             continue;
         }
+        frame->viewInstances.push_back(i); // 按实例顺序扫描，清单天然升序；沿用的链都在视野外。
         if (s.sharedPoseRanges && slots[i]==UINT32_MAX) {
             if (link.hidden) ++frame->hiddenInstances;
             else { ++frame->retainedStaticInstances; if (link.staticForBudget) ++frame->budgetStaticInstances; }
@@ -867,9 +1025,14 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         if (active==s.requests.size()) if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
     }
     if (auto result=flush(); !result.Succeeded()) return {std::nullopt,std::move(result.diagnostics)};
+    frame->viewInstancesComplete=true;
     frame->timings.poseScanNs=ElapsedNs(scanStarted)-frame->timings.poseEvaluationNs-frame->timings.poseMergeNs;
     const auto checkStarted=TimingClock::now();
-    {
+    if (forward) {
+        // 沿用上一帧时：视野外的矩阵组是单位矩阵或上一帧已整份/同样检查过的值，视野内的是单位矩阵占位或本帧求值结果，
+        // 后者已在写入时逐项检查，结论与整份检查相同。
+        if (evaluatedInvalid.load()) return fail("ANIMATION_GROUP_INVALID","组矩阵不满足插件有限值预算。");
+    } else {
         // 按固定分段并行检查；只读，结果与线程数无关。
         constexpr std::size_t chunk=8192;
         const auto matrices=frame->groups.size();
@@ -885,71 +1048,23 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
     frame->timings.poseCheckNs=ElapsedNs(checkStarted);
     frame->timings.posePackingNs=ElapsedNs(poseStarted)-frame->timings.poseEvaluationNs;
     frame->contentVersion=NextAnimationSerial();
+    AnimationJitter(AnimationJitterSite::PreviousRead);
+    if (!s.particles) frame->particleVertices.clear(); // 回收帧留着的旧顶点只由粒子合并覆盖；不模拟时清空。
     if (s.particles) {
         const auto particlesStarted=TimingClock::now();
         auto status=PrepareAnimationParticles(*s.particles,scene,s.assets,s.requestAssets,*frame,previous);
         frame->timings.particlesTotalNs=ElapsedNs(particlesStarted);
         if (!status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
     }
-    const auto fingerprintStarted=TimingClock::now();
-    {
-        // 逐实例指纹只写本实例的姿势链，按固定分段并行；合并哈希仍在下方按实例顺序进行。
-        // 视野内实例常按模型扎堆，分段要小才能分到各线程（视野外实例只做一次判断）。
-        constexpr std::size_t chunk=64;
-        const auto count=frame->poses.size();
-        const std::function<void(std::uint32_t)> fingerprint=[&](std::uint32_t task) {
-            const auto end=std::min(count,(std::size_t(task)+1)*chunk);
-            for (std::size_t p=std::size_t(task)*chunk;p<end;++p) {
-                auto& link=frame->poses[p];
-                // 粒子链可能在主姿势成功后隐藏整实例。不共享时视野外的链在打包时整条复位、之后无人写警告，不再重复清。
-                if (link.hidden || (link.outsideView && s.sharedPoseRanges)) link.warnings={};
-                if (link.outsideView) continue;
-                if (s.sharedPoseRanges && !link.animated && !link.hidden) continue; // 实际缓存片段的指纹/可见度不逐实例重复计算。
-                link.noVisibleGeometry=!AnimationHasVisibleLayers(scene,*frame,link,frame->instances[link.renderedInstance].instance.model);
-                if (link.hidden) continue; // 占位矩阵/透明度没有成功姿势指纹。
-                link.matrixHash=AnimationBitsHash(frame->groups.data()+link.firstGroup,link.groupCount*sizeof(War3RenderGroupMatrixV2));
-                link.alphaHash=AnimationBitsHash(frame->alphas.data()+link.firstAlpha,link.alphaCount*sizeof(float));
-                link.colorHash=AnimationBitsHash(frame->colors.data()+link.firstAlpha,link.alphaCount*sizeof(War3RenderMeshColorV2));
-                if (scene.dynamicMaterialAlphas) link.materialAlphaHash=AnimationBitsHash(frame->layerAlphas.data()+link.materialAlphas.offset,link.materialAlphas.count*sizeof(float));
-                if (scene.dynamicMaterialStates) link.materialStateHash=AnimationBitsHash(frame->materialStates.data()+link.materialStates.offset,link.materialStates.count*sizeof(War3RenderMaterialStateV2));
-            }
-        };
-        RunAnimationTasksWith(s.limits.poseWorkers,static_cast<std::uint32_t>((count+chunk-1)/chunk),fingerprint);
-    }
     auto& measurement=frame->timings;
-    measurement.outputMotionHash=measurement.particleStateHash=14695981039346656037ull;
-    for (std::size_t i=0;i<frame->poses.size();++i) {
-        const auto& pose=frame->poses[i];
-        if (pose.hidden || pose.noVisibleGeometry || pose.outsideView) continue;
-        AddMotionHash(measurement.outputMotionHash,&pose.matrixHash,sizeof(pose.matrixHash));
-        AddMotionHash(measurement.outputMotionHash,&pose.alphaHash,sizeof(pose.alphaHash));
-        AddMotionHash(measurement.outputMotionHash,&pose.colorHash,sizeof(pose.colorHash));
-        if (scene.dynamicMaterialAlphas) AddMotionHash(measurement.outputMotionHash,&pose.materialAlphaHash,sizeof(pose.materialAlphaHash));
-        if (scene.dynamicMaterialStates) AddMotionHash(measurement.outputMotionHash,&pose.materialStateHash,sizeof(pose.materialStateHash));
-        const auto& instance=frame->instances[i].instance;
-        AddMotionHash(measurement.outputMotionHash,instance.transform,sizeof(instance.transform));
-        AddMotionHash(measurement.outputMotionHash,instance.color,sizeof(instance.color));
-    }
-    for (const auto& particle:frame->particleLinks) if (particle.simulated && !particle.hidden) {
-        // StateHash 还含模拟时钟，只供诊断。有效动画不能拿该时钟替代实际几何变化。
-        AddMotionHash(measurement.particleStateHash,&particle.stateHash,sizeof(particle.stateHash));
-        if (particle.vertexCount && particle.drawCount)
-            AddMotionHash(measurement.outputMotionHash,&particle.geometryHash,sizeof(particle.geometryHash));
-    }
-    if (!frame->states.empty()) {
-        measurement.minElapsedMs=measurement.minGlobalMs=UINT64_MAX;
-        for (const auto& state:frame->states) {
-            measurement.minElapsedMs=std::min(measurement.minElapsedMs,state.elapsedMs);
-            measurement.maxElapsedMs=std::max(measurement.maxElapsedMs,state.elapsedMs);
-            measurement.minGlobalMs=std::min(measurement.minGlobalMs,state.globalMs);
-            measurement.maxGlobalMs=std::max(measurement.maxGlobalMs,state.globalMs);
-        }
-    }
-    measurement.fingerprintNs=ElapsedNs(fingerprintStarted);
     if (s.prem) {
-        if (auto status = PrepareAnimationPrem(s, *frame, previous, advance); !status.Succeeded())
-            return {std::nullopt, std::move(status.diagnostics)};
+        const auto premStarted=TimingClock::now();
+        auto status = PrepareAnimationPrem(s, *frame, previous, advance);
+        measurement.premNs=ElapsedNs(premStarted);
+        if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
     }
+    AnimationJitter(AnimationJitterSite::PreviousRead);
+    const auto changeStarted=TimingClock::now();
     // 沿用上一帧数组时给出相对上一帧的变化实例：沿用路径没有写入（steady）、本帧也没被粒子隐藏、实例记录逐字节相同的
     // 实例不列，其余一律列出，宁多勿漏。消费者据此只复制/上传这些实例。
     if (forward) {
@@ -962,6 +1077,7 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
             try {
                 const auto last=std::min(count,(task+1)*chunk);
                 for (auto i=task*chunk;i<last;++i) {
+                    if (!kept.empty() && kept[i]==1) continue;
                     if (steady[i] && !frame->poses[i].hidden &&
                         std::memcmp(&frame->instances[i],&previous->instances[i],sizeof(frame->instances[i]))==0) continue;
                     parts[task].push_back(i);
@@ -973,13 +1089,117 @@ Result<std::shared_ptr<const AnimationFrame>> ModelAnimationService::Prepare(con
         for (const auto& part:parts) frame->changedInstances.insert(frame->changedInstances.end(),part.begin(),part.end());
         frame->changeBaseContentVersion=previous->contentVersion;
     }
-    const auto boundsStarted=TimingClock::now();
-    auto bounds=PrepareAnimationPickBounds(scene,*frame);
-    measurement.pickBoundsNs=ElapsedNs(boundsStarted);
-    if (!bounds.Succeeded()) return {std::nullopt,std::move(bounds.diagnostics)};
+    measurement.changeListNs=ElapsedNs(changeStarted);
     if (frame->changeBaseContentVersion)
         s.changeHistory=AppendSkinPoseChanges(s.changeHistory,{scene.sceneVersion,frame->contentVersion,frame->changeBaseContentVersion,
             std::make_shared<const std::vector<std::uint32_t>>(frame->changedInstances)});
+    // 收尾：逐实例指纹与可见几何判断、整帧运动摘要与时钟范围、点选包围盒。只读场景与本帧、只写本帧这些字段，
+    // 不碰服务状态；以本帧为 previous 的下一帧 Prepare 不读它们（PREM、粒子、打包、变化清单都在上面用完）。
+    // 两段准备时交给调用方，可与下一帧求值同时执行，并行段作为后台任务只用空闲线程。
+    AnimationJitter(AnimationJitterSite::PendingMark);
+    frame->finalizePending=true;
+    // 只能执行一次；执行后（成功或失败）放开帧与场景，调用方忘了销毁闭包也不会把帧扣在回收处之外。
+    auto finalize=[frame,scenePointer=std::shared_ptr<const AnimatedModelScene>(s.scene),kept=std::move(kept),
+        workers=s.limits.poseWorkers,shared=s.sharedPoseRanges,background=deferred!=nullptr]() mutable -> Status {
+      if (!frame) return AnimationFailure("ANIMATION_FINALIZE_REPEATED","动画帧收尾只能执行一次。");
+      struct Release {
+          std::shared_ptr<AnimationFrame>& frame; std::shared_ptr<const AnimatedModelScene>& scene;
+          ~Release() { frame.reset(); scene.reset(); }
+      } release{frame,scenePointer};
+      try {
+        const auto& scene=*scenePointer;
+        auto& measurement=frame->timings;
+        AnimationJitter(AnimationJitterSite::FinalizeStart);
+        const auto finalizeStarted=TimingClock::now();
+        {
+            // 逐实例指纹只写本实例的姿势链，按固定分段并行；合并哈希仍在下方按实例顺序进行。
+            // 视野内实例常按模型扎堆，分段要小才能分到各线程（视野外实例只做一次判断）。
+            constexpr std::size_t chunk=64;
+            const auto count=frame->poses.size();
+            const std::function<void(std::uint32_t)> fingerprint=[&](std::uint32_t task) {
+                const auto end=std::min(count,(std::size_t(task)+1)*chunk);
+                for (std::size_t p=std::size_t(task)*chunk;p<end;++p) {
+                    if (!kept.empty() && kept[p]==1) continue;
+                    auto& link=frame->poses[p];
+                    // 粒子链可能在主姿势成功后隐藏整实例。不共享时视野外的链在打包时整条复位、之后无人写警告，不再重复清。
+                    if (link.hidden || (link.outsideView && shared)) link.warnings={};
+                    if (link.outsideView) continue;
+                    if (shared && !link.animated && !link.hidden) continue; // 实际缓存片段的指纹/可见度不逐实例重复计算。
+                    link.noVisibleGeometry=!AnimationHasVisibleLayers(scene,*frame,link,frame->instances[link.renderedInstance].instance.model);
+                    if (link.hidden) continue; // 占位矩阵/透明度没有成功姿势指纹。
+                    link.matrixHash=AnimationBitsHash(frame->groups.data()+link.firstGroup,link.groupCount*sizeof(War3RenderGroupMatrixV2));
+                    link.alphaHash=AnimationBitsHash(frame->alphas.data()+link.firstAlpha,link.alphaCount*sizeof(float));
+                    link.colorHash=AnimationBitsHash(frame->colors.data()+link.firstAlpha,link.alphaCount*sizeof(War3RenderMeshColorV2));
+                    if (scene.dynamicMaterialAlphas) link.materialAlphaHash=AnimationBitsHash(frame->layerAlphas.data()+link.materialAlphas.offset,link.materialAlphas.count*sizeof(float));
+                    if (scene.dynamicMaterialStates) link.materialStateHash=AnimationBitsHash(frame->materialStates.data()+link.materialStates.offset,link.materialStates.count*sizeof(War3RenderMaterialStateV2));
+                }
+            };
+            RunAnimationTasksWith(workers,static_cast<std::uint32_t>((count+chunk-1)/chunk),fingerprint,background);
+        }
+        measurement.outputMotionHash=measurement.particleStateHash=14695981039346656037ull;
+        for (std::size_t i=0;i<frame->poses.size();++i) {
+            if (!kept.empty() && kept[i]==1) continue;
+            const auto& pose=frame->poses[i];
+            if (pose.hidden || pose.noVisibleGeometry || pose.outsideView) continue;
+            AddMotionHash(measurement.outputMotionHash,&pose.matrixHash,sizeof(pose.matrixHash));
+            AddMotionHash(measurement.outputMotionHash,&pose.alphaHash,sizeof(pose.alphaHash));
+            AddMotionHash(measurement.outputMotionHash,&pose.colorHash,sizeof(pose.colorHash));
+            if (scene.dynamicMaterialAlphas) AddMotionHash(measurement.outputMotionHash,&pose.materialAlphaHash,sizeof(pose.materialAlphaHash));
+            if (scene.dynamicMaterialStates) AddMotionHash(measurement.outputMotionHash,&pose.materialStateHash,sizeof(pose.materialStateHash));
+            const auto& instance=frame->instances[i].instance;
+            AddMotionHash(measurement.outputMotionHash,instance.transform,sizeof(instance.transform));
+            AddMotionHash(measurement.outputMotionHash,instance.color,sizeof(instance.color));
+        }
+        for (const auto& particle:frame->particleLinks) if (particle.simulated && !particle.hidden) {
+            // StateHash 还含模拟时钟，只供诊断。有效动画不能拿该时钟替代实际几何变化。
+            AddMotionHash(measurement.particleStateHash,&particle.stateHash,sizeof(particle.stateHash));
+            if (particle.vertexCount && particle.drawCount)
+                AddMotionHash(measurement.outputMotionHash,&particle.geometryHash,sizeof(particle.geometryHash));
+        }
+        if (!frame->states.empty()) {
+            // 按固定分段并行求各段最小/最大值，再按段序合并；结果与线程数无关。
+            struct Range { std::uint64_t minElapsed=UINT64_MAX, maxElapsed=0, minGlobal=UINT64_MAX, maxGlobal=0; };
+            constexpr std::size_t chunk=4096;
+            const auto count=frame->states.size();
+            std::vector<Range> ranges((count+chunk-1)/chunk);
+            const std::function<void(std::uint32_t)> scan=[&](std::uint32_t task) {
+                auto& range=ranges[task];
+                const auto last=std::min(count,(std::size_t(task)+1)*chunk);
+                for (auto i=std::size_t(task)*chunk;i<last;++i) {
+                    const auto& state=frame->states[i];
+                    range.minElapsed=std::min(range.minElapsed,state.elapsedMs); range.maxElapsed=std::max(range.maxElapsed,state.elapsedMs);
+                    range.minGlobal=std::min(range.minGlobal,state.globalMs); range.maxGlobal=std::max(range.maxGlobal,state.globalMs);
+                }
+            };
+            RunAnimationTasksWith(workers,static_cast<std::uint32_t>(ranges.size()),scan,background);
+            measurement.minElapsedMs=measurement.minGlobalMs=UINT64_MAX;
+            for (const auto& range:ranges) {
+                measurement.minElapsedMs=std::min(measurement.minElapsedMs,range.minElapsed);
+                measurement.maxElapsedMs=std::max(measurement.maxElapsedMs,range.maxElapsed);
+                measurement.minGlobalMs=std::min(measurement.minGlobalMs,range.minGlobal);
+                measurement.maxGlobalMs=std::max(measurement.maxGlobalMs,range.maxGlobal);
+            }
+        }
+        measurement.fingerprintNs=ElapsedNs(finalizeStarted);
+        const auto boundsStarted=TimingClock::now();
+        AnimationJitter(AnimationJitterSite::FinalizeBounds);
+        auto bounds=PrepareAnimationPickBounds(scene,*frame,kept,background);
+        measurement.pickBoundsNs=ElapsedNs(boundsStarted);
+        if (!bounds.Succeeded()) return bounds;
+        AnimationJitter(AnimationJitterSite::FinalizeDone);
+        frame->finalizePending=false;
+        measurement.finalizeNs=ElapsedNs(finalizeStarted);
+        return Status::Ok();
+      } catch (const std::bad_alloc&) {
+        return AnimationFailure("ANIMATION_ALLOCATION_FAILED","动画帧收尾分配失败；未发布半帧。");
+      }
+    };
+    if (deferred) {
+        *deferred=std::move(finalize);
+        measurement.prepareNs=ElapsedNs(prepareStarted);
+        return Output::Success(std::move(frame));
+    }
+    if (auto status=finalize(); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
     measurement.prepareNs=ElapsedNs(prepareStarted);
     return Output::Success(std::move(frame));
 } catch (const std::bad_alloc&) {

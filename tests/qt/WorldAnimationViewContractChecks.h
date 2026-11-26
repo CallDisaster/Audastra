@@ -1,5 +1,7 @@
 #pragma once
 #include "WorldAnimationPlayer.h"
+#include "WorldAnimationPlaybackContractChecks.h"
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -8,7 +10,7 @@
 namespace WorldAnimationViewContractChecks {
 inline void PausedViewReplay(War3Map::Modules::WorldViewport& viewport,
     War3Map::Modules::WorldAnimationPlayer& player) {
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     const auto originalCamera=viewport.Camera();
     const auto originalSize=viewport.size();
     const auto before=player.Frame(); QVERIFY(before);
@@ -36,11 +38,11 @@ inline void PausedViewReplay(War3Map::Modules::WorldViewport& viewport,
     }
     viewport.resize(originalSize);
     QVERIFY(viewport.SetCamera(originalCamera,viewport.DocumentRevision()).Succeeded());
-    QTRY_VERIFY(!player.Busy());
+    WORLD_WAIT_IDLE(player);
 }
 inline void OffscreenKeepsScheduling(War3Map::Modules::WorldViewport& viewport,
     War3Map::Modules::WorldAnimationPlayer& player) {
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     const auto originalCamera=viewport.Camera();
     auto camera=originalCamera;
     camera.targetX=20000.0f; camera.targetY=20000.0f; camera.distance=2048.0f;
@@ -57,14 +59,14 @@ inline void OffscreenKeepsScheduling(War3Map::Modules::WorldViewport& viewport,
     QTRY_VERIFY(player.Frame()->states.front().elapsedMs>offscreen->states.front().elapsedMs);
     QVERIFY(player.Playing());
     QCOMPARE(player.Picking(),picking); // 同帧映射更新保留宿主持有的指针。
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     QVERIFY(viewport.SetCamera(originalCamera,viewport.DocumentRevision()).Succeeded());
     QTRY_VERIFY(player.Frame()->worldView->camera.targetX==originalCamera.targetX);
     QVERIFY(!player.Picking()->instances.empty());
 }
 inline void MovingViewKeepsScheduling(War3Map::Modules::WorldViewport& viewport,
     War3Map::Modules::WorldAnimationPlayer& player) {
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     const auto original=viewport.Camera(); const auto before=player.Frame(); QVERIFY(before);
     QVERIFY(before->states.size()>1);
     War3Map::Render::AnimationEdit firstEdit, secondEdit;
@@ -73,14 +75,15 @@ inline void MovingViewKeepsScheduling(War3Map::Modules::WorldViewport& viewport,
     player.Edit(firstEdit);
     auto intermediate=original; intermediate.targetX+=1;
     QVERIFY(viewport.SetCamera(intermediate,viewport.DocumentRevision()).Succeeded());
-    player.Edit(secondEdit); QTRY_VERIFY(!player.Busy());
+    player.Edit(secondEdit); WORLD_WAIT_IDLE(player);
     QCOMPARE(player.Frame()->states[0].elapsedMs,std::uint64_t{345});
     QCOMPARE(player.Frame()->states[1].elapsedMs,std::uint64_t{456}); // 相机排队不能丢在途实例编辑。
     std::uint64_t observedContent=before->contentVersion, latestGlobal=before->states.front().globalMs;
     unsigned cameraChanges=0, acceptedDuringMotion=0;
-    // 在 worker 的 Changed 回调中换镜头，确保变更发生在工作尚未完成时；不依赖 CPU 求值耗时。
+    // 每次接收后的 Changed 回调里换镜头：此时链上下一帧或在等刷新间隔、或已在计算，换镜头都必须带进下一帧。
+    // 不再只在“忙”时换：等间隔时播放器报空闲，只在忙时换要靠计算恰好在跑，次数取决于机器快慢。
     const auto moving=QObject::connect(&player,&War3Map::Modules::WorldAnimationPlayer::Changed,&player,[&] {
-        if (!player.Playing() || !player.Busy() || cameraChanges>=64) return;
+        if (!player.Playing() || cameraChanges>=64) return;
         if (player.Frame()->contentVersion!=observedContent) {
             observedContent=player.Frame()->contentVersion; ++acceptedDuringMotion;
             latestGlobal=player.Frame()->states.front().globalMs;
@@ -89,12 +92,14 @@ inline void MovingViewKeepsScheduling(War3Map::Modules::WorldViewport& viewport,
         camera.yawRadians+=static_cast<float>(cameraChanges)*0.001f;
         QVERIFY(viewport.SetCamera(camera,viewport.DocumentRevision()).Succeeded());
     });
+    const auto stopMoving=qScopeGuard([&] { QObject::disconnect(moving); }); // 断言提前返回也不再改镜头
     player.SetPlaying(true);
-    QTRY_VERIFY(cameraChanges>=64);
+    // 64 次换镜头各等一帧接收，按刷新间隔至少约 2 秒；慢测试机上可达 5 秒，给 20 秒上限，真卡住仍会失败。
+    QTRY_VERIFY_WITH_TIMEOUT(cameraChanges>=64, 20000);
     QObject::disconnect(moving);
     QVERIFY(acceptedDuringMotion>=3); // 连续移动中接受姿势，不能等到鼠标停下再更新。
     QVERIFY(latestGlobal>before->states.front().globalMs); // 相机刷新也消费实际播放时间。
-    player.SetPlaying(false); QTRY_VERIFY(!player.Busy());
+    player.SetPlaying(false); WORLD_WAIT_IDLE(player);
     QVERIFY(viewport.SetCamera(original,viewport.DocumentRevision()).Succeeded());
     QTRY_VERIFY(player.Frame()->worldView && player.Frame()->worldView->camera.targetX==original.targetX);
 }

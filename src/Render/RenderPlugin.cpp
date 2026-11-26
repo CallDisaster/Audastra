@@ -50,6 +50,26 @@ using RenderScene = War3Map::Render::D3D11Scene;
 constexpr char kBackendName[] = "D3D11";
 constexpr const char* kHardwareStatus = War3Map::Render::kRenderStatusD3D11Hardware;
 #endif
+// 后端支持推迟读回（见 RenderDeferredCapturePlugin.h）时才开放推迟截图；否则开关返回无效、截图照常同步。
+template<class Scene> concept DeferredCaptureScene = requires(Scene& scene, std::vector<std::uint8_t>& pixels) {
+    scene.TryCollectCapture(pixels); scene.CapturePending();
+};
+constexpr bool kDeferredCapture = DeferredCaptureScene<RenderScene>;
+template<class Scene> bool DeferredCapturePending(Scene& scene) {
+    if constexpr (DeferredCaptureScene<Scene>) return scene.CapturePending();
+    else return false;
+}
+// S_FALSE：尚未拷完。不支持推迟读回的后端不会有待取拷贝。
+template<class Scene> HRESULT TryCollectDeferredCapture(Scene& scene, std::vector<std::uint8_t>& pixels) {
+    if constexpr (DeferredCaptureScene<Scene>) return scene.TryCollectCapture(pixels);
+    else return E_NOTIMPL;
+}
+template<class Scene, class Timings> HRESULT DrawScene(Scene& scene, const War3RenderCameraV2& camera,
+    std::vector<std::uint8_t>* capture, const std::atomic<bool>& closing, float (&viewProjection)[16], Timings* timings,
+    bool deferCapture) {
+    if constexpr (DeferredCaptureScene<Scene>) return scene.Draw(camera, capture, closing, viewProjection, timings, deferCapture);
+    else return scene.Draw(camera, capture, closing, viewProjection, timings);
+}
 using War3Map::Render::Mesh;
 using War3Map::Render::TerrainOwnedCapacityBytes;
 using War3Map::Render::TerrainGridUploadMetadataBytes;
@@ -121,6 +141,7 @@ struct FrameState {
     std::shared_ptr<const std::vector<War3RenderModelInstanceV2>> instances;
     std::shared_ptr<const std::vector<War3RenderVertexV2>> overlay = std::make_shared<std::vector<War3RenderVertexV2>>();
     std::uint64_t request = 1, capture = 0;
+    bool captureDeferred = false; // 本次截图（capture 票据）推迟取像素
     std::uint64_t surfaceEpoch = 1, sceneEpoch = 1, viewEpoch = 1;
 };
 War3RenderEditorPresentationTargetV2 PresentationTarget(const FrameState& state) noexcept {
@@ -219,6 +240,11 @@ struct Renderer {
     FrameState state;
     War3RenderStatusV2 status{sizeof(War3RenderStatusV2)};
     std::vector<std::uint8_t> pixels;
+    // 推迟截图：宿主开关；最近一次推迟截图的票据、状态（0 未就绪、1 已就绪、2 失效）与像素（mutex 保护）。
+    bool deferCapturePixels = false;
+    std::uint64_t deferredTicket = 0;
+    std::uint32_t deferredState = 2;
+    std::vector<std::uint8_t> deferredPixels;
     War3RenderCaptureInfoV2 captureInfo{sizeof(War3RenderCaptureInfoV2)};
     War3RenderViewInfoV2 viewInfo{sizeof(War3RenderViewInfoV2)};
     War3RenderCapturedFrameV2 capturedFrame{sizeof(War3RenderCapturedFrameV2)};
@@ -347,19 +373,29 @@ struct Renderer {
                     }
                 }
             };
+            // 推迟截图的暂存拷贝：不等待地试取，拷完（或失败、超时）即在同一临界区发布给取回调用。
+            const auto collectDeferredCapture = [&] {
+                if (!DeferredCapturePending(scene)) return;
+                std::vector<std::uint8_t> collected;
+                const auto hr = TryCollectDeferredCapture(scene, collected);
+                if (hr == S_FALSE) return;
+                std::lock_guard lock(mutex);
+                if (SUCCEEDED(hr)) { deferredPixels = std::move(collected); deferredState = 1; }
+                else { deferredPixels.clear(); deferredState = 2; }
+            };
             for (;;) {
                 FrameState next;
                 bool requested = true;
                 {
                     std::unique_lock lock(mutex);
                     const auto ready = [&] { return closing || state.request != lastRequest; };
-                    if (SUCCEEDED(failure) && scene.GpuTimingsPending())
+                    if (SUCCEEDED(failure) && (scene.GpuTimingsPending() || DeferredCapturePending(scene)))
                         requested = changed.wait_for(lock, std::chrono::milliseconds(1), ready);
                     else changed.wait(lock, ready);
                     if (closing) break;
                     if (requested) { next = state; lastRequest = next.request; }
                 }
-                if (SUCCEEDED(failure)) publishGpuTimings();
+                if (SUCCEEDED(failure)) { publishGpuTimings(); collectDeferredCapture(); }
                 if (!requested) continue;
                 if (FAILED(failure)) { ReportFailure(failure, next.capture); continue; }
                 const auto uploadStarted = std::chrono::steady_clock::now();
@@ -485,9 +521,11 @@ struct Renderer {
                 std::uint64_t completed;
                 { std::lock_guard lock(mutex); completed = captureDone; }
                 const bool capture = next.capture > completed;
+                const bool deferCapture = kDeferredCapture && capture && next.captureDeferred;
                 float viewProjection[16]{};
                 RenderScene::DrawTimings drawTimings;
-                if (SUCCEEDED(hr)) hr = scene.Draw(next.camera, capture ? &captured : nullptr, closing, viewProjection, &drawTimings);
+                if (SUCCEEDED(hr))
+                    hr = DrawScene(scene, next.camera, capture ? &captured : nullptr, closing, viewProjection, &drawTimings, deferCapture);
                 if (FAILED(hr)) { failure = hr; ReportFailure(hr, next.capture); continue; }
                 {
                     std::lock_guard lock(mutex);
@@ -577,7 +615,11 @@ struct Renderer {
                         next.mesh->terrain ? "terrain base layer" : "height colors",
                         adapterFallback ? War3Map::Render::kRenderAdapterFallbackMessage : "");
                     if (capture) {
-                        pixels = std::move(captured); captureDone = next.capture;
+                        // 推迟截图：像素留在暂存拷贝，票据记下待取（替换未取走的旧票据）；回执照常同次发布。
+                        if (deferCapture) {
+                            pixels.clear(); deferredPixels.clear(); deferredTicket = next.capture; deferredState = 0;
+                        } else pixels = std::move(captured);
+                        captureDone = next.capture;
                         captureInfo = {sizeof(War3RenderCaptureInfoV2), next.width, next.height,
                             status.frameCount, next.mesh->revision, next.capture};
                         // 和 pixels 在同一临界区保存。普通后续帧只能更新 viewInfo，
@@ -2024,6 +2066,8 @@ std::int32_t CapturePixels(War3RendererHandle handle, void* data, std::uint64_t 
         if (size < static_cast<std::uint64_t>(renderer.state.width) * renderer.state.height * 4) return kInvalid;
         renderer.captureActive = true;
         struct ResetCapture { Renderer& renderer; ~ResetCapture() { renderer.captureActive = false; } } reset{renderer};
+        const bool defer = kDeferredCapture && renderer.deferCapturePixels;
+        renderer.state.captureDeferred = defer;
         const auto ticket = ++renderer.state.capture;
         ++renderer.state.request;
         renderer.changed.notify_all();
@@ -2040,7 +2084,8 @@ std::int32_t CapturePixels(War3RendererHandle handle, void* data, std::uint64_t 
             lock.lock();
         }
         if (renderer.status.result != 0) return renderer.status.result;
-        if (renderer.closing || renderer.pixels.empty() || size < renderer.pixels.size()) return kInvalid;
+        if (renderer.closing || (!defer && (renderer.pixels.empty() || size < renderer.pixels.size()))) return kInvalid;
+        if (defer && renderer.deferredTicket != ticket) return kTimeout;
         if (frameReceipt || skinReceipt || particleReceipt || presentationReceipt || layerReceipt) {
             const auto& captured = renderer.capturedFrame;
             const auto& view = captured.view;
@@ -2052,7 +2097,7 @@ std::int32_t CapturePixels(War3RendererHandle handle, void* data, std::uint64_t 
                 view.width != renderer.state.width || view.height != renderer.state.height ||
                 view.surfaceEpoch != renderer.state.surfaceEpoch || view.sceneEpoch != renderer.state.sceneEpoch ||
                 view.viewEpoch != renderer.state.viewEpoch) return kTimeout;
-            if (renderer.pixels.size() != static_cast<std::uint64_t>(view.width) * view.height * 4) {
+            if (!defer && renderer.pixels.size() != static_cast<std::uint64_t>(view.width) * view.height * 4) {
                 return static_cast<std::int32_t>(E_FAIL);
             }
         }
@@ -2114,7 +2159,7 @@ std::int32_t CapturePixels(War3RendererHandle handle, void* data, std::uint64_t 
                     || actual.particles.drawCount != wanted.particleFrame->draws.size())) return kTimeout;
             }
         }
-        std::memcpy(data, renderer.pixels.data(), renderer.pixels.size());
+        if (!defer) std::memcpy(data, renderer.pixels.data(), renderer.pixels.size()); // 推迟截图：像素随后凭票据取回
         if (layerReceipt) *layerReceipt = renderer.capturedLayeredFrame;
         else if (presentationReceipt) *presentationReceipt = renderer.capturedPresentationFrame;
         else if (particleReceipt) *particleReceipt = renderer.capturedParticleFrame;
@@ -2306,6 +2351,31 @@ extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
 War3MapEditor_SubmitPreparedEditorVisibilityV1(War3RendererHandle handle, const War3RenderEditorVisibilityUpdateV2* input,
     std::uint64_t ticket, std::uint32_t* used) {
     return SubmitEditorVisibilityImpl(handle, input, ticket, used);
+}
+// 截图推迟取像素（见 RenderDeferredCapturePlugin.h）：开关只影响之后的截图调用；后端不支持时返回无效。
+extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
+War3MapEditor_SetCapturePixelsDeferredV1(War3RendererHandle handle, std::uint32_t enabled) noexcept {
+    if (!handle || enabled > 1 || !kDeferredCapture) return kInvalid;
+    auto& renderer = *static_cast<Renderer*>(handle);
+    std::lock_guard lock(renderer.mutex);
+    renderer.deferCapturePixels = enabled != 0;
+    return 0;
+}
+extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
+War3MapEditor_CollectDeferredCapturePixelsV1(War3RendererHandle handle, std::uint64_t ticket, void* data,
+    std::uint64_t size, std::uint32_t* state) noexcept {
+    if (!handle || !ticket || !data || !state) return kInvalid;
+    auto& renderer = *static_cast<Renderer*>(handle);
+    std::lock_guard lock(renderer.mutex);
+    if (renderer.status.result != 0) return renderer.status.result;
+    if (renderer.deferredTicket != ticket || renderer.deferredState == 2) { *state = 2; return 0; }
+    if (renderer.deferredState == 0) { *state = 0; return 0; }
+    if (size < renderer.deferredPixels.size()) return kInvalid;
+    std::memcpy(data, renderer.deferredPixels.data(), renderer.deferredPixels.size());
+    std::vector<std::uint8_t>().swap(renderer.deferredPixels);
+    renderer.deferredState = 2; // 取过即失效
+    *state = 1;
+    return 0;
 }
 #ifdef WAR3_RENDER_TEST_FAULTS
 extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL

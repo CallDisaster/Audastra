@@ -126,20 +126,17 @@ Status CheckAnimationState(const AnimationInstanceState& s) {
     return {};
 }
 Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const AnimatedModelScene& scene,
-    const AnimationAdvance& a, std::uint32_t workers) {
+    const AnimationAdvance& a, std::uint32_t workers, std::span<const AnimationInstanceState> source,
+    std::vector<std::uint32_t>* edited) {
+    if (edited) edited->clear();
     if (a.worldView) if (auto status=CheckAnimationView(*a.worldView); !status.Succeeded()) return status;
+    const bool fused = !source.empty();
+    if (fused && source.size() != states.size())
+        return AnimationFailure("ANIMATION_ADVANCE_BUDGET", "推进来源与目标实例表长度不同。");
     if (a.deltaMs > 1000 || states.size() != scene.specs.size() || a.edits.size() > states.size())
         return AnimationFailure("ANIMATION_ADVANCE_BUDGET", "推进时间、编辑数或实例表不符合本场景预算。");
-    std::set<std::pair<std::uint64_t, std::uint64_t>> seen;
-    for (const auto& edit : a.edits) {
-        const auto found = std::find_if(states.begin(), states.end(), [&](const auto& s) { return s.identity == edit.identity; });
-        if (found == states.end() || !seen.emplace(edit.identity.value, edit.identity.generation).second)
-            return AnimationFailure("ANIMATION_INSTANCE_STALE", "编辑指向未知、过期或重复的实例身份。");
-        auto& s = *found;
-        const auto i = static_cast<std::size_t>(found - states.begin());
+    const auto applyEdit = [&](AnimationInstanceState& s, const AnimationEdit& edit, std::size_t i) {
         if (edit.sequenceIndex) {
-            if (*edit.sequenceIndex >= scene.sequences[i].size())
-                return AnimationFailure("ANIMATION_SEQUENCE_INVALID", "动作序号不在该模型的 SEQS 中。");
             s.sequenceIndex = *edit.sequenceIndex;
             const auto& sequence = scene.sequences[i][s.sequenceIndex];
             s.elapsedMs = sequence.end >= sequence.start ?
@@ -152,9 +149,32 @@ Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const
         if (edit.playing) s.playing = *edit.playing;
         if (edit.transform) s.transform = *edit.transform;
         if (edit.tint) s.tint = *edit.tint;
+    };
+    // 编辑按原顺序逐条核对身份、重复与动作序号，报错与逐条套用时相同；每个实例至多一条编辑，套用互不影响。
+    // 不合并复制时当场套用；合并复制时只记下位置，由各分段复制本实例之后再套用。
+    const std::span<const AnimationInstanceState> base = fused ? source : std::span<const AnimationInstanceState>(states);
+    std::vector<std::int32_t> editAt;
+    if (fused && !a.edits.empty()) editAt.assign(states.size(), -1);
+    std::set<std::pair<std::uint64_t, std::uint64_t>> seen;
+    for (std::size_t k = 0; k < a.edits.size(); ++k) {
+        const auto& edit = a.edits[k];
+        const auto found = std::find_if(base.begin(), base.end(), [&](const auto& s) { return s.identity == edit.identity; });
+        if (found == base.end() || !seen.emplace(edit.identity.value, edit.identity.generation).second)
+            return AnimationFailure("ANIMATION_INSTANCE_STALE", "编辑指向未知、过期或重复的实例身份。");
+        const auto i = static_cast<std::size_t>(found - base.begin());
+        if (edit.sequenceIndex && *edit.sequenceIndex >= scene.sequences[i].size())
+            return AnimationFailure("ANIMATION_SEQUENCE_INVALID", "动作序号不在该模型的 SEQS 中。");
+        if (fused) editAt[i] = static_cast<std::int32_t>(k);
+        else applyEdit(states[i], edit, i);
+        if (edited) edited->push_back(static_cast<std::uint32_t>(i));
     }
+    if (edited) std::sort(edited->begin(), edited->end()); // 身份不重复已在上面核对，序号也不重复。
     const auto advanceOne = [&](std::size_t i) -> Status {
         auto& s = states[i];
+        if (fused) {
+            s = source[i];
+            if (!editAt.empty() && editAt[i] >= 0) applyEdit(s, a.edits[static_cast<std::size_t>(editAt[i])], i);
+        }
         if (s.identity != scene.specs[i].identity) return AnimationFailure("ANIMATION_INSTANCE_STALE", "实例表身份已变化。");
         if (a.restartFinished && !s.playing && s.sequenceIndex < scene.sequences[i].size()) {
             const auto& seq = scene.sequences[i][s.sequenceIndex];
@@ -176,7 +196,12 @@ Status AdvanceAnimationStates(std::vector<AnimationInstanceState>& states, const
                 s.playing = false; s.fractionalMs = 0;
             }
         }
-        return CheckAnimationState(s);
+        // 推进只改时间与播放标志：身份、变换与颜色已在上面核对过，这里只复核时间字段（报错与整份复核相同）。
+        constexpr auto maxTime = std::uint64_t{1} << 53;
+        if (s.elapsedMs > maxTime || s.globalMs > maxTime || !std::isfinite(s.speed) || s.speed < 0 || s.speed > 16 ||
+            !std::isfinite(s.fractionalMs) || s.fractionalMs < 0 || s.fractionalMs >= 1)
+            return AnimationFailure("ANIMATION_STATE_INVALID", "实例身份、时间或播放速度无效。");
+        return {};
     };
     // 各实例的推进互不依赖：按固定分段并行。出错时返回序号最小的实例，与逐个推进相同；
     // 出错的整帧会被丢弃，其余分段多推进的状态不会发布。结果与线程数无关。

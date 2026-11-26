@@ -1,6 +1,7 @@
 #include "D3D11Scene.h"
 #include "ParticleVS.h"
 #include "ParticlePS.h"
+#include <algorithm>
 #include <cstring>
 #include <new>
 #include <stdexcept>
@@ -38,12 +39,19 @@ HRESULT D3D11Scene::PrepareParticleFrame(const ParticleFrameData& frame, Particl
     if (spare.capacity >= bytes) {
         candidate.vertices = spare.vertices; candidate.capacity = spare.capacity;
     } else {
+        // 顶点数逐帧小幅波动：新建时多留四分之一（按 64 KiB 取整，不超过整帧顶点硬上限），
+        // 免得每次略涨就重建一个数 MB 的动态缓冲。只写已用部分，绘制只读各批范围。
+        constexpr UINT kHardCap = static_cast<UINT>(kMaxParticleFrameVertices * sizeof(War3RenderParticleVertexV2));
+        constexpr UINT kAlign = 64u * 1024u;
+        const auto grown = static_cast<std::uint64_t>(bytes) + bytes / 4;
+        const auto rounded = (grown + kAlign - 1) / kAlign * kAlign;
+        const auto width = static_cast<UINT>(std::max<std::uint64_t>(bytes, std::min<std::uint64_t>(rounded, kHardCap)));
         D3D11_BUFFER_DESC descriptor{};
-        descriptor.ByteWidth = bytes; descriptor.Usage = D3D11_USAGE_DYNAMIC;
+        descriptor.ByteWidth = width; descriptor.Usage = D3D11_USAGE_DYNAMIC;
         descriptor.BindFlags = D3D11_BIND_VERTEX_BUFFER; descriptor.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         hr = device_->CreateBuffer(&descriptor, nullptr, &candidate.vertices);
         if (FAILED(hr)) return hr;
-        candidate.capacity = bytes;
+        candidate.capacity = width;
     }
     D3D11_MAPPED_SUBRESOURCE mapped{};
     hr = context_->Map(candidate.vertices.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);

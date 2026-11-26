@@ -10,6 +10,7 @@
 #include "War3RenderCore/PoseTypes.h"
 #include "War3RenderCore/MaterialChannels.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -261,6 +262,7 @@ struct AnimationParticleLink {
     std::uint64_t skippedTimelineMs = 0; // 世界慢帧/冻结快进跳过的历史发射时间；预览近似。
     std::uint32_t particleCount = 0, ribbonSegmentCount = 0;
     std::uint32_t firstVertex = 0, vertexCount = 0, firstDraw = 0, drawCount = 0;
+    // stateHash：逐字节 FNV-1a；geometryHash：按 8 字节字的 FNV-1a 式混合。两者都只用于判断是否变化，不是资源 SHA。
     std::uint64_t spawned = 0, suppressed = 0, stateHash = 0, geometryHash = 0;
     std::string rejectionCode, rejectionMessage, resetReason;
 };
@@ -271,20 +273,42 @@ struct AnimationFrameTimings {
     std::uint64_t prepareNs = 0, stateAdvanceNs = 0, poseEvaluationNs = 0, posePackingNs = 0;
     // posePackingNs 的组成：活动槽挑选与 Stand 复制、逐实例打包、材质/碰撞填充、求值结果并入帧、
     // 逐实例扫描排队（不含求值与并入）、组矩阵检查。仅供定位耗时，不参与结果。
+    // 求值结果的逐实例数组复制在各批求值任务里完成，计入 poseEvaluationNs；poseMergeNs 只含按请求顺序合并的记录部分。
     std::uint64_t poseSlotsNs = 0, posePackNs = 0, poseMaterialNs = 0, poseMergeNs = 0, poseScanNs = 0, poseCheckNs = 0;
     std::uint64_t particlesTotalNs = 0, particleSimulationNs = 0, particleGeometryNs = 0;
+    // 粒子分段墙钟：前置（检查点、排序、准入、逐实例前置检查）、并行准备、串行单独求骨架、并行推进与几何、串行合并。
+    std::uint64_t particlePrologueNs = 0, particleSetupNs = 0, particleSampleNs = 0, particleAdvanceBuildNs = 0, particleMergeNs = 0;
+    // 交互预览的前置段细分：距离排序与整帧准入、逐实例前置检查；尾段：中间结果释放与回执按请求排序。
+    std::uint64_t particleAdmissionNs = 0, particleEarlyNs = 0, particleTailNs = 0;
+    std::uint64_t premNs = 0, changeListNs = 0;
+    std::uint64_t poseLayoutNs = 0; // 逐实例固定布局的偏移与碰撞预算（串行）。
+    std::uint64_t keptInstances = 0; // 回收帧里直接沿用、本帧未重写的视野外实例数。
     std::uint64_t pickBoundsNs = 0, fingerprintNs = 0;
+    // 收尾段（指纹、运动摘要、时钟范围、点选包围盒）的墙钟。一段准备时 prepareNs 已含它；两段准备时 prepareNs 不含。
+    std::uint64_t finalizeNs = 0;
+    std::uint64_t recycledUnfinalized = 0; // 1=本帧回收到两段准备未收尾即被丢弃的帧；它不作沿用来源，本帧整帧重写。
     std::uint64_t visibilityNs = 0, visibilityNodesVisited = 0, visibilityBoundsTests = 0;
     std::uint64_t candidateInstances = 0, eligiblePoseInstances = 0, poseEvaluationRequests = 0;
     std::uint64_t particleSimulationRequests = 0, particleAnchorRequests = 0, particleAnchorNodeVisits = 0;
     std::uint64_t particleAnchorReuses = 0; // 交互预览直接复用本帧主姿势节点的实例数，不计入锚点求值。
     std::uint64_t particleSkippedTimelineMs = 0;
+    // 交互预览粒子顶点缓冲：本帧是否重新分配（0 沿用、1 扩、2 缩、3 新建帧首次分配）与定长前的容量（顶点数）。
+    std::uint64_t particleVertexRealloc = 0, particleVertexCapacity = 0;
     std::uint64_t poseWorkers = 0; // 本帧姿势求值实际可用的并行求值器数（含主求值器）。
     // 仅实际成功的输出数值：不含版本号、时钟、隐藏占位或 Stand 重用的计数变化。
     std::uint64_t outputMotionHash = 0, particleStateHash = 0;
     std::uint64_t minElapsedMs = 0, maxElapsedMs = 0, minGlobalMs = 0, maxGlobalMs = 0;
 };
 struct AnimationPremFrame;
+// 进程内存活的动画帧数（测量用）：帧对象构造、复制时加一，析构时减一，赋值不变。
+struct AnimationFrameLiveCount {
+    AnimationFrameLiveCount() noexcept;
+    AnimationFrameLiveCount(const AnimationFrameLiveCount&) noexcept;
+    AnimationFrameLiveCount& operator=(const AnimationFrameLiveCount&) noexcept { return *this; }
+    ~AnimationFrameLiveCount();
+};
+[[nodiscard]] std::uint64_t AnimationFramesAlive() noexcept;
+struct AnimationFrameCounts { std::size_t live = 0, spares = 0; };
 struct AnimationFrame {
     std::uint64_t sceneVersion = 0, contentVersion = 0, documentRevision = 0;
     std::optional<War3RenderCore::LocalCamera> worldCamera;
@@ -304,6 +328,10 @@ struct AnimationFrame {
     // 矩阵组、透明度、颜色、材质层透明度/状态及其片段都与那一帧逐字节相同。0 表示没有基准，按整帧处理。
     std::uint64_t changeBaseContentVersion = 0;
     std::vector<std::uint32_t> changedInstances;
+    // 本帧视野内（outsideView 为 false）的姿势链序号，升序。viewInstancesComplete 为 true 时恰好列全，
+    // 点选列表与占位快照只扫这些实例；为 false（旧帧或未走完打包）时调用方逐条扫描全部姿势链。
+    std::vector<std::uint32_t> viewInstances;
+    bool viewInstancesComplete = false;
     std::vector<AnimationGeosetIssue> geosetIssues;
     std::vector<AnimationMaterialIssue> materialIssues;
     std::vector<AnimationCollisionMatrix> collisionMatrices;
@@ -326,7 +354,11 @@ struct AnimationFrame {
     bool sharedPoseRanges = false; // 显式插件 mode2；旧连续 mode1 不暗中放宽。
     bool dynamicMaterialAlphas = false, dynamicColors = false; // 材质描述符的显式模式；空 roster 也保留。
     bool dynamicMaterialStates = false;
+    // 两段准备（PrepareStaged）时收尾字段尚未写入：姿势指纹与可见几何判断、隐藏/视野外链的警告清理、
+    // 整帧运动摘要与时钟范围、点选包围盒。收尾完成前帧只能作为下一帧 Prepare 的 previous，不能发布或读这些字段。
+    bool finalizePending = false;
     std::shared_ptr<const AnimationPremFrame> prem;
+    AnimationFrameLiveCount liveCount;
     [[nodiscard]] War3RenderSkinUpdateV2 Describe() const noexcept;
     [[nodiscard]] War3RenderDynamicColoredSkinUpdateV2 DescribeColored() const noexcept;
     [[nodiscard]] War3RenderMaterialSkinUpdateV2 DescribeMaterial() const noexcept;
@@ -337,6 +369,13 @@ struct AnimationFrame {
 // 已发布帧实际驻留的字节：全部数组按容量、姿势链按帧预算口径（含警告记录）、字符串按容量，
 // 另加粒子检查点与 PREM 子帧的已核算存储。宿主整帧共享保留历史时据此计费。
 [[nodiscard]] std::uint64_t AnimationFrameRetainedBytes(const AnimationFrame& frame) noexcept;
+// 同一口径按缓冲类型拆账，各项之和等于 AnimationFrameRetainedBytes。粒子检查点里视野外实例的不可变状态
+// 与相邻帧共享，每帧照样整份计入（实际独占更少）。
+struct AnimationFrameMemory {
+    std::uint64_t states = 0, instances = 0, poses = 0, groups = 0, colors = 0, layers = 0, pick = 0;
+    std::uint64_t particles = 0, particleCheckpoint = 0, prem = 0, other = 0;
+};
+[[nodiscard]] AnimationFrameMemory AnimationFrameRetainedMemory(const AnimationFrame& frame) noexcept;
 struct AnimationUnavailableInstance {
     War3RenderCore::InstanceIdentity identity;
     War3RenderCore::AssetIdentity asset;
@@ -432,6 +471,14 @@ struct AnimationInstanceDeltaResult {
     bool assetsChanged = false;
 };
 
+// 两段准备的结果。frame 已含以它为 previous 求下一帧所需的全部内容；finalize 非空时帧还缺收尾字段，
+// 须在发布（交给界面、渲染、点选或录制）前调用恰好一次。finalize 只读场景与本帧、只写本帧收尾字段，
+// 下一帧 Prepare 不读这些字段，因此可在另一线程与以本帧为基的下一帧求值同时执行；其并行段只用空闲线程。
+struct AnimationStagedFrame {
+    std::shared_ptr<const AnimationFrame> frame;
+    std::function<Status()> finalize;
+};
+
 // 单所有者、Qt-free。只有 Create 读取资产/建立材质；Prepare 只推进状态、求值、复制帧包。
 // previous 必须为本 service 产物。worker 取消时丢弃结果；下一次仍以最后被接受的 previous 开始。
 // 这样暂停/切图不会让未显示的半帧偷偷推进时钟。输出拥有数据，不借求值器 span 跨帧。
@@ -444,7 +491,14 @@ public:
         std::span<const BakedModelMesh> baked = {});
     [[nodiscard]] std::shared_ptr<const AnimatedModelScene> Scene() const noexcept;
     [[nodiscard]] AnimationPlaybackPolicy PlaybackPolicy() const noexcept;
+    // 测量用：本服务交出尚未放回的帧数与回收处备用帧数（不含其他服务，如 PREM 子帧）。
+    [[nodiscard]] AnimationFrameCounts FrameCounts() const noexcept;
+    // 回收处还有备用位：此时放回最后一份引用只移指针，可在界面线程同步放回；否则应交后台释放。
+    [[nodiscard]] bool FramePoolHasRoom() const noexcept;
     [[nodiscard]] Result<std::shared_ptr<const AnimationFrame>> Prepare(
+        const AnimationFrame* previous, const AnimationAdvance& advance = {});
+    // 同 Prepare，但收尾留给调用方（见 AnimationStagedFrame）。
+    [[nodiscard]] Result<AnimationStagedFrame> PrepareStaged(
         const AnimationFrame* previous, const AnimationAdvance& advance = {});
     // 两阶段：第一步加载新增资产；第二步在单worker边界按当时最新接受帧重基。
     // 均返回独立候选，不修改当前服务；旧Prepare身份/数量门保持严格。
@@ -484,6 +538,9 @@ private:
         const AnimationResourceReader& read, const AnimationLimits& limits,
         std::span<const BakedModelMesh> baked, const State* resident,
         std::shared_ptr<const AnimationAssetSnapshot> preloaded = {});
+    // deferred 非空时收尾交给调用方（PrepareStaged），否则在返回前完成（Prepare）。
+    [[nodiscard]] Result<std::shared_ptr<const AnimationFrame>> PrepareFrame(
+        const AnimationFrame* previous, const AnimationAdvance& advance, std::function<Status()>* deferred);
     explicit ModelAnimationService(std::unique_ptr<State> state);
     std::unique_ptr<State> state_;
 };
@@ -567,12 +624,17 @@ private:
 [[nodiscard]] Result<War3RenderCameraV2> SingleModelPreviewCamera(const AnimatedModelScene& scene,
     const AnimationResourceReader& read, std::string_view modelPath);
 [[nodiscard]] War3RenderCore::LocalCamera AnimationWorldCamera(const War3RenderCameraV2& camera);
+// 测量对照用：本进程动画求值的并行数（含调用线程，1–8）；须在第一次求值之前设置，0 = 按硬件线程数决定。
+void SetAnimationTaskParallelismOverride(std::uint32_t threads) noexcept;
+// 测量对照用：本进程动画帧回收处至多留几帧（1–4，默认 4）。
+void SetAnimationFramePoolSparesOverride(std::uint32_t frames) noexcept;
 // 仅复制点选所需包围盒/实例，绝不复制大顶点/贴图池。点选仍是预览 AABB，不是骨骼精确命中。
 [[nodiscard]] std::shared_ptr<WorldModelScene> AnimationPickingScene(const AnimatedModelScene& scene,
     const AnimationFrame& frame);
 // 复用已复制的不可变模型目录；每帧仅更新实际可点选实例和身份映射。
+// 帧给出完整视野内清单时只扫清单；fullScan 为 true 时逐条扫描全部姿势链（等价核对用），结果相同。
 void AnimationPickingInstances(const AnimatedModelScene& scene, const AnimationFrame& frame,
-    WorldModelScene& output);
+    WorldModelScene& output, bool fullScan = false);
 [[nodiscard]] std::string AnimationPathKey(std::string_view path);
 // 宿主生命周期流水号，无系统时钟；独立 renderer 可以共用，数值允许有间隙。
 [[nodiscard]] std::uint64_t NextAnimationSerial();

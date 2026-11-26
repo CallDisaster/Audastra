@@ -9,6 +9,7 @@
 #include "War3MapCore/Render/ModelPicking.h"
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Render/AnimationRenderer.h"
+#include "War3MapCore/Render/RenderDeferredCapturePlugin.h"
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
 #include "War3MapCore/RenderPluginFrameMetrics.h"
 #include "War3MapCore/Services/WorldModelBugPlaceholderService.h"
@@ -23,6 +24,7 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <array>
 #include <functional>
 #include <map>
 #include <deque>
@@ -99,7 +101,14 @@ public:
         // 该帧实际驻留字节（遍历全部姿势链），在后台算好；frame 标明属于哪一帧，界面线程核对后直接用。
         const Render::AnimationFrame* retainedFrame = nullptr;
         std::uint64_t retainedBytes = 0;
+        std::uint64_t pickingNs = 0, bugSnapshotNs = 0, retainedBytesNs = 0; // 三项各自耗时（测量用）
+        std::uint8_t check = 0; // 等价核对：0 = 本帧未核对，1 = 与整份扫描一致，2 = 不一致（已改用整份结果）
     };
+    // 后台接收准备的等价核对：每 interval 帧同时整份扫描重建一次点选列表与占位快照并逐项比对（0 = 不核对，默认 64）；
+    // 测试设为 1。计数为进程累计。
+    static void SetAcceptPreparationCheckInterval(std::uint32_t interval) noexcept;
+    struct AcceptPreparationCheckCounts { std::uint64_t checks = 0, mismatches = 0; };
+    [[nodiscard]] static AcceptPreparationCheckCounts AcceptPreparationChecks() noexcept;
     // 后台线程借用当前渲染器预备插件更新；销毁渲染器前独占锁清空，epoch 区分前后两个渲染器。
     struct RenderPrepareLease {
         std::shared_mutex mutex;
@@ -109,6 +118,18 @@ public:
         std::uint64_t epoch = 0;
     };
     [[nodiscard]] std::shared_ptr<RenderPrepareLease> AnimationPrepareLease() const noexcept { return prepareLease_; }
+    [[nodiscard]] std::size_t AnimationPickHistoryFrames() const noexcept { return animationPickHistory_.size(); } // 测量用
+    // 测量用：点选历史按整帧计费的字节（全部 / 不是当前帧的那几帧）与占位快照历史字节。
+    struct AnimationHistoryMemory { std::uint64_t pickBytes = 0, extraFrames = 0, extraBytes = 0, bugBytes = 0; };
+    [[nodiscard]] AnimationHistoryMemory AnimationHistoryMemoryUse() const noexcept {
+        AnimationHistoryMemory m;
+        for (const auto& owned : animationPickHistory_) {
+            m.pickBytes += owned.ownedBytes;
+            if (owned.frame != animationFrame_) { ++m.extraFrames; m.extraBytes += owned.ownedBytes; }
+        }
+        for (const auto& owned : bugPreparationHistory_) m.bugBytes += owned.ownedBytes;
+        return m;
+    }
     // 当前动画目标可在后台预备时返回提交方式与渲染器代次；否则为空，界面线程照常完整提交。
     [[nodiscard]] std::optional<std::pair<Render::AnimationPreparedMode, std::uint64_t>> AnimationPrepareMode() const;
     static void PrepareAnimationFrame(const std::shared_ptr<const Render::AnimatedModelScene>& scene,
@@ -200,8 +221,13 @@ public:
     // 供服务层使用的修订绑定相机命令；成功仅表示已提交给渲染器，仍须等待完成帧。
     [[nodiscard]] Status SetCamera(const War3RenderCameraV2& camera, std::uint64_t expectedRevision);
     // 显式读回真实完成帧。单次调用沿用插件的 10 秒等待上限，绝不拼接旧版截图与后查视图。
+    // deferPixels：插件支持时只等这一帧画完并核对全部身份回执，不等 GPU 拷完像素；返回的 rgba 尚未写入
+    // （deferredPixelsTicket 非零），随后用 CollectDeferredCapturePixels 取回。不支持时照常同步读回。
     [[nodiscard]] Result<Render::CapturedFrameRgba> CaptureCompletedFrame(std::uint64_t expectedRevision,
-        std::size_t maxBytes = Render::kDefaultFrameCaptureBytes) const;
+        std::size_t maxBytes = Render::kDefaultFrameCaptureBytes, bool deferPixels = false) const;
+    // 取回推迟截图的像素：true 已写入 rgba（票据清零）；false 尚未拷完，稍后再取；失败表示像素已失效
+    // （被新的推迟截图取代、读回失败或超时、渲染器已重建），该截图应作废。
+    [[nodiscard]] Result<bool> CollectDeferredCapturePixels(Render::CapturedFrameRgba& frame) const;
     [[nodiscard]] QJsonObject SaveCamera() const;
     bool RestoreCamera(const QJsonObject& state);
     [[nodiscard]] QString StatusText() const { return status_; }
@@ -349,6 +375,9 @@ private:
     void ClearSelectionOutline();
     void PublishPrepareLease();
     void RetainAnimationPickFrame(AnimationFramePreparation* prepared = nullptr);
+    // 退回比最近一次成功呈现的完成帧更旧的点选历史（已不在屏幕上，点选也选不到）。
+    void PruneAnimationPickHistory();
+    void RetireOldestAnimationPick();
     void RetainBugPreparationFrame(AnimationFramePreparation* prepared = nullptr);
     friend class WorldViewportPickHistoryTestAccess;
     struct ModelPickPolicy {
@@ -385,6 +414,15 @@ private:
         bool requireSuccessfulPresent = true) const;
     [[nodiscard]] Result<CompletedModelPickFrame> ReadCompletedAnimationSource(bool preparation,
         bool requireSuccessfulPresent, bool freezeGeometryPolicy = false) const;
+    // 完成指标环最后四帧（旧→新），点选与点选历史裁剪共用；插件失败已上报。
+    struct RecentFrameMetrics {
+        std::array<War3RenderFrameMetricsV2, 4> records{};
+        std::uint32_t count = 0;
+        std::uint64_t latestFrame = 0;
+    };
+    enum class RecentMetricsRead { Ok, IndexFailed, PageFailed };
+    [[nodiscard]] bool HasPickFrameMetrics() const;
+    [[nodiscard]] RecentMetricsRead ReadRecentFrameMetrics(RecentFrameMetrics& out, bool reportFailures = true) const;
     [[nodiscard]] Result<std::vector<Render::ModelPickHit>> PickInstancesAt(QPointF point,
         const Render::ViewProjectionFrame& frame) const;
     struct BugPlaceholderPick {
@@ -454,6 +492,9 @@ private:
     std::unique_ptr<Render::AnimationRenderer> animationRenderer_;
     std::shared_ptr<RenderPrepareLease> prepareLease_ = std::make_shared<RenderPrepareLease>();
     Render::War3SubmitPreparedEditorVisibilityV1 preparedSubmit_ = nullptr;
+    // 截图推迟取像素的两个扩展导出（都在才启用；测试注入的后端没有）。
+    Render::War3SetCapturePixelsDeferredV1 setCaptureDeferred_ = nullptr;
+    Render::War3CollectDeferredCapturePixelsV1 collectDeferredCapture_ = nullptr;
     std::uint64_t prepareEpoch_ = 0;
     struct PendingInstanceRoster {
         std::uint64_t ticket = 0;

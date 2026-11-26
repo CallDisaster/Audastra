@@ -3,6 +3,7 @@
 
 #include "War3MapCore/Render/RenderPluginStatus.h"
 
+#include <QScopeGuard>
 #include <QThread>
 
 #include <algorithm>
@@ -119,7 +120,7 @@ Status WorldViewport::SetCamera(const War3RenderCameraV2& requested, std::uint64
 }
 
 Result<Render::CapturedFrameRgba> WorldViewport::CaptureCompletedFrame(std::uint64_t expectedRevision,
-    std::size_t maxBytes) const {
+    std::size_t maxBytes, bool deferPixels) const {
     const auto fail = [](std::string code, std::string message) {
         return Result<Render::CapturedFrameRgba>::Failure("World", std::move(code), std::move(message));
     };
@@ -157,6 +158,10 @@ Result<Render::CapturedFrameRgba> WorldViewport::CaptureCompletedFrame(std::uint
     catch (const std::length_error&) { return fail("WORLD_CAPTURE_ALLOCATION", "完成帧 RGBA 缓冲超出容器容量。"); }
     War3RenderCapturedFrameV2 receipt{};
     receipt.structSize = sizeof(receipt);
+    // 推迟取像素：只在本次调用内开启，任何返回路径都关回；开启失败照常同步读回。
+    const bool deferred = deferPixels && setCaptureDeferred_ && collectDeferredCapture_
+        && setCaptureDeferred_(renderer_, 1) == 0;
+    const auto restoreDeferral = qScopeGuard([&] { if (deferred) (void)setCaptureDeferred_(renderer_, 0); });
     if (HasModelLayerSupport()) {
         War3RenderModelLayersTargetV2 target{sizeof(target)};
         const auto targetResult = api_->getModelLayersTarget(renderer_, &target);
@@ -326,7 +331,28 @@ Result<Render::CapturedFrameRgba> WorldViewport::CaptureCompletedFrame(std::uint
     output.view.physicalWidth = width; output.view.physicalHeight = height;
     std::copy_n(view.viewProjection, output.view.rowMajorViewProjection.size(), output.view.rowMajorViewProjection.begin());
     output.camera = receipt.camera;
+    if (deferred) { output.deferredPixelsTicket = capture.ticket; output.deferredRendererEpoch = measurementRendererEpoch_; }
     return Result<Render::CapturedFrameRgba>::Success(std::move(output));
+}
+Result<bool> WorldViewport::CollectDeferredCapturePixels(Render::CapturedFrameRgba& frame) const {
+    const auto fail = [](std::string code, std::string message) {
+        return Result<bool>::Failure("World", std::move(code), std::move(message));
+    };
+    if (!frame.deferredPixelsTicket) return Result<bool>::Success(true);
+    if (QThread::currentThread() != thread()) return fail("WORLD_CAPTURE_THREAD", "完成帧读取必须由世界视口所属线程执行。");
+    if (!renderer_ || !collectDeferredCapture_ || frame.deferredRendererEpoch != measurementRendererEpoch_)
+        return fail("WORLD_CAPTURE_DEFERRED_LOST", "渲染器已重建或已关闭，推迟截图的像素无法取回。");
+    std::uint32_t state = 0;
+    const auto result = collectDeferredCapture_(renderer_, frame.deferredPixelsTicket, frame.rgba.data(),
+        static_cast<std::uint64_t>(frame.rgba.size()), &state);
+    if (result != 0) {
+        ReportPluginFailure("collectDeferredCapturePixels", result);
+        return fail("WORLD_CAPTURE_FAILED", "渲染器未能交出推迟截图的像素。");
+    }
+    if (state == 0) return Result<bool>::Success(false);
+    if (state != 1) return fail("WORLD_CAPTURE_DEFERRED_LOST", "推迟截图的像素已失效（被新截图取代、读回失败或超时）。");
+    frame.deferredPixelsTicket = 0;
+    return Result<bool>::Success(true);
 }
 
 QJsonObject WorldViewport::SaveCamera() const {

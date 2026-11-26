@@ -266,7 +266,7 @@ std::string AnimationReceiptJson(const AnimatedModelScene& scene,const Animation
         out<<",\"firstVertex\":"<<link.firstVertex<<",\"vertexCount\":"<<link.vertexCount;
         out<<",\"firstDraw\":"<<link.firstDraw<<",\"drawCount\":"<<link.drawCount;
         out<<",\"spawned\":";number(link.spawned);out<<",\"suppressed\":";number(link.suppressed);
-        out<<",\"stateHashFNV1a\":";number(link.stateHash);out<<",\"geometryHashFNV1a\":";number(link.geometryHash);
+        out<<",\"stateHashFNV1a\":";number(link.stateHash);out<<",\"geometryHashWords\":";number(link.geometryHash);
         out<<",\"resetReason\":"<<AnimationJsonString(link.resetReason)<<",\"worldTransform\":[";
         for(std::size_t i=0;i<state.transform.size();++i){if(i)out<<',';out<<state.transform[i];}
         out<<"]}";

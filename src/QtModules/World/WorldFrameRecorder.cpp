@@ -16,6 +16,7 @@
 #include <QPointer>
 #include <QSaveFile>
 #include <QScreen>
+#include <QThread>
 #include <QTimer>
 #include <QVector3D>
 #include <QVector4D>
@@ -97,12 +98,22 @@ QJsonObject TimingJson(const AnimationFrameTimings& t) {
         {"visibility_bounds_tests", Number(t.visibilityBoundsTests)},
         {"particles_total_ns", Number(t.particlesTotalNs)}, {"particle_simulation_ns", Number(t.particleSimulationNs)},
         {"particle_geometry_ns", Number(t.particleGeometryNs)}, {"pick_bounds_ns", Number(t.pickBoundsNs)},
-        {"fingerprint_ns", Number(t.fingerprintNs)}, {"candidate_instances", Number(t.candidateInstances)},
+        {"particle_prologue_ns", Number(t.particlePrologueNs)}, {"particle_setup_ns", Number(t.particleSetupNs)},
+        {"particle_sample_ns", Number(t.particleSampleNs)}, {"particle_advance_build_ns", Number(t.particleAdvanceBuildNs)},
+        {"particle_merge_ns", Number(t.particleMergeNs)}, {"particle_admission_ns", Number(t.particleAdmissionNs)},
+        {"particle_early_ns", Number(t.particleEarlyNs)}, {"particle_tail_ns", Number(t.particleTailNs)},
+        {"prem_ns", Number(t.premNs)}, {"change_list_ns", Number(t.changeListNs)},
+        {"pose_layout_ns", Number(t.poseLayoutNs)}, {"kept_instances", Number(t.keptInstances)},
+        {"fingerprint_ns", Number(t.fingerprintNs)}, {"finalize_ns", Number(t.finalizeNs)},
+        {"recycled_unfinalized", Number(t.recycledUnfinalized)},
+        {"candidate_instances", Number(t.candidateInstances)},
         {"eligible_pose_instances", Number(t.eligiblePoseInstances)}, {"pose_evaluation_requests", Number(t.poseEvaluationRequests)},
         {"particle_simulation_requests", Number(t.particleSimulationRequests)},
         {"particle_anchor_requests", Number(t.particleAnchorRequests)}, {"particle_anchor_node_visits", Number(t.particleAnchorNodeVisits)},
         {"particle_anchor_reuses", Number(t.particleAnchorReuses)}, {"pose_workers", Number(t.poseWorkers)},
         {"particle_skipped_timeline_ms", Number(t.particleSkippedTimelineMs)},
+        {"particle_vertex_realloc", Number(t.particleVertexRealloc)},
+        {"particle_vertex_capacity", Number(t.particleVertexCapacity)},
         {"whole_scene_motion_hash_diagnostic", Number(t.outputMotionHash)},
         {"whole_scene_particle_state_hash_diagnostic", Number(t.particleStateHash)},
         {"min_elapsed_ms", Number(t.minElapsedMs)}, {"max_elapsed_ms", Number(t.maxElapsedMs)},
@@ -121,6 +132,25 @@ QJsonObject AttemptJson(const WorldAnimationTiming& t) {
         {"ui_queue_wait_ns", Number(t.uiQueueWaitNs)}, {"ui_accept_ns", Number(t.uiAcceptNs)},
         {"changed_slots_ns", Number(t.changedSlotsNs)}, {"accept_preparation_ns", Number(t.acceptPreparationNs)},
         {"render_preparation_ns", Number(t.renderPreparationNs)},
+        {"accept_picking_ns", Number(t.acceptPickingNs)}, {"accept_bug_snapshot_ns", Number(t.acceptBugSnapshotNs)},
+        {"accept_retained_bytes_ns", Number(t.acceptRetainedBytesNs)}, {"accept_check", Number(std::uint64_t{t.acceptCheck})},
+        {"memory_sampled", Number(std::uint64_t{t.memorySampled})}, {"frames_alive", Number(t.framesAlive)},
+        {"service_frames_live", Number(t.serviceFramesLive)}, {"service_frames_spare", Number(t.serviceFramesSpare)},
+        {"pick_history_frames", Number(t.pickHistoryFrames)}, {"pick_history_bytes", Number(t.pickHistoryBytes)},
+        {"pick_history_extra_frames", Number(t.pickHistoryExtraFrames)},
+        {"pick_history_extra_bytes", Number(t.pickHistoryExtraBytes)}, {"bug_history_bytes", Number(t.bugHistoryBytes)},
+        {"mem_states", Number(t.memory.states)}, {"mem_instances", Number(t.memory.instances)}, {"mem_poses", Number(t.memory.poses)},
+        {"mem_groups", Number(t.memory.groups)}, {"mem_colors", Number(t.memory.colors)}, {"mem_layers", Number(t.memory.layers)},
+        {"mem_pick", Number(t.memory.pick)}, {"mem_particles", Number(t.memory.particles)},
+        {"mem_particle_checkpoint", Number(t.memory.particleCheckpoint)}, {"mem_prem", Number(t.memory.prem)},
+        {"mem_other", Number(t.memory.other)},
+        {"compute_finished_ns", Number(t.computeFinishedNs)}, {"finish_started_ns", Number(t.finishStartedNs)},
+        {"edit_queued_ns", Number(t.editQueuedNs)}, {"edit_latency_ns", Number(t.editLatencyNs)},
+        {"direct_chained", Number(std::uint64_t{t.directChained})}, {"chain_skipped", Number(std::uint64_t{t.chainSkipped})},
+        {"chain_grid_late_ns", Number(t.chainGridLateNs)}, {"chain_grid_reset", Number(std::uint64_t{t.chainGridReset})},
+        {"dropped_frame_returned", Number(std::uint64_t{t.droppedFrameReturned})},
+        {"frame_changed_instances", Number(t.frameChangedInstances)}, {"frame_change_base", Number(std::uint64_t{t.frameChangeBase})},
+        {"playback_clock_elapsed_ns", Number(t.clockElapsedNs)}, {"playback_clock_consumed_ns", Number(t.clockConsumedNs)},
         {"animated_instances", Number(t.animatedInstances)},
         {"retained_static_instances", Number(t.retainedStaticInstances)}, {"hidden_instances", Number(t.hiddenInstances)},
         {"budget_static_instances", Number(t.budgetStaticInstances)}, {"budget_particle_instances", Number(t.budgetParticleInstances)},
@@ -262,6 +292,14 @@ struct WorldFrameRecorder::State {
     WorldScreenshotEncoder encoder;
     std::optional<FrameScreenshotSample> pendingCaptureComparison;
     std::uint64_t captureComparisonEpoch = 0;
+    // 已核对身份回执、像素尚未取回的截图（至多一份）；比较代次取请求时的值。
+    struct PendingReadback {
+        CapturedFrameRgba frame;
+        FrameScreenshotSample sample;
+        QJsonObject json;
+        std::uint64_t requestedNs = 0, comparisonEpoch = 0;
+    };
+    std::optional<PendingReadback> pendingReadback;
     std::deque<Accepted> accepted;
     std::vector<Candidate> selected;
     std::uint64_t selectedScene = 0, selectedCamera = 0;
@@ -348,6 +386,15 @@ WorldFrameRecorder::WorldFrameRecorder(WorldModule& world, QObject* parent)
 WorldFrameRecorder::~WorldFrameRecorder() { if (Running()) Stop(QStringLiteral("窗口关闭")); }
 bool WorldFrameRecorder::Running() const noexcept { return state_->running; }
 QString WorldFrameRecorder::OutputDirectory() const { return state_->directory; }
+WorldFrameRecorder::InFlightCapture WorldFrameRecorder::InFlightCaptureUse() const noexcept {
+    InFlightCapture use;
+    if (state_->pendingReadback) {
+        use.readbackBytes = state_->pendingReadback->frame.rgba.capacity();
+        use.readbackHoldsFrame = state_->pendingReadback->frame.animation != nullptr;
+    }
+    use.encoderBusy = state_->encoder.Busy();
+    return use;
+}
 void WorldFrameRecorder::SetWitnessConfirmed(bool confirmed) {
     if (Running() && state_->witnessConfirmed != confirmed) state_->ResetComparisons();
     state_->witnessConfirmed = confirmed; state_->witnessConfirmedSinceNs = NowNs();
@@ -632,12 +679,21 @@ void WorldFrameRecorder::Capture() {
             {"phase", state_->phase}, {"measurement_epoch", Number(state_->startedNs)}});
         return; // 不做读回，不积累第二份RGBA。
     }
+    if (state_->pendingReadback) {
+        ++state_->screenshotsSkipped;
+        state_->Write(state_->captures, {{"event", "capture_skipped"}, {"reason", "WORLD_CAPTURE_READBACK_PENDING"},
+            {"steady_ns", Number(sample.monotonicNs)}, {"visibility", VisibilityName(sample.visibility)},
+            {"phase", state_->phase}, {"measurement_epoch", Number(state_->startedNs)}});
+        return; // 上一张的像素还没取回，不积累第二份。
+    }
     if (!viewport->isVisible() || viewport->window()->isMinimized()) {
         state_->ResetComparisons(); ++state_->screenshotsSkipped;
         state_->Write(state_->captures, {{"event", "capture_skipped"}, {"steady_ns", Number(sample.monotonicNs)},
             {"visibility", VisibilityName(sample.visibility)}, {"phase", state_->phase}}); return;
     }
-    const auto begun = NowNs(); auto captured = viewport->CaptureCompletedFrame(viewport->DocumentRevision(), kMaximumFrameCaptureBytes);
+    // 推迟取像素：这里只等这一帧画完并核对身份回执，不等 GPU 拷完；readback_ns 记的是界面线程实际等待的时长。
+    const auto begun = NowNs();
+    auto captured = viewport->CaptureCompletedFrame(viewport->DocumentRevision(), kMaximumFrameCaptureBytes, true);
     sample.readbackNs = NowNs() - begun; sample.monotonicNs = NowNs();
     Drain(true); // 读回可能完成新帧；先接收其不可变完成回执，不将未来帧当旧身份。
     QJsonObject json{{"steady_ns", Number(sample.monotonicNs)}, {"phase", state_->phase}, {"readback_ns", Optional(sample.readbackNs)}};
@@ -667,10 +723,47 @@ void WorldFrameRecorder::Capture() {
     json.insert("simulation_view", meta ? QJsonValue(meta->simulationView) : QJsonValue());
     json.insert("simulation_visibility_counts", meta ? QJsonValue(meta->visibilityCounts) : QJsonValue());
     json.insert("model_layer_count", static_cast<int>(frame.modelLayers.size()));
+    if (frame.deferredPixelsTicket) {
+        json.insert("pixels_deferred", true);
+        state_->pendingReadback = State::PendingReadback{std::move(frame), sample, std::move(json), begun,
+            state_->captureComparisonEpoch};
+        return;
+    }
+    SubmitCapture(std::move(frame), sample, std::move(json), state_->captureComparisonEpoch);
+}
+
+void WorldFrameRecorder::CollectReadback(bool wait) {
+    if (!state_->pendingReadback) return;
+    const auto collect = [this] {
+        return state_->viewport ? state_->viewport->CollectDeferredCapturePixels(state_->pendingReadback->frame)
+            : Result<bool>::Failure("World", "WORLD_CAPTURE_DEFERRED_LOST", "世界视口已销毁，推迟截图的像素无法取回。");
+    };
+    const auto deadline = NowNs() + 5'000'000'000ull;
+    auto collected = collect();
+    while (wait && collected.Succeeded() && !*collected.value && NowNs() < deadline) { QThread::msleep(1); collected = collect(); }
+    if (collected.Succeeded() && !*collected.value) {
+        if (!wait) return;
+        collected = Result<bool>::Failure("World", "WORLD_CAPTURE_DEFERRED_TIMEOUT", "停止测量时推迟截图的像素 5 秒内未就绪。");
+    }
+    auto taken = std::move(*state_->pendingReadback); state_->pendingReadback.reset();
+    taken.json.insert("readback_wall_ns", Number(NowNs() - taken.requestedNs));
+    if (!collected.Succeeded()) {
+        ++state_->screenshotsFailed; taken.sample.result = FrameMeasurementResult::Rejected;
+        const auto diagnostic = collected.diagnostics.empty() ? std::string("WORLD_CAPTURE_DEFERRED_LOST")
+            : collected.diagnostics.front().code;
+        taken.json.insert("diagnostic_code", Text(diagnostic));
+        RecordCapture(taken.sample, std::move(taken.json));
+        return;
+    }
+    SubmitCapture(std::move(taken.frame), taken.sample, std::move(taken.json), taken.comparisonEpoch);
+}
+
+void WorldFrameRecorder::SubmitCapture(Render::CapturedFrameRgba&& frame, const Render::FrameScreenshotSample& sample,
+    QJsonObject json, std::uint64_t comparisonEpoch) {
     auto input = MakeWorldScreenshotEncodeInput(std::move(frame));
     for (auto it = json.constBegin(); it != json.constEnd(); ++it) input.metadata.insert(it.key(), it.value());
     input.sample = sample;
-    input.captureIndex = ++state_->captureIndex; input.comparisonEpoch = state_->captureComparisonEpoch;
+    input.captureIndex = ++state_->captureIndex; input.comparisonEpoch = comparisonEpoch;
     state_->pendingCaptureComparison = sample;
     if (!state_->encoder.Submit(std::move(input))) {
         state_->pendingCaptureComparison.reset(); ++state_->screenshotsSkipped;
@@ -752,6 +845,7 @@ void WorldFrameRecorder::Tick() {
     }
     state_->lastVisibility = visibility;
     Drain();
+    CollectReadback(false);
     CollectCapture(false);
     if (now >= state_->nextCaptureNs) { Capture(); state_->nextCaptureNs = NowNs() + kCaptureIntervalNs; }
     if (state_->writeFailed) { Stop(state_->lastFailure); return; }
@@ -818,6 +912,8 @@ bool WorldFrameRecorder::WriteSummary(const QString& reason) {
         {"accepted_screenshots", Number(r.acceptedScreenshots)}, {"screenshots_failed", Number(state_->screenshotsFailed)},
         {"screenshots_skipped", Number(state_->screenshotsSkipped)},
         {"stall_observations", Number(r.stallObservations)}, {"timing_distributions", timings},
+        {"accept_preparation_checks", Number(WorldViewport::AcceptPreparationChecks().checks)},
+        {"accept_preparation_mismatches", Number(WorldViewport::AcceptPreparationChecks().mismatches)},
         {"quantiles_scope", "latest_retained_samples_per_stage; minima/maxima cover all inputs"},
         {"gpu_timing", "unavailable unless backend timestamp-query flag explicitly present"},
         {"readback_interval_ns", Number(kCaptureIntervalNs)}, {"duration_limit_ns", Number(kMaximumDurationNs)},
@@ -841,7 +937,7 @@ void WorldFrameRecorder::Stop(const QString& reason) {
     state_->timer.stop(); Drain(true);
     // 停止不丢已读回的截图；旧会话在日志关闭/State更换前同步取回唯一在途结果。
     // 最后的等待和UI落盘也属于这轮测量开销，不从记录时长中扣除。
-    CollectCapture(true); state_->endedNs = NowNs();
+    CollectCapture(true); CollectReadback(true); CollectCapture(true); state_->endedNs = NowNs();
     if (state_->viewport) state_->viewport->SetMeasurementEnabled(false);
     disconnect(state_->acceptedConnection); state_->running = false;
     state_->sourceAfter = FileSha(state_->sourcePath);

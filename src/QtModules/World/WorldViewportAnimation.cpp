@@ -1,11 +1,49 @@
 #include "WorldViewport.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <QScopedValueRollback>
 
 namespace War3Map::Modules {
+namespace {
+std::atomic<std::uint32_t> acceptCheckInterval{64};
+std::atomic<std::uint64_t> acceptCheckCounter{0}, acceptChecks{0}, acceptMismatches{0};
+bool SamePicking(const Render::WorldModelScene& a, const Render::WorldModelScene& b) {
+    return a.instanceRequests == b.instanceRequests && a.instances.size() == b.instances.size()
+        && (a.instances.empty() || std::memcmp(a.instances.data(), b.instances.data(), a.instances.size() * sizeof(a.instances[0])) == 0)
+        && a.requestedInstances == b.requestedInstances && a.skippedInstances == b.skippedInstances;
+}
+bool SameSnapshot(const Result<Services::WorldModelBugPlaceholderFrameSnapshot>& a,
+    const Result<Services::WorldModelBugPlaceholderFrameSnapshot>& b) {
+    if (a.Succeeded() != b.Succeeded() || a.diagnostics.size() != b.diagnostics.size()) return false;
+    for (std::size_t i = 0; i < a.diagnostics.size(); ++i)
+        if (a.diagnostics[i].severity != b.diagnostics[i].severity || a.diagnostics[i].code != b.diagnostics[i].code
+            || a.diagnostics[i].message != b.diagnostics[i].message) return false;
+    if (!a.Succeeded()) return true;
+    const auto& x = *a.value; const auto& y = *b.value;
+    if (x.sourceScene.lock() != y.sourceScene.lock() || x.generation != y.generation || x.sceneVersion != y.sceneVersion
+        || x.contentVersion != y.contentVersion || x.documentRevision != y.documentRevision || x.sourceIdentity != y.sourceIdentity
+        || x.stateCount != y.stateCount || x.instanceCount != y.instanceCount || x.ownedBytes != y.ownedBytes
+        || x.observations.size() != y.observations.size()) return false;
+    for (std::size_t i = 0; i < x.observations.size(); ++i) {
+        const auto& p = x.observations[i]; const auto& q = y.observations[i];
+        if (!(p.identity == q.identity) || !(p.stateIdentity == q.stateIdentity) || p.request != q.request
+            || std::memcmp(p.position.data(), q.position.data(), sizeof(p.position)) != 0 || p.reasonCode != q.reasonCode
+            || p.reason != q.reason || p.inView != q.inView) return false;
+    }
+    return true;
+}
+}
+void WorldViewport::SetAcceptPreparationCheckInterval(std::uint32_t interval) noexcept {
+    acceptCheckInterval.store(interval, std::memory_order_relaxed);
+}
+WorldViewport::AcceptPreparationCheckCounts WorldViewport::AcceptPreparationChecks() noexcept {
+    return {acceptChecks.load(std::memory_order_relaxed), acceptMismatches.load(std::memory_order_relaxed)};
+}
 Render::AnimationView WorldViewport::AnimationViewSnapshot() const {
     const auto size=PhysicalSize();
     Render::AnimationView view; view.camera=camera_;
@@ -214,12 +252,37 @@ std::optional<std::pair<Render::AnimationPreparedMode, std::uint64_t>> WorldView
 }
 void WorldViewport::PrepareAnimationFrame(const std::shared_ptr<const Render::AnimatedModelScene>& scene,
     const Render::AnimationFrame& frame, AnimationFramePreparation& output) {
+    using Clock = std::chrono::steady_clock;
+    const auto nanoseconds = [](auto begin) {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
+    };
     output = {};
     if (!scene || frame.poses.size() != frame.instances.size()) return;
     output.scene = scene;
+    auto started = Clock::now();
     Render::AnimationPickingInstances(*scene, frame, output.picking);
+    output.pickingNs = nanoseconds(started); started = Clock::now();
     output.bugSnapshot = Services::CaptureWorldModelBugPlaceholderFrame(scene, frame);
+    output.bugSnapshotNs = nanoseconds(started); started = Clock::now();
     output.retainedFrame = &frame; output.retainedBytes = Render::AnimationFrameRetainedBytes(frame);
+    output.retainedBytesNs = nanoseconds(started);
+    // 等价核对：按间隔同时逐条扫描全部姿势链重建点选列表与占位快照，逐项比对；不一致时改用整份结果并计数。
+    const auto interval = acceptCheckInterval.load(std::memory_order_relaxed);
+    if (!interval || acceptCheckCounter.fetch_add(1, std::memory_order_relaxed) % interval) return;
+    Render::WorldModelScene picking;
+    Render::AnimationPickingInstances(*scene, frame, picking, true);
+    auto snapshot = Services::CaptureWorldModelBugPlaceholderFrame(scene, frame, true);
+    acceptChecks.fetch_add(1, std::memory_order_relaxed);
+    output.check = 1;
+    if (SamePicking(picking, output.picking) && SameSnapshot(snapshot, *output.bugSnapshot)) return;
+    const auto mismatches = acceptMismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+    output.check = 2;
+    // 不能静默兜底：写运行日志（前 16 次逐次，之后每满 2 的幂次一条，带累计数），测量摘要另列总数。
+    if (mismatches <= 16 || (mismatches & (mismatches - 1)) == 0)
+        RunLog::Warning("世界动画", "接收准备只扫视野内实例的结果与整份扫描不一致，已改用整份结果："
+            + std::string(SamePicking(picking, output.picking) ? "占位快照" : "点选列表") + "不同，内容版本 "
+            + std::to_string(frame.contentVersion) + "，累计 " + std::to_string(mismatches) + " 次");
+    output.picking = std::move(picking); output.bugSnapshot = std::move(snapshot);
 }
 bool WorldViewport::UpdateAnimationFrame(std::shared_ptr<const Render::AnimationFrame> frame,
     const std::shared_ptr<Render::WorldModelScene>& picking, AnimationFramePreparation* prepared) try {

@@ -1,8 +1,10 @@
 #include "MainWindow.h"
 #include "WorldRenderAdapter.h"
+#include "WorldAnimationPlayer.h"
 #include "ApplicationIdentity.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "War3MapCore/DiagnosticTrace.h"
+#include "War3MapCore/Render/ModelAnimation.h"
 #include "ProgramIssueApplication.h"
 #include "McpProductTools.h"
 #include "War3MapCore/Update/UpdateInstaller.h"
@@ -373,6 +375,10 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     const qsizetype measurementOption = arguments.indexOf(QStringLiteral("--measure-world"));
     const qsizetype backgroundOption = arguments.indexOf(QStringLiteral("--measure-world-background"));
     const bool cameraTour = arguments.contains(QStringLiteral("--measure-world-camera-tour"));
+    const bool periodicEdits = arguments.contains(QStringLiteral("--measure-world-edits"));
+    // 测量对照用：后台测量窗口放在主屏可见处（仍不激活、不抢焦点、不发送输入），Present 可成功呈现，
+    // 只在成功呈现时才走的路径（如点选历史按屏幕上那一帧裁剪）才能在测量中出现。
+    const bool onscreen = arguments.contains(QStringLiteral("--measure-world-onscreen"));
     if (measurementOption >= 0 && (measurementOption + 1 >= arguments.size()
         || arguments[measurementOption + 1].startsWith(QStringLiteral("--"))
         || !arguments.contains(QStringLiteral("--open-map")))) return 1;
@@ -380,11 +386,32 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     bool backgroundValid = true;
     const int backgroundSeconds = backgroundOption >= 0 ? arguments[backgroundOption + 1].toInt(&backgroundValid) : 0;
     if (!backgroundValid || (backgroundOption >= 0 && (backgroundSeconds < 1 || backgroundSeconds > 3600))) return 1;
-    if (cameraTour && backgroundOption < 0) return 1;
+    if ((cameraTour || periodicEdits || onscreen) && backgroundOption < 0) return 1;
     // 测量与对照用：本进程显式选显卡（显卡键、名称片段或 default），覆盖编辑器设置，不写回设置。
     if (const qsizetype adapterOption = arguments.indexOf(QStringLiteral("--render-adapter")); adapterOption >= 0) {
         if (adapterOption + 1 >= arguments.size() || arguments[adapterOption + 1].startsWith(QStringLiteral("--"))) return 1;
         War3Map::Modules::SetRenderAdapterOverride(arguments[adapterOption + 1]);
+    }
+    // 测量对照用：本进程动画求值的并行数（1–8，含调用线程），不写回设置。
+    if (const qsizetype threadsOption = arguments.indexOf(QStringLiteral("--animation-threads")); threadsOption >= 0) {
+        bool valid = false;
+        const int threads = threadsOption + 1 < arguments.size() ? arguments[threadsOption + 1].toInt(&valid) : 0;
+        if (!valid || threads < 1 || threads > 8) return 1;
+        War3Map::Render::SetAnimationTaskParallelismOverride(static_cast<std::uint32_t>(threads));
+    }
+    // 测量对照用：动画帧回收处至多留几帧（1–4），默认 4，不写回设置。
+    if (const qsizetype sparesOption = arguments.indexOf(QStringLiteral("--animation-spares")); sparesOption >= 0) {
+        bool valid = false;
+        const int frames = sparesOption + 1 < arguments.size() ? arguments[sparesOption + 1].toInt(&valid) : 0;
+        if (!valid || frames < 1 || frames > 4) return 1;
+        War3Map::Render::SetAnimationFramePoolSparesOverride(static_cast<std::uint32_t>(frames));
+    }
+    // 测量对照用：接续下一帧时允许的待接收帧数上限（1–4，含刚算完的一帧），默认 2，不写回设置。
+    if (const qsizetype backlogOption = arguments.indexOf(QStringLiteral("--animation-backlog")); backlogOption >= 0) {
+        bool valid = false;
+        const int frames = backlogOption + 1 < arguments.size() ? arguments[backlogOption + 1].toInt(&valid) : 0;
+        if (!valid || frames < 1 || frames > 4) return 1;
+        War3Map::Modules::SetAnimationChainBacklogOverride(static_cast<std::uint32_t>(frames));
     }
     MainWindow window(measurementOption >= 0 ? MainWindow::StartupMode::HeadlessProbe : MainWindow::StartupMode::Normal);
     window.SetSaveInProcessOnly(saveInProcessOnly);
@@ -401,10 +428,12 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         window.setAttribute(Qt::WA_ShowWithoutActivating);
         window.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
         window.resize(1600, 1000);
-        // 依据当前所有显示器边界选择桌面外位置，避免固定坐标落到作者的副屏。
+        // 依据当前所有显示器边界选择桌面外位置，避免固定坐标落到作者的副屏；--measure-world-onscreen 时放主屏可见处。
         QRect desktop;
         for (const auto* screen : QGuiApplication::screens()) desktop = desktop.united(screen->geometry());
-        window.move(desktop.left() - window.width() - 256, desktop.top() - window.height() - 256);
+        if (onscreen && QGuiApplication::primaryScreen())
+            window.move(QGuiApplication::primaryScreen()->availableGeometry().topLeft());
+        else window.move(desktop.left() - window.width() - 256, desktop.top() - window.height() - 256);
     }
     window.show();
     if (measurementOption < 0 && !War3Map::RunLog::UncleanPreviousRunFiles().empty())
@@ -424,12 +453,13 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
             arguments[mapOption + 1].toStdWString());
         const QString measurementDirectory = measurementOption >= 0 ? arguments[measurementOption + 1] : QString{};
         const bool userOpen = measurementDirectory.isEmpty() && backgroundSeconds == 0 && !healthRequested;
-        QTimer::singleShot(0, &window, [&window, archive, measurementDirectory, backgroundSeconds, cameraTour, userOpen]() {
+        QTimer::singleShot(0, &window, [&window, archive, measurementDirectory, backgroundSeconds, cameraTour, periodicEdits, userOpen]() {
             if (!(userOpen ? window.OpenUserMapArchivePath(archive) : window.OpenMapArchivePath(archive))) {
                 if (!measurementDirectory.isEmpty()) QCoreApplication::exit(4);
                 return;
             }
-            if (!measurementDirectory.isEmpty() && !window.EnableWorldMeasurement(measurementDirectory, backgroundSeconds, cameraTour))
+            if (!measurementDirectory.isEmpty() &&
+                !window.EnableWorldMeasurement(measurementDirectory, backgroundSeconds, cameraTour, periodicEdits))
                 QCoreApplication::exit(4);
         });
     }

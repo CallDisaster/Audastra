@@ -11,6 +11,8 @@ struct EditorPresentationState {
     War3RenderEditorPresentationStatusV2 presentation{sizeof(presentation)};
     War3RenderEditorCompletedFrameV2 completed{sizeof(completed)};
     std::deque<War3RenderFrameMetricsV2> metrics; // 仅保留夹具真正Draw的记录，提交或pending不会伪造完成帧。
+    std::int32_t presentResult = 0; // 之后各次 Draw 记录的 Present 结果；occluded 同时置遮挡标志。
+    bool occluded = false;
     bool pending = true;
 };
 template<class State> struct EditorPresentationFixture {
@@ -36,7 +38,9 @@ template<class State> struct EditorPresentationFixture {
         s.completed.camera = static_cast<State*>(h)->camera;
         s.completed.presentation = s.presentation; s.pending = false;
         War3RenderFrameMetricsV2 metric{}; metric.structSize = sizeof(metric);
-        metric.flags = WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID;
+        metric.flags = WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID
+            | (s.occluded ? WAR3_RENDER_FRAME_METRICS_PRESENT_OCCLUDED : 0u);
+        metric.presentResult = s.presentResult;
         metric.completed = s.completed;
         metric.modelInstanceCount = s.presentation.instanceCount;
         metric.visibleModelInstanceCount = s.presentation.visibleInstanceCount;

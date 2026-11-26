@@ -5552,8 +5552,14 @@ int main(int argc, char** argv) {
         UiKit::ApplyApplicationFont(UiKit::LoadFonts(UiKit::DefaultFontDirectory()));
     UiKit::ThemeManager theme;
     if (!qEnvironmentVariable("FORGE_R08_WORLD_SCREENSHOT_DIR").isEmpty()) theme.ApplyTheme(QStringLiteral("graphite"));
+    // 后台接收准备每帧都与整份扫描逐项比对（含实例增删、收回许可后的帧）；有不一致即判失败。
+    WorldViewport::SetAcceptPreparationCheckInterval(1);
     WorldModuleTests tests;
-    return QTest::qExec(&tests, argc, argv);
+    const int result = QTest::qExec(&tests, argc, argv);
+    const auto counts = WorldViewport::AcceptPreparationChecks();
+    qInfo("accept_preparation_checks=%llu mismatches=%llu", static_cast<unsigned long long>(counts.checks),
+        static_cast<unsigned long long>(counts.mismatches));
+    return result ? result : (counts.checks && !counts.mismatches ? 0 : 1);
 }
 
 #include "WorldModuleTests.moc"

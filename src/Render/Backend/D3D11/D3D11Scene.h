@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <vector>
 
@@ -145,8 +146,14 @@ public:
     HRESULT SetModelInstances(const std::vector<War3RenderModelInstanceV2>& instances);
     // 编辑叠加线（成对顶点的线段列表）；空清除。
     HRESULT SetOverlay(const std::vector<War3RenderVertexV2>& vertices);
+    // deferCapture：capture 非空时只把本帧拷进暂存纹理即返回（capture 置空），像素随后由 TryCollectCapture 取回。
     HRESULT Draw(const War3RenderCameraV2& camera, std::vector<std::uint8_t>* capture, const std::atomic<bool>& closing,
-        float (&viewProjection)[16], DrawTimings* timings = nullptr);
+        float (&viewProjection)[16], DrawTimings* timings = nullptr, bool deferCapture = false);
+    // 推迟读回：是否有一份暂存拷贝待取。新的推迟读回替换旧的。
+    [[nodiscard]] bool CapturePending() const noexcept { return deferredStaging_ != nullptr; }
+    // 不等待 GPU：未拷完返回 S_FALSE（output 不变）；拷完写出 RGBA 并返回 S_OK；超过 5 秒或映射失败返回错误。
+    // 返回 S_FALSE 以外的结果后暂存拷贝即释放。
+    HRESULT TryCollectCapture(std::vector<std::uint8_t>& output);
     ~D3D11Scene();
 private:
     friend std::uint64_t TerrainGridUploadMetadataBytes(std::uint64_t, std::uint64_t, std::uint64_t,
@@ -247,6 +254,9 @@ private:
     // 时间戳环：GPU 落后超过环长时本帧不计时，不覆盖尚未读出的查询。
     struct GpuTimer { Ptr<ID3D11Query> disjoint, begin, end; std::uint64_t serial = 0; };
     std::array<GpuTimer, 8> gpuTimers_{};
+    Ptr<ID3D11Texture2D> deferredStaging_; // 推迟读回的暂存拷贝（见 Draw 的 deferCapture）
+    UINT deferredWidth_ = 0, deferredHeight_ = 0;
+    std::chrono::steady_clock::time_point deferredDeadline_{};
     std::size_t nextGpuTimer_ = 0;
     std::uint64_t gpuSerial_ = 0;
     bool gpuTiming_ = false;

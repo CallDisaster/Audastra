@@ -1,10 +1,12 @@
 #include "WorldViewport.h"
 #include "WorldViewportInternals.h"
+#include "WorldFrameRelease.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <utility>
@@ -23,6 +25,21 @@ bool SameCamera(const Render::ViewProjectionFrame& first, const Render::ViewProj
     return first.identity.surfaceEpoch == second.identity.surfaceEpoch && first.identity.viewEpoch == second.identity.viewEpoch
         && first.physicalWidth == second.physicalWidth && first.physicalHeight == second.physicalHeight
         && first.rowMajorViewProjection == second.rowMajorViewProjection;
+}
+// 完成指标确实画完、姿势上传有效（不论 Present 结果）。
+bool DrawnMetric(const War3RenderFrameMetricsV2& metric) {
+    constexpr auto drawn = WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID;
+    return metric.structSize >= sizeof(metric) && !metric.result && (metric.flags & drawn) == drawn;
+}
+// 点选可用的完成指标：画完且姿势上传有效。精确点选还要求 Present 成功且未遮挡；
+// 只有CPU准备允许明确遮挡的非失败Present（且窗口已接上），未知非零状态、负HRESULT仍拒绝。
+// 不能从准备计划推导方块已可见。
+bool PickableMetric(const War3RenderFrameMetricsV2& metric, bool requireSuccessfulPresent) {
+    const bool occluded = (metric.flags & WAR3_RENDER_FRAME_METRICS_PRESENT_OCCLUDED) != 0;
+    const bool presentAccepted = requireSuccessfulPresent ? !metric.presentResult && !occluded
+        : !metric.presentResult || (occluded && metric.presentResult >= 0);
+    return DrawnMetric(metric) && presentAccepted
+        && (requireSuccessfulPresent || (metric.flags & WAR3_RENDER_FRAME_METRICS_WINDOW_ATTACHED));
 }
 bool PickPending(const std::vector<Diagnostic>& diagnostics) {
     if (diagnostics.empty()) return false;
@@ -173,6 +190,64 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModel
     return Result<CompletedModelPickFrame>::Failure("World", "WORLD_MODEL_PICK_OWNER_FAILED", "无法拥有实际完成帧的点选数据，未改用最新提交姿势。");
 }
 
+bool WorldViewport::HasPickFrameMetrics() const {
+    return api_ && api_->apiVersion == WAR3_RENDER_PLUGIN_API_V2 &&
+        api_->structSize >= offsetof(War3RenderPluginApiV2, getFrameMetrics) + sizeof(api_->getFrameMetrics) &&
+        api_->getFrameMetrics && HasEditorVisibilitySupport();
+}
+
+// getEditorCompletedFrame只接受“最新提交已经完成”，持续播放时可能永远追不上。
+// 完成指标环保留同次Draw/Present的不可变身份；仅查询最后四帧。
+WorldViewport::RecentMetricsRead WorldViewport::ReadRecentFrameMetrics(RecentFrameMetrics& out, bool reportFailures) const {
+    War3RenderFrameMetricsPageV2 page{}; page.structSize = sizeof(page);
+    const auto indexResult = api_->getFrameMetrics(renderer_, 0, nullptr, 0, &page);
+    if (indexResult != 0 && reportFailures) ReportPluginFailure("getFrameMetrics", indexResult);
+    if (indexResult != 0 || page.structSize < sizeof(page)) return RecentMetricsRead::IndexFailed;
+    out.latestFrame = page.latestFrame; out.count = 0;
+    if (!page.latestFrame) return RecentMetricsRead::Ok;
+    const auto afterFrame = page.latestFrame > out.records.size() ? page.latestFrame - out.records.size() : 0;
+    const auto pageResult = api_->getFrameMetrics(renderer_, afterFrame, out.records.data(),
+        static_cast<std::uint32_t>(out.records.size()), &page);
+    if (pageResult != 0 && reportFailures) ReportPluginFailure("getFrameMetrics", pageResult);
+    if (pageResult != 0 || page.structSize < sizeof(page) || page.count > out.records.size()) return RecentMetricsRead::PageFailed;
+    out.count = page.count;
+    return RecentMetricsRead::Ok;
+}
+
+void WorldViewport::RetireOldestAnimationPick() {
+    auto retired = std::move(animationPickHistory_.front().frame);
+    animationPickHistory_.pop_front();
+    ReleaseAnimationFrameInBackground(std::move(retired));
+}
+
+// 屏幕上是最近一次成功呈现、未遮挡的完成帧（或更新的帧）；精确点选从新到旧取第一条可用且有历史的完成帧。
+// 比屏幕上这一帧更旧的历史已不可能被点选选中，随新帧接收退回帧池，不必等三帧上限挤出；
+// 显示中的帧与尚未画完的新帧都保留。最近四条都没有成功呈现（窗口被遮挡）时以最近画完的帧为准：
+// 渲染端此后只画它或更新的内容，更旧的历史不会再有成功呈现的完成帧，指标环里也没有可用的那条。
+// 读不到完成指标或找不到对应那一帧的历史时不裁剪；裁剪只是旁路，读失败不在接收帧途中发插件失败信号
+// （点选读取照常上报）。
+void WorldViewport::PruneAnimationPickHistory() {
+    if (animationPickHistory_.size() < 2 || !renderer_ || failed_ || destroying_ || !HasPickFrameMetrics()) return;
+    RecentFrameMetrics recent;
+    if (ReadRecentFrameMetrics(recent, false) != RecentMetricsRead::Ok) return;
+    const auto newest = [&](auto usable) -> const War3RenderFrameMetricsV2* {
+        for (std::size_t i = recent.count; i > 0; --i)
+            if (usable(recent.records[i - 1])) return &recent.records[i - 1];
+        return nullptr;
+    };
+    const auto* anchor = newest([](const auto& metric) { return PickableMetric(metric, true); });
+    if (!anchor) anchor = newest([](const auto& metric) { return DrawnMetric(metric); });
+    if (!anchor) return;
+    const auto& completed = anchor->completed;
+    const auto shown = std::find_if(animationPickHistory_.rbegin(), animationPickHistory_.rend(), [&](const auto& owner) {
+        return owner.frame && owner.rendererEpoch == measurementRendererEpoch_
+            && owner.sceneVersion == completed.skin.sceneVersion && owner.contentVersion == completed.skin.contentVersion
+            && owner.presentationRevision == completed.presentation.presentationRevision;
+    });
+    if (shown == animationPickHistory_.rend()) return;
+    for (auto older = std::distance(shown, animationPickHistory_.rend()) - 1; older > 0; --older) RetireOldestAnimationPick();
+}
+
 Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedAnimationSource(bool preparation,
     bool requireSuccessfulPresent, bool freezeGeometryPolicy) const try {
     using Output = Result<CompletedModelPickFrame>;
@@ -181,9 +256,7 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedAnima
         return fail("WORLD_MODEL_PICK_SOURCE_INVALID", "动画画面已冻结，只读；旧姿势不能用于当前点选。");
     if (!renderer_ || !CanRender() || failed_ || destroying_ || pickingSuspended_ || !animationScene_ || !animationFrame_)
         return fail("WORLD_MODEL_PICK_UNAVAILABLE", "当前没有可精确点选的动画场景。");
-    if (!api_ || api_->apiVersion != WAR3_RENDER_PLUGIN_API_V2 ||
-        api_->structSize < offsetof(War3RenderPluginApiV2, getFrameMetrics) + sizeof(api_->getFrameMetrics) ||
-        !api_->getFrameMetrics || !HasEditorVisibilitySupport())
+    if (!HasPickFrameMetrics())
         return fail("WORLD_MODEL_PICK_UNSUPPORTED", "当前插件缺少同帧姿势/显隐绘制回执，不能精确点选模型。");
     if (!editorPresentationTarget_ || editorVisibilityDirty_)
         return fail("WORLD_MODEL_PICK_PRESENTATION_PENDING", "编辑器显隐仍待呈现，点选已取消。");
@@ -191,37 +264,23 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedAnima
     if (!currentView.Succeeded()) return {std::nullopt, currentView.diagnostics};
     auto policy = freezeGeometryPolicy ? ReadModelPickPolicy() : Result<ModelPickPolicy>::Success({});
     if (!policy.Succeeded()) return {std::nullopt, std::move(policy.diagnostics)};
-    // getEditorCompletedFrame只接受“最新提交已经完成”，持续播放时可能永远追不上。
-    // 完成指标环保留同次Draw/Present的不可变身份；仅查询最后四帧并绑定拥有的CPU姿势。
-    War3RenderFrameMetricsPageV2 page{}; page.structSize = sizeof(page);
-    const auto indexResult = api_->getFrameMetrics(renderer_, 0, nullptr, 0, &page);
-    if (indexResult != 0) ReportPluginFailure("getFrameMetrics", indexResult);
-    if (indexResult != 0 || page.structSize < sizeof(page))
+    // 最后四条完成指标绑定拥有的CPU姿势。
+    RecentFrameMetrics recent;
+    const auto read = ReadRecentFrameMetrics(recent);
+    if (read == RecentMetricsRead::IndexFailed)
         return fail("WORLD_MODEL_PICK_FRAME_FAILED", "无法读取完成帧索引，点选已取消。");
-    if (!page.latestFrame) return fail("WORLD_MODEL_PICK_FRAME_PENDING", "等待首个实际完成的模型画面。");
-    std::array<War3RenderFrameMetricsV2, 4> metrics{};
-    const auto afterFrame = page.latestFrame > metrics.size() ? page.latestFrame - metrics.size() : 0;
-    const auto pageResult = api_->getFrameMetrics(renderer_, afterFrame, metrics.data(), static_cast<std::uint32_t>(metrics.size()), &page);
-    if (pageResult != 0) ReportPluginFailure("getFrameMetrics", pageResult);
-    if (pageResult != 0 ||
-        page.structSize < sizeof(page) || page.count > metrics.size())
+    if (!recent.latestFrame) return fail("WORLD_MODEL_PICK_FRAME_PENDING", "等待首个实际完成的模型画面。");
+    if (read != RecentMetricsRead::Ok)
         return fail("WORLD_MODEL_PICK_FRAME_FAILED", "无法读取同次绘制完成身份，点选已取消。");
+    const auto& metrics = recent.records;
     const AnimationCompletionIdentity* retained = nullptr;
     std::shared_ptr<const Render::AnimationFrame> ownedFrame;
     std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot> ownedPreparation;
     const War3RenderEditorCompletedFrameV2* accepted = nullptr;
     const War3RenderFrameMetricsV2* acceptedMetric = nullptr;
-    for (std::size_t i = page.count; i > 0 && !retained; --i) {
+    for (std::size_t i = recent.count; i > 0 && !retained; --i) {
         const auto& metric = metrics[i - 1]; const auto& candidate = metric.completed;
-        const bool occluded = (metric.flags & WAR3_RENDER_FRAME_METRICS_PRESENT_OCCLUDED) != 0;
-        // 只有CPU准备允许明确遮挡的非失败Present；未知非零状态、负HRESULT仍拒绝。
-        // 默认精确点选继续要求成功且未遮挡；不能从准备计划推导方块已可见。
-        const bool presentAccepted = requireSuccessfulPresent ? !metric.presentResult && !occluded
-            : !metric.presentResult || (occluded && metric.presentResult >= 0);
-        if (metric.structSize < sizeof(metric) || metric.result || !presentAccepted ||
-            (metric.flags & (WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID)) !=
-                (WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID) ||
-            (!requireSuccessfulPresent && !(metric.flags & WAR3_RENDER_FRAME_METRICS_WINDOW_ATTACHED))) continue;
+        if (!PickableMetric(metric, requireSuccessfulPresent)) continue;
         Render::ViewProjectionFrame candidateView;
         candidateView.identity = {candidate.view.surfaceEpoch, candidate.view.sceneEpoch, candidate.view.viewEpoch, candidate.view.frameCount};
         candidateView.physicalWidth = candidate.view.width; candidateView.physicalHeight = candidate.view.height;
