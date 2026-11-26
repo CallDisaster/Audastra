@@ -654,6 +654,14 @@ void WarVKSunHoldAndCloudSea() {
     const auto sky = at("call SetSkyModel( \"Sky\\\\Sea.mdx\" )");
     Require(global != npos && global < at("endglobals") && motion != npos && motion < direction && direction < sea && sea < seaError
         && seaError < sky && at("volumetric") == npos, "cloud sea follows the sun and precedes the sky model");
+    Require(!hasCode(generated.diagnostics, "WARVK_CLOUD_SEA_VOLUMETRIC"), "no volumetric warning without volumetric text");
+    // 地图自己的脚本打开体积光：照常生成，提醒云海会变成体积雾。
+    triggers.wct.customCode.text = "function MapVolumetric takes nothing returns nothing\n"
+        "    call Preloader( \"warvk:v1;volumetric.setEnabled;b:1\" )\nendfunction\n";
+    const auto volumetric = GenerateMapScript(fixture.inputs);
+    Require(volumetric.Succeeded() && hasCode(volumetric.diagnostics, "WARVK_CLOUD_SEA_VOLUMETRIC"),
+        "map script enabling volumetric light warns about the cloud sea");
+    triggers.wct.customCode.text.clear();
     scripted.celestialMotion = true;
     const auto warned = GenerateMapScript(fixture.inputs);
     Require(warned.Succeeded() && hasCode(warned.diagnostics, "WARVK_SUN_DIRECTION_OVERRIDDEN"),

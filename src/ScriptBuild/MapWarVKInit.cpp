@@ -53,6 +53,12 @@ void WriteWarVKInitFunction(MapContext& context) {
         warning.origin = origin;
         context.diagnostics.push_back(std::move(warning));
     }
+    // 体积光打开后雾盒归体积光，云海会变成整图体积雾。受管段写在自定义代码与触发器之后，此时已写出的正文
+    // 里出现 volumetric.setEnabled 就提醒；只查字面文本，拼接出的指令串和导入的脚本库查不到。
+    if (cloudSea && context.out.Text().find("volumetric.setEnabled") != std::string::npos)
+        context.diagnostics.push_back({DiagnosticSeverity::Warning, "MapData.WarVK", "WARVK_CLOUD_SEA_VOLUMETRIC",
+            "地图脚本里出现 volumetric.setEnabled：体积光打开后，云海雾盒归体积光，会变成覆盖整图、密度等于覆盖度的体积雾，"
+            "不再是云海。只检查自定义脚本和触发器里的字面文本。", origin});
     auto& out = context.out;
     const bool timer = settings->timing == MapData::WarVKInitTiming::AfterInitialization;
     out.Line("//===========================================================================");
