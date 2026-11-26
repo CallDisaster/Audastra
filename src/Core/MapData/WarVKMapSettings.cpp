@@ -45,6 +45,31 @@ bool ParseNumber(std::string_view text, double& value) {
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && std::isfinite(value);
 }
 
+// 能按 Number 写出且读回（ParseNumber 只收 32 字符以内）。
+bool Writable(double value) {
+    const auto text = Number(value);
+    return !text.empty() && text.size() <= 32;
+}
+
+bool InRange(double value, double low, double high) { return std::isfinite(value) && value >= low && value <= high; }
+
+// 方向分量：6 位小数、去掉末尾 0，负零写成 0（-0.994522、0、-0.104528）。
+std::string Component(double value) {
+    char buffer[64];
+    const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 6);
+    if (written.ec != std::errc{}) return {};
+    std::string text(buffer, written.ptr);
+    while (!text.empty() && text.back() == '0') text.pop_back();
+    if (!text.empty() && text.back() == '.') text.pop_back();
+    return text == "-0" ? std::string("0") : text;
+}
+
+std::optional<bool> ParseSwitch(std::string_view value) {
+    if (value == "1") return true;
+    if (value == "0") return false;
+    return std::nullopt;
+}
+
 std::vector<std::string_view> Split(std::string_view text, char separator) {
     std::vector<std::string_view> parts;
     for (std::size_t start = 0;;) {
@@ -54,6 +79,15 @@ std::vector<std::string_view> Split(std::string_view text, char separator) {
         start = end + 1;
     }
 }
+
+bool ParseNumbers(std::string_view value, std::span<double> output) {
+    const auto parts = Split(value, ',');
+    if (parts.size() != output.size()) return false;
+    for (std::size_t i = 0; i < parts.size(); ++i) if (!ParseNumber(parts[i], output[i])) return false;
+    return true;
+}
+
+constexpr double kDegrees = 3.14159265358979323846 / 180.0;
 } // namespace
 
 Status ValidateWarVKMapSettings(const WarVKMapSettings& settings) {
@@ -83,6 +117,22 @@ Status ValidateWarVKMapSettings(const WarVKMapSettings& settings) {
         if (!ValidSkyModel(settings.skyModel))
             return Fail("WARVK_SKY_MODEL_INVALID", "天空模型路径“" + settings.skyModel
                 + "”须是以 .mdx 或 .mdl 结尾的相对路径（反斜杠分隔），不含引号、冒号或控制字符。");
+    }
+    if (settings.sunDirection) {
+        const auto& sun = *settings.sunDirection;
+        if (!std::isfinite(sun.azimuth) || sun.azimuth < 0 || sun.azimuth >= kWarVKSunAzimuthMax)
+            return Fail("WARVK_SUN_AZIMUTH_RANGE", "太阳方位角须在 0–360° 之间（不含 360）。");
+        if (!InRange(sun.elevation, kWarVKSunElevationMin, kWarVKSunElevationMax))
+            return Fail("WARVK_SUN_ELEVATION_RANGE", "太阳仰角须在 -90–90° 之间。");
+        if (!Writable(sun.azimuth) || !Writable(sun.elevation)) return Fail("WARVK_SUN_NUMBER", "太阳方向无法写成十进制数。");
+    }
+    if (settings.sunColor) {
+        const auto& sun = *settings.sunColor;
+        if (!InRange(sun.red, 0, 1) || !InRange(sun.green, 0, 1) || !InRange(sun.blue, 0, 1))
+            return Fail("WARVK_SUN_COLOR_RANGE", "太阳颜色各分量须在 0–1 之间。");
+        if (!InRange(sun.intensity, 0, kWarVKSunIntensityMax)) return Fail("WARVK_SUN_INTENSITY_RANGE", "太阳强度须在 0–10 之间。");
+        if (!Writable(sun.red) || !Writable(sun.green) || !Writable(sun.blue) || !Writable(sun.intensity))
+            return Fail("WARVK_SUN_NUMBER", "太阳颜色或强度无法写成十进制数。");
     }
     if (settings.timing != WarVKInitTiming::AfterInitialization && settings.timing != WarVKInitTiming::MainStart)
         return Fail("WARVK_TIMING_INVALID", "未知的 WarVK 指令执行时机。");
@@ -134,6 +184,20 @@ Result<WarVKMapSettings> ParseWarVKMapSettings(std::span<const std::byte> bytes)
         } else if (key == "sky.model") {
             if (value.empty()) return fail("WARVK_SKY_MODEL_INVALID", "sky.model 不能为空；不设置天空模型时省略该行。");
             settings.skyModel = std::string(value);
+        } else if (key == "sun.direction") {
+            double numbers[2]{};
+            if (!ParseNumbers(value, numbers))
+                return fail("WARVK_SUN_NUMBER", "sun.direction 须为“方位角,仰角”两个十进制数（度）。");
+            settings.sunDirection = WarVKSunDirection{numbers[0], numbers[1]};
+        } else if (key == "sun.color") {
+            double numbers[4]{};
+            if (!ParseNumbers(value, numbers))
+                return fail("WARVK_SUN_NUMBER", "sun.color 须为“红,绿,蓝,强度”四个十进制数。");
+            settings.sunColor = WarVKSunColor{numbers[0], numbers[1], numbers[2], numbers[3]};
+        } else if (key == "lighting.celestialMotion" || key == "lighting.timeColorGrading") {
+            const auto enabled = ParseSwitch(value);
+            if (!enabled) return fail("WARVK_LIGHTING_SWITCH", std::string(key) + " 只能是 0 或 1；不设置时省略该行。");
+            (key == "lighting.celestialMotion" ? settings.celestialMotion : settings.timeColorGrading) = *enabled;
         } else {
             return fail("WARVK_SETTINGS_UNKNOWN_KEY", "未知的 WarVK 设置键“" + std::string(key) + "”；不忽略未知内容。");
         }
@@ -158,6 +222,12 @@ Result<std::vector<std::byte>> SerializeWarVKMapSettings(const WarVKMapSettings&
         text += "\n";
     }
     if (!settings.skyModel.empty()) text += "sky.model=" + settings.skyModel + "\n";
+    if (settings.sunDirection)
+        text += "sun.direction=" + Number(settings.sunDirection->azimuth) + "," + Number(settings.sunDirection->elevation) + "\n";
+    if (const auto& sun = settings.sunColor)
+        text += "sun.color=" + Number(sun->red) + "," + Number(sun->green) + "," + Number(sun->blue) + "," + Number(sun->intensity) + "\n";
+    if (settings.celestialMotion) text += std::string("lighting.celestialMotion=") + (*settings.celestialMotion ? "1" : "0") + "\n";
+    if (settings.timeColorGrading) text += std::string("lighting.timeColorGrading=") + (*settings.timeColorGrading ? "1" : "0") + "\n";
     const auto* first = reinterpret_cast<const std::byte*>(text.data());
     return Output::Success(std::vector<std::byte>(first, first + text.size()));
 }
@@ -175,6 +245,19 @@ Result<std::vector<std::string>> WarVKInitCommands(const WarVKMapSettings& setti
         for (std::size_t i = 0; i < settings.farDoodadTypes.size(); ++i) line += (i ? "," : "") + settings.farDoodadTypes[i];
         commands.push_back(std::move(line));
     }
+    if (settings.celestialMotion)
+        commands.push_back(std::string("warvk:v1;lightingCycle.setCelestialMotionEnabled;b:") + (*settings.celestialMotion ? "1" : "0"));
+    if (settings.timeColorGrading)
+        commands.push_back(std::string("warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:") + (*settings.timeColorGrading ? "1" : "0"));
+    if (settings.sunDirection) {
+        const double azimuth = settings.sunDirection->azimuth * kDegrees, elevation = settings.sunDirection->elevation * kDegrees;
+        const double x = -std::cos(elevation) * std::cos(azimuth), y = -std::cos(elevation) * std::sin(azimuth);
+        const double z = -std::sin(elevation);
+        commands.push_back("warvk:v1;sun.setDirection;r:" + Component(x) + ";r:" + Component(y) + ";r:" + Component(z));
+    }
+    if (const auto& sun = settings.sunColor)
+        commands.push_back("warvk:v1;sun.setColorIntensity;r:" + Number(sun->red) + ";r:" + Number(sun->green) + ";r:"
+            + Number(sun->blue) + ";r:" + Number(sun->intensity));
     return Output::Success(std::move(commands));
 }
 

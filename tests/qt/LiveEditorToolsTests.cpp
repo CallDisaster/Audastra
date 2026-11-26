@@ -3295,6 +3295,38 @@ void LiveEditorToolsTests::WarVKSettingsUseSettingsUndoAndRefuseSeventeenth() {
     const auto skyImported = f.tools->Invoke("imports_add", skyImport);
     QVERIFY2(skyImported.value("ok").toBool(), qPrintable(Explain(skyImported)));
     QVERIFY(f.tools->Invoke("map_warvk_get", f.Context()).value("sky_model_in_map").toBool());
+
+    // 太阳与昼夜光照开关：一次调用一条撤销；方向写光线向量；越界拒绝且不入栈；default 取消开关。
+    QCOMPARE(empty.value("celestial_motion").toString(), QStringLiteral("default"));
+    QVERIFY(!empty.value("sun_direction").toObject().value("enabled").toBool());
+    auto sun = f.Context();
+    sun.insert("sun_direction", QJsonObject{{"enabled", true}, {"azimuth", 0}, {"elevation", 6}});
+    sun.insert("sun_color", QJsonObject{{"enabled", true}, {"red", 1}, {"green", 0.8}, {"blue", 0.6}, {"intensity", 2}});
+    sun.insert("celestial_motion", "off");
+    sun.insert("time_color_grading", "off");
+    const auto undoBeforeSun = settingsUndo->count();
+    const auto sunSet = f.tools->Invoke("map_warvk_set", sun);
+    QVERIFY2(sunSet.value("ok").toBool(), qPrintable(Explain(sunSet)));
+    QCOMPARE(settingsUndo->count(), undoBeforeSun + 1);
+    QCOMPARE(sunSet.value("celestial_motion").toString(), QStringLiteral("off"));
+    QCOMPARE(sunSet.value("sun_direction").toObject().value("elevation").toDouble(), 6.0);
+    QCOMPARE(sunSet.value("sun_color").toObject().value("intensity").toDouble(), 2.0);
+    const auto sunLines = sunSet.value("commands").toArray();
+    QVERIFY(sunLines.contains(QStringLiteral("warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0")));
+    QVERIFY(sunLines.contains(QStringLiteral("warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:0")));
+    QVERIFY(sunLines.contains(QStringLiteral("warvk:v1;sun.setDirection;r:-0.994522;r:0;r:-0.104528")));
+    QVERIFY(sunLines.contains(QStringLiteral("warvk:v1;sun.setColorIntensity;r:1;r:0.8;r:0.6;r:2")));
+    auto badElevation = f.Context(); badElevation.insert("sun_direction", QJsonObject{{"enabled", true}, {"azimuth", 0}, {"elevation", 91}});
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_warvk_set", badElevation)), QString("WARVK_SUN_ELEVATION_RANGE"));
+    auto badSwitch = f.Context(); badSwitch.insert("celestial_motion", "maybe");
+    QVERIFY(!f.tools->Invoke("map_warvk_set", badSwitch).value("ok").toBool()); // 枚举外的值在参数校验处即拒绝
+    QCOMPARE(settingsUndo->count(), undoBeforeSun + 1);
+    auto reset = f.Context(); reset.insert("celestial_motion", "default"); reset.insert("sun_color", QJsonObject{{"enabled", false}});
+    const auto resetSet = f.tools->Invoke("map_warvk_set", reset);
+    QVERIFY2(resetSet.value("ok").toBool(), qPrintable(Explain(resetSet)));
+    const auto afterReset = f.project.QueryWarVKMapSettings();
+    QVERIFY(afterReset.Succeeded() && !afterReset.value->celestialMotion && afterReset.value->timeColorGrading == false
+        && !afterReset.value->sunColor && afterReset.value->sunDirection);
 }
 
 QTEST_MAIN(LiveEditorToolsTests)

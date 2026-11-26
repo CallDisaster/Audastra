@@ -466,6 +466,35 @@ void WarVKManagedInitialization() {
     }
     Require(!parse("schema=1\nsky.model=\n").Succeeded(), "empty sky.model refused");
     settings.skyModel = "Sonne\\Sky\\SonneDawnM11.mdx";
+    // 太阳与昼夜光照开关：各一行、往返不变；指令先关循环再设方向和颜色；方向写光线向量（东为 +X，6 位小数，负零写 0）。
+    WarVKMapSettings sun;
+    sun.sunDirection = MapData::WarVKSunDirection{0, 6};
+    sun.sunColor = MapData::WarVKSunColor{1, 0.8, 0.6, 2};
+    sun.celestialMotion = false;
+    sun.timeColorGrading = false;
+    const auto sunBytes = MapData::SerializeWarVKMapSettings(sun);
+    Require(sunBytes.Succeeded() && std::string(reinterpret_cast<const char*>(sunBytes.value->data()), sunBytes.value->size())
+        == "schema=1\ntiming=timer\nsun.direction=0,6\nsun.color=1,0.8,0.6,2\nlighting.celestialMotion=0\nlighting.timeColorGrading=0\n",
+        "sun and lighting switches are one line each");
+    const auto sunParsed = MapData::ParseWarVKMapSettings(*sunBytes.value);
+    Require(sunParsed.Succeeded() && *sunParsed.value == sun && sun.HasCommands(), "sun settings round-trip exactly");
+    const auto sunCommands = MapData::WarVKInitCommands(sun);
+    Require(sunCommands.Succeeded() && sunCommands.value->size() == 4
+        && (*sunCommands.value)[0] == "warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0"
+        && (*sunCommands.value)[1] == "warvk:v1;lightingCycle.setTimeColorGradingEnabled;b:0"
+        && (*sunCommands.value)[2] == "warvk:v1;sun.setDirection;r:-0.994522;r:0;r:-0.104528"
+        && (*sunCommands.value)[3] == "warvk:v1;sun.setColorIntensity;r:1;r:0.8;r:0.6;r:2", "sun commands keep order and text");
+    WarVKMapSettings north; north.sunDirection = MapData::WarVKSunDirection{90, 30}; north.celestialMotion = true;
+    const auto northCommands = MapData::WarVKInitCommands(north);
+    Require(northCommands.Succeeded() && northCommands.value->size() == 2
+        && (*northCommands.value)[0] == "warvk:v1;lightingCycle.setCelestialMotionEnabled;b:1"
+        && (*northCommands.value)[1] == "warvk:v1;sun.setDirection;r:0;r:-0.866025;r:-0.5", "north sun points south and down");
+    for (const auto* bad : {"schema=1\nsun.direction=360,10\n", "schema=1\nsun.direction=-1,10\n", "schema=1\nsun.direction=0,91\n",
+             "schema=1\nsun.direction=0\n", "schema=1\nsun.color=1.5,1,1,1\n", "schema=1\nsun.color=1,1,1,11\n",
+             "schema=1\nsun.color=1,1,1\n", "schema=1\nlighting.celestialMotion=2\n", "schema=1\nlighting.timeColorGrading=\n"})
+        Require(!parse(bad).Succeeded(), "out-of-range or malformed sun settings refused");
+    settings.celestialMotion = false;
+    settings.sunDirection = MapData::WarVKSunDirection{90, 30};
 
     // JASS：默认在 RunInitializationTriggers 之后起 0 秒计时器；受管函数先读协议版本，再逐条记录结果。
     Fixture fixture;
@@ -491,6 +520,11 @@ void WarVKManagedInitialization() {
     Require(protocol != npos && protocol < camera && camera < cameraError && cameraError < farTypes && farTypes < farError,
         "protocol first, then each command with its own result");
     const auto sky = at("call SetSkyModel( \"Sonne\\\\Sky\\\\SonneDawnM11.mdx\" )");
+    const auto motion = at("call Preloader( \"warvk:v1;lightingCycle.setCelestialMotionEnabled;b:0\" )");
+    const auto sunDirection = at("call Preloader( \"warvk:v1;sun.setDirection;r:0;r:-0.866025;r:-0.5\" )");
+    const auto sunError = at("set AudastraWarVKErrors[3] = GetLocalizedHotkey( \"warvk:v1;system.lastErrorCode\" )");
+    Require(motion != npos && farError < motion && motion < sunDirection && sunDirection < sunError && sunError < sky,
+        "lighting switch and sun follow the far types, each with its result, before the sky model");
     Require(sky != npos && farError < sky && sky < at("call DestroyTimer( GetExpiredTimer() )"), "sky model set after the commands");
     Require(at("call DestroyTimer( GetExpiredTimer() )") != npos && start != npos && initialization < start
         && start < script.find("endfunction", mainAt), "timer starts after map initialization inside main");

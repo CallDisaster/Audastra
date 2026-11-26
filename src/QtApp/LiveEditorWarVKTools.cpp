@@ -10,6 +10,13 @@ namespace War3Map::QtApp {
 namespace {
 using MapData::WarVKMapSettings;
 
+// 光照循环开关：default 为不设置（保持 WarVK 默认），on/off 写出 b:1 / b:0。
+QString SwitchText(const std::optional<bool>& value) { return !value ? QStringLiteral("default") : *value ? QStringLiteral("on") : QStringLiteral("off"); }
+
+QJsonObject SwitchSchema() { return {{"type", "string"}, {"enum", QJsonArray{"default", "on", "off"}}}; }
+
+QJsonObject NumberSchema(double minimum, double maximum) { return {{"type", "number"}, {"minimum", minimum}, {"maximum", maximum}}; }
+
 QJsonObject SettingsJson(QtProject::EditorProject& project) {
     const auto settings = project.QueryWarVKMapSettings();
     if (!settings.Succeeded() || !settings.value) return Mcp::Failure(settings);
@@ -33,6 +40,15 @@ QJsonObject SettingsJson(QtProject::EditorProject& project) {
         ? QJsonValue(QJsonObject{{"enabled", true}, {"max_distance", value.cameraLimits->maxDistance},
             {"near_clip", value.cameraLimits->nearClip}})
         : QJsonValue(QJsonObject{{"enabled", false}}));
+    result.insert("sun_direction", value.sunDirection
+        ? QJsonObject{{"enabled", true}, {"azimuth", value.sunDirection->azimuth}, {"elevation", value.sunDirection->elevation}}
+        : QJsonObject{{"enabled", false}});
+    result.insert("sun_color", value.sunColor
+        ? QJsonObject{{"enabled", true}, {"red", value.sunColor->red}, {"green", value.sunColor->green},
+            {"blue", value.sunColor->blue}, {"intensity", value.sunColor->intensity}}
+        : QJsonObject{{"enabled", false}});
+    result.insert("celestial_motion", SwitchText(value.celestialMotion));
+    result.insert("time_color_grading", SwitchText(value.timeColorGrading));
     if (!value.skyModel.empty()) {
         // 是否已在地图里（含待保存导入）；不在时也可能是游戏自带路径，只报告，不拒绝。
         const auto key = QtProject::EditorProject::AssetKey(QString::fromStdString(value.skyModel));
@@ -83,6 +99,39 @@ Result<WarVKMapSettings> Merge(WarVKMapSettings settings, const QJsonObject& arg
         // 正斜杠统一为原版路径用的反斜杠。
         settings.skyModel = sky.toString().trimmed().replace(QLatin1Char('/'), QLatin1Char('\\')).toStdString();
     }
+    if (arguments.contains("sun_direction")) {
+        const auto object = arguments.value("sun_direction").toObject();
+        const auto enabled = object.value("enabled");
+        if (!enabled.isBool()) return fail("WARVK_SUN_NUMBER", "sun_direction 须含 enabled。");
+        if (!enabled.toBool()) settings.sunDirection.reset();
+        else {
+            const auto azimuth = object.value("azimuth"), elevation = object.value("elevation");
+            if (!azimuth.isDouble() || !elevation.isDouble())
+                return fail("WARVK_SUN_NUMBER", "启用太阳方向时须给出数值 azimuth 与 elevation（度）。");
+            settings.sunDirection = MapData::WarVKSunDirection{azimuth.toDouble(), elevation.toDouble()};
+        }
+    }
+    if (arguments.contains("sun_color")) {
+        const auto object = arguments.value("sun_color").toObject();
+        const auto enabled = object.value("enabled");
+        if (!enabled.isBool()) return fail("WARVK_SUN_NUMBER", "sun_color 须含 enabled。");
+        if (!enabled.toBool()) settings.sunColor.reset();
+        else {
+            const auto red = object.value("red"), green = object.value("green"), blue = object.value("blue");
+            const auto intensity = object.value("intensity");
+            if (!red.isDouble() || !green.isDouble() || !blue.isDouble() || !intensity.isDouble())
+                return fail("WARVK_SUN_NUMBER", "启用太阳颜色时须给出数值 red、green、blue（0–1）与 intensity。");
+            settings.sunColor = MapData::WarVKSunColor{red.toDouble(), green.toDouble(), blue.toDouble(), intensity.toDouble()};
+        }
+    }
+    for (const auto& [name, target] : {std::pair{"celestial_motion", &settings.celestialMotion},
+             std::pair{"time_color_grading", &settings.timeColorGrading}}) {
+        if (!arguments.contains(QLatin1String(name))) continue;
+        const auto text = arguments.value(QLatin1String(name)).toString();
+        if (text == "default") target->reset();
+        else if (text == "on" || text == "off") *target = text == "on";
+        else return fail("WARVK_LIGHTING_SWITCH", std::string(name) + " 只能是 default、on 或 off。");
+    }
     if (const auto valid = MapData::ValidateWarVKMapSettings(settings); !valid.Succeeded()) return {std::nullopt, valid.diagnostics};
     return Result<WarVKMapSettings>::Success(std::move(settings));
 }
@@ -92,7 +141,7 @@ QJsonObject Rawcode() { return {{"type", "string"}, {"minLength", 4}, {"maxLengt
 
 std::vector<LiveWarVKTool> LiveWarVKTools() {
     std::vector<LiveWarVKTool> tools;
-    tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型、天空模型及保存时写出的指令。",
+    tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型、天空模型、太阳方向与颜色、昼夜光照开关及保存时写出的指令。",
         Mcp::ToolPermission::Query, {}, {}, SettingsJson, {}});
     QJsonObject set{
         {"timing", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"timer", "main"}}}},
@@ -106,9 +155,26 @@ std::vector<LiveWarVKTool> LiveWarVKTools() {
             {"required", QJsonArray{"enabled"}}}},
         {"far_doodad_types", QJsonObject{{"type", "array"}, {"maxItems", static_cast<int>(MapData::kWarVKMaxFarDoodadTypes)},
             {"items", Rawcode()}}},
-        {"sky_model", QJsonObject{{"type", "string"}, {"maxLength", static_cast<int>(MapData::kWarVKSkyModelMaxBytes)}}}};
+        {"sky_model", QJsonObject{{"type", "string"}, {"maxLength", static_cast<int>(MapData::kWarVKSkyModelMaxBytes)}}},
+        {"sun_direction", QJsonObject{{"type", "object"}, {"additionalProperties", false},
+            {"properties", QJsonObject{
+                {"enabled", QJsonObject{{"type", "boolean"}}},
+                {"azimuth", QJsonObject{{"type", "number"}, {"minimum", 0}, {"exclusiveMaximum", MapData::kWarVKSunAzimuthMax}}},
+                {"elevation", NumberSchema(MapData::kWarVKSunElevationMin, MapData::kWarVKSunElevationMax)}}},
+            {"required", QJsonArray{"enabled"}}}},
+        {"sun_color", QJsonObject{{"type", "object"}, {"additionalProperties", false},
+            {"properties", QJsonObject{
+                {"enabled", QJsonObject{{"type", "boolean"}}},
+                {"red", NumberSchema(0, 1)}, {"green", NumberSchema(0, 1)}, {"blue", NumberSchema(0, 1)},
+                {"intensity", NumberSchema(0, MapData::kWarVKSunIntensityMax)}}},
+            {"required", QJsonArray{"enabled"}}}},
+        {"celestial_motion", SwitchSchema()},
+        {"time_color_grading", SwitchSchema()}};
     tools.push_back({"map_warvk_set", "修改地图设置 → WarVK（只改给出的项；camera_limits.enabled=false 取消镜头限制，far_doodad_types 整表替换，"
-        "超过 16 个拒绝；sky_model 为天空模型路径，空串取消，超过 259 字节拒绝，正斜杠按反斜杠写）。一次调用是地图设置撤销栈上的一条记录。", Mcp::ToolPermission::Edit, set, {}, {},
+        "超过 16 个拒绝；sky_model 为天空模型路径，空串取消，超过 259 字节拒绝，正斜杠按反斜杠写；"
+        "sun_direction 的 azimuth 同单位朝向（0 东、90 北），elevation 为仰角，写出光线方向向量；sun_color 各分量 0–1、强度 0–10；"
+        "celestial_motion / time_color_grading 为昼夜光照循环开关，固定太阳需两个都 off，default 为不设置）。"
+        "一次调用是地图设置撤销栈上的一条记录。", Mcp::ToolPermission::Edit, set, {}, {},
         [](QtProject::EditorProject& project, const QJsonObject& arguments) -> QJsonObject {
             const auto current = project.QueryWarVKMapSettings();
             if (!current.Succeeded() || !current.value) return Mcp::Failure(current);
