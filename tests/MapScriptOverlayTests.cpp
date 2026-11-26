@@ -391,6 +391,60 @@ void TestExtendedTypedInputs() {
     }
 }
 
+// 云海要用完整地形网格，全局天气要地形范围：保存服务只读一次 war3map.w3e，两者都来自同一份待保存地形。
+void TestWarVKCloudSeaUsesTheSavedTerrain() {
+    Scratch scratch;
+    Write(scratch.Path() / "ui/config", "base\n");
+    Write(scratch.Path() / "ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,整数,integer\n");
+    Write(scratch.Path() / "ui/base/event.txt", "[TimerEvent]\n");
+    Write(scratch.Path() / "ui/base/condition.txt", "[AndMultiple]\nreturns=boolean\n");
+    Write(scratch.Path() / "ui/base/action.txt", "[DoNothing]\n");
+    Write(scratch.Path() / "ui/base/call.txt", "[GetLastCreated]\nreturns=unit\n");
+    auto catalog = Trigger::UiCatalog::Load(scratch.Path());
+    Require(catalog.Succeeded(), "synthetic UI catalog should load");
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", SettingsWithoutRandomTables()},
+        {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()}, {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
+        {"war3map.w3e", FlatTerrain()}};
+    const auto sourcePath = scratch.Path() / "cloud-sea.mpq";
+    Require(WriteVerifiedArchive(sourcePath, members).Succeeded(), "write synthetic cloud sea archive");
+    auto archive = MapArchiveSession::Open(sourcePath);
+    Require(archive.Succeeded(), "open synthetic cloud sea archive");
+    Trigger::TriggerDocument triggers;
+    Script::MapScriptBuildRequest request;
+    request.archive = &*archive.value;
+    request.triggers = &triggers;
+    request.catalog = &*catalog.value;
+    request.compile = false;
+    const auto bytes = [](std::string_view text) {
+        const auto* first = reinterpret_cast<const std::byte*>(text.data());
+        return std::vector<std::byte>(first, first + text.size());
+    };
+    const auto anyCode = [](const Script::MapScriptBuildResult& result, std::string_view code) {
+        return HasCode(result.diagnostics, code) || HasCode(result.generated.diagnostics, code);
+    };
+    // 原创平地 129×129、西南角 -8192、地面 0：盒子居中，全尺寸 24576，盒底 -100。
+    request.editedMapMembers = {{"audastra\\warvk.ini", bytes("schema=1\ncloud.sea=500,0.5\n")}};
+    const auto built = Script::BuildMapScript(request);
+    Require(built.Succeeded(), "cloud sea and global weather both read the terrain being saved");
+    const auto& text = built.generated.text;
+    Require(text.find("AddWeatherEffect( Rect(-8192.0,-8192.0,8192.0,8192.0), 'RAhr' )") != std::string::npos,
+        "global weather still uses the terrain extent when a cloud sea is set");
+    Require(text.find("set AudastraWarVKCloudSea = GetLocalizedHotkey( "
+        "\"warvk:v1;localFog.createBox;r:0;r:0;r:200;r:24576;r:24576;r:600;r:0.5;r:0.15\" )") != std::string::npos,
+        "cloud sea box comes from the archive terrain");
+    // 待保存的地形优先于归档里的旧地形。
+    request.editedMapMembers = {{"audastra\\warvk.ini", bytes("schema=1\ncloud.sea=500,0.5\n")}, {"war3map.w3e", FlatTerrain(0.0f, 0.0f)}};
+    const auto moved = Script::BuildMapScript(request);
+    Require(moved.Succeeded() && moved.generated.text.find(
+        "\"warvk:v1;localFog.createBox;r:8192;r:8192;r:200;r:24576;r:24576;r:600;r:0.5;r:0.15\"") != std::string::npos,
+        "cloud sea box follows the edited terrain");
+    // 顶高不高于盒底：拒绝，不给最终脚本。
+    request.editedMapMembers = {{"audastra\\warvk.ini", bytes("schema=1\ncloud.sea=-100,0.5\n")}};
+    const auto below = Script::BuildMapScript(request);
+    Require(!below.Succeeded() && below.FinalScript() == nullptr && anyCode(below, "WARVK_CLOUD_SEA_BELOW_GROUND"),
+        "a cloud sea at or below the box bottom refuses the build");
+}
+
 } // namespace
 
 int main() {
@@ -398,6 +452,7 @@ int main() {
         TestOverlayChangesGeneratedScript();
         TestFinalDoodadsReachJassWithoutCreatingNativeDecorationsTwice();
         TestExtendedTypedInputs();
+        TestWarVKCloudSeaUsesTheSavedTerrain();
         std::cout << "MapScriptOverlay: edited typed data generated into config/main\n";
         return 0;
     } catch (const std::exception& error) {

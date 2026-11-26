@@ -219,20 +219,27 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     if (luaMode && warvk && warvk->HasCommands())
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "WARVK_LUA_UNSUPPORTED",
             "Lua 地图暂不支持写出 WarVK 初始化指令；请清空 地图设置 → WarVK 后再保存，或改用 JASS 地图。", {}});
-    // 云海盒要用地图最低地面：只在设了云海时读完整地形网格。
-    std::optional<MapData::WarVKMapGround> warvkGround;
-    if (warvk && warvk->cloudSea)
-        warvkGround = ParseMember<MapData::WarVKMapGround>(archive, edits, removals, "war3map.w3e", [](auto bytes) {
-            const auto terrain = MapData::ParseMapTerrain(bytes);
-            if (!terrain.Succeeded() || !terrain.value || !terrain.value->Snapshot())
-                return Result<MapData::WarVKMapGround>{std::nullopt, terrain.diagnostics};
-            return MapData::WarVKMapGroundOf(*terrain.value->Snapshot());
-        }, diagnostics, capturedInputs);
-    const auto terrain = ParseMember<TerrainExtent>(archive, edits, removals, "war3map.w3e", [](auto bytes) {
+    // 地形只读一次（已捕获的成员读出即移走）：范围用于镜头与天气；设了云海时再从同一份字节解析完整网格取最低地面。
+    struct TerrainFacts {
+        TerrainExtent extent;
+        std::optional<MapData::WarVKMapGround> ground;
+    };
+    const bool cloudSea = warvk && warvk->cloudSea;
+    const auto terrainFacts = ParseMember<TerrainFacts>(archive, edits, removals, "war3map.w3e", [cloudSea](auto bytes) {
         const auto extent = ReadTerrainExtent(bytes);
-        return extent ? Result<TerrainExtent>::Success(*extent) : Result<TerrainExtent>::Failure(
-            "Script.Build", "MAP_TERRAIN_INVALID", "待保存地形没有有效的尺寸与坐标范围");
+        if (!extent) return Result<TerrainFacts>::Failure("Script.Build", "MAP_TERRAIN_INVALID", "待保存地形没有有效的尺寸与坐标范围");
+        TerrainFacts facts{*extent, std::nullopt};
+        if (cloudSea) {
+            const auto grid = MapData::ParseMapTerrain(bytes);
+            if (!grid.Succeeded() || !grid.value || !grid.value->Snapshot()) return Result<TerrainFacts>{std::nullopt, grid.diagnostics};
+            const auto ground = MapData::WarVKMapGroundOf(*grid.value->Snapshot());
+            if (!ground.Succeeded() || !ground.value) return Result<TerrainFacts>{std::nullopt, ground.diagnostics};
+            facts.ground = *ground.value;
+        }
+        return Result<TerrainFacts>::Success(std::move(facts));
     }, diagnostics, capturedInputs);
+    const auto terrain = terrainFacts ? std::optional<TerrainExtent>(terrainFacts->extent) : std::nullopt;
+    const auto warvkGround = terrainFacts ? terrainFacts->ground : std::nullopt;
     if (!settings) {
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_SETTINGS_MISSING", "地图缺少可解析的 war3map.w3i", {}});
     }
