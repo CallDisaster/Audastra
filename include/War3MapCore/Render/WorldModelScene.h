@@ -41,7 +41,11 @@ enum class ModelGroundAnchor : std::uint8_t {
 };
 // 地图给某种物体类型附加的表面材质（WarVK\materials.ini 的一节）。路径是地图归档里的路径，空=没有该图。
 // 数值已由解析器按格式范围检查；渲染时再夹到渲染接口的范围。
+// 表面材质的着色方式。Surface：法线/ORM/细节图；Water：游戏一侧用水面着色（模型层须为 Blend），
+// 编辑器视口按模型原样显示，不取材质图也不拆变体。
+enum class ModelSurfaceShader : std::uint8_t { Surface, Water };
 struct ModelSurfaceMaterial {
+    ModelSurfaceShader shader = ModelSurfaceShader::Surface;
     std::string normalPath, ormPath, detailNormalPath, detailOrmPath, detailAlbedoPath;
     float normalScale = 1, normalYSign = -1, roughness = 1, metallic = 1, occlusion = 1, specular = 1;
     float detailScale = 256, detailStrength = 1;
@@ -68,7 +72,11 @@ struct ModelInstanceRequest {
     // 地图表面材质；空=没有。带材质的请求按材质身份拆成独立模型变体（同一模型文件可有几种材质）。
     std::shared_ptr<const ModelSurfaceMaterial> surfaceMaterial;
 };
-// 模型变体里表面材质那一段：没有材质时为空串，否则 "|surface:…"（图路径与参数）。所有按变体去重的地方共用。
+// 请求是否按表面材质着色：有 Surface 材质且不是半透明预览。水面材质在视口里按原样显示。
+[[nodiscard]] inline bool DrawsModelSurface(const ModelInstanceRequest& request) {
+    return request.surfaceMaterial && !request.previewGhost && request.surfaceMaterial->shader == ModelSurfaceShader::Surface;
+}
+// 模型变体里表面材质那一段：没有 Surface 材质时为空串，否则 "|surface:…"（图路径与参数）。所有按变体去重的地方共用。
 [[nodiscard]] std::string ModelSurfaceVariantKey(const ModelInstanceRequest& request);
 
 // 已在世界坐标烘焙好的几何（悬崖等逐顶点贴合地形、无法用实例变换表达的网格）。

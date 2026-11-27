@@ -76,7 +76,12 @@ SurfaceMaterialTable ParseSurfaceMaterialTable(std::string_view text) {
             if (const auto parsed = Number(value, low, high)) target = *parsed;
             else warn(lineNumber, std::string(key) + " 的值无效或超出范围，保留原值。");
         };
-        if (key == "normal") m.normalPath = std::string(value);
+        if (key == "shader") {
+            if (value == "surface" || value == "water")
+                m.shader = value == "water" ? ModelSurfaceShader::Water : ModelSurfaceShader::Surface;
+            else warn(lineNumber, "shader 只能是 surface 或 water，保留原值。");
+        }
+        else if (key == "normal") m.normalPath = std::string(value);
         else if (key == "orm") m.ormPath = std::string(value);
         else if (key == "detailNormal") m.detailNormalPath = std::string(value);
         else if (key == "detailOrm") m.detailOrmPath = std::string(value);
@@ -95,7 +100,7 @@ SurfaceMaterialTable ParseSurfaceMaterialTable(std::string_view text) {
         else warn(lineNumber, "未知键 " + std::string(key) + "。");
     }
     for (auto& section : sections) {
-        if (!HasImages(section.material)) {
+        if (section.material.shader == ModelSurfaceShader::Surface && !HasImages(section.material)) {
             if (table.warnings.size() < 64)
                 table.warnings.push_back({DiagnosticSeverity::Warning, "Render.SurfaceMaterials", "SURFACE_MATERIAL_NO_IMAGES",
                     std::string(kSurfaceMaterialTablePath) + " 的 [" + section.rawcode + "] 没有任何图片，已忽略。", std::nullopt});

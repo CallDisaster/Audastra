@@ -789,8 +789,15 @@ void TestSurfaceMaterialTable() {
         "detailStrength = 0.5\n"
         "novalue\n"
         "[IJKL]\n"
-        "detailAlbedo = Sonne\\Textures\\H\\detail\\granite_col.png\n");
-    Require(table.byRawcode.size() == 3, "应得到三种物体类型");
+        "detailAlbedo = Sonne\\Textures\\H\\detail\\granite_col.png\n"
+        "[L05A]\n"
+        "shader = water\n"
+        "[MNOP]\n"
+        "shader = lava\n");
+    Require(table.byRawcode.size() == 4, "应得到四种物体类型");
+    const auto water = table.Find("L05A");
+    Require(water && water->shader == ModelSurfaceShader::Water && water->normalPath.empty(), "只有 shader = water 的节保留");
+    Require(table.Find("IJKL")->shader == ModelSurfaceShader::Surface && !table.Find("MNOP"), "默认 surface；坏 shader 保留原值，无图仍丢弃");
     const auto ijkl = table.Find("IJKL");
     Require(ijkl && ijkl->detailAlbedoPath == "Sonne\\Textures\\H\\detail\\granite_col.png", "只有细节颜色图的节保留");
     const auto l053 = table.Find("L053");
@@ -803,9 +810,50 @@ void TestSurfaceMaterialTable() {
     const auto count = [&](std::string_view code) {
         return std::count_if(table.warnings.begin(), table.warnings.end(), [&](const Diagnostic& d) { return d.code == code; });
     };
-    // ortho、roughness、detailScale、normalScale、[XX]、lost.png（节外）、novalue 共 7 行；ABCD 无图 1 条。
-    Require(count("SURFACE_MATERIAL_LINE_INVALID") == 7 && count("SURFACE_MATERIAL_NO_IMAGES") == 1, "警告数量");
+    // ortho、roughness、detailScale、normalScale、[XX]、lost.png（节外）、novalue、shader = lava 共 8 行；ABCD、MNOP 无图 2 条。
+    Require(count("SURFACE_MATERIAL_LINE_INVALID") == 8 && count("SURFACE_MATERIAL_NO_IMAGES") == 2, "警告数量");
     Require(ParseSurfaceMaterialTable("").byRawcode.empty() && ParseSurfaceMaterialTable("").warnings.empty(), "空表");
+}
+
+// 水面材质：视口按模型原样显示（不读材质图、不拆变体）；模型没有 Blend 层时给一次警告，有 Blend 层时不警告。
+void TestWaterSurfaceMaterial() {
+    Files files;
+    files.files[Key("Units\\Crate.mdx")] = MdxTest::BuildTestMdx();
+    files.files[Key("Textures\\Crate.blp")] = Blp(4, 4, 90);
+    files.files[Key(TeamColorTexture(0))] = Blp(2, 2, 255);
+    auto bytes = RigidTestModel();
+    constexpr std::array<char, 4> layersTag{'L', 'A', 'Y', 'S'};
+    const auto layers = std::search(bytes.begin(), bytes.end(), layersTag.begin(), layersTag.end(),
+        [](std::byte left, char right) { return left == static_cast<std::byte>(right); });
+    Require(layers != bytes.end(), "原创材质需要 LAYS");
+    // LAYS + count + inclusiveSize 之后是第一层的 filterMode。
+    const std::uint32_t blend = 2;
+    std::memcpy(bytes.data() + (layers - bytes.begin()) + 12, &blend, sizeof(blend));
+    const auto parsed = ParseMdx(bytes);
+    Require(parsed.Succeeded() && parsed.value->materials[0].layers[0].filterMode == MdxFilterMode::Blend, "Blend 夹具错误");
+    files.files[Key("Original\\Lake.mdx")] = bytes;
+    auto water = std::make_shared<ModelSurfaceMaterial>(); water->shader = ModelSurfaceShader::Water;
+    water->normalPath = "Sonne\\Unused.blp";
+    auto plain = At("Units\\Crate.mdx", 0, 0);
+    auto opaque = At("Units\\Crate.mdx", 0, 100); opaque.surfaceMaterial = water;
+    auto lake = At("Original\\Lake.mdx", 0, 200); lake.surfaceMaterial = water;
+    Require(ModelSurfaceVariantKey(opaque).empty() && !DrawsModelSurface(opaque), "水面材质不拆变体、不按表面材质着色");
+    const std::vector<ModelInstanceRequest> requests{plain, opaque, lake};
+    auto built = BuildWorldModelScene(requests, files.Reader());
+    Require(built.Succeeded() && built.value, "水面材质场景构建失败");
+    const auto& scene = *built.value;
+    Require(scene.models.size() == 2 && scene.instances.size() == 3, "水面材质与无材质共用变体");
+    const auto none = WAR3_RENDER_MODEL_NO_TEXTURE;
+    for (std::uint32_t request = 0; request < 3; ++request)
+        Require(scene.modelSurfaces.size() < scene.models.size() || SurfaceOf(scene, request).normalTexture == none, "水面材质不取材质图");
+    Require(!files.reads.contains(Key("Sonne\\Unused.blp")), "水面材质的图不读取");
+    const auto warnings = std::count_if(scene.warnings.begin(), scene.warnings.end(),
+        [](const Diagnostic& d) { return d.code == "WORLD_MODEL_WATER_NOT_BLEND"; });
+    Require(warnings == 1, "只有不是 Blend 的模型给一次警告");
+    const auto warning = std::find_if(scene.warnings.begin(), scene.warnings.end(),
+        [](const Diagnostic& d) { return d.code == "WORLD_MODEL_WATER_NOT_BLEND"; });
+    Require(warning->message.find("Crate.mdx") != std::string::npos && warning->message.find("Lake.mdx") == std::string::npos,
+        "警告列出没有 Blend 层的模型");
 }
 
 void TestBakedSamplerFlagsAndSnapshotRefresh() {
@@ -1223,6 +1271,7 @@ int main() {
         TestReplaceBaked();
         TestSurfaceMaterials();
         TestSurfaceMaterialTable();
+        TestWaterSurfaceMaterial();
         TestBakedSamplerFlagsAndSnapshotRefresh();
         TestStaticSamplerMetadataBudget();
         TestTextureMetadataReserveDegradesPerTexture();

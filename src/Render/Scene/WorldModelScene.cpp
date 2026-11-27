@@ -69,6 +69,7 @@ struct ParsedModel {
     bool animated = false;
     bool teamDependent = false;        // 使用替换贴图 1/2
     bool replaceableDependent = false; // 使用替换贴图 ≥ 3
+    bool blendLayer = false;           // 至少一层为 Blend（水面材质要求）
 };
 
 class Builder {
@@ -102,9 +103,12 @@ public:
             auto appended = Append(*parsed->second.model, request, parsed->second.animated, parsed->second.materialTextures.get());
             if (!appended.Succeeded()) return Status{std::move(appended.diagnostics)};
             model = models_.emplace(variant, std::move(*appended.value)).first;
-            if (model->second && request.surfaceMaterial && !request.previewGhost)
-                AssignSurface(*model->second, *request.surfaceMaterial);
+            if (model->second && DrawsModelSurface(request)) AssignSurface(*model->second, *request.surfaceMaterial);
         }
+        // 水面材质只在游戏一侧生效，且要求模型层为 Blend；不是 Blend 的模型在游戏里保持原样，这里提醒一次。
+        if (request.surfaceMaterial && request.surfaceMaterial->shader == ModelSurfaceShader::Water && !request.previewGhost
+            && !parsed->second.blendLayer)
+            ++nonBlendWater_[request.modelPath];
         if (!model->second || !InstanceBudget(scene_.instances.size()+1,limits_)) {
             if (rigidPose_) return Status::Failure(std::string(kSubsystem), "WORLD_MODEL_POSE_BUDGET",
                 "请求刚性姿态的场景超出模型或实例显示预算：" + request.modelPath);
@@ -194,6 +198,7 @@ public:
         SummarizeModelBudget();
         Summarize(failedTextures_, "WORLD_MODEL_TEXTURE_UNAVAILABLE", "贴图不可用，相关层按白色显示");
         Summarize(budgetTextures_, "WORLD_MODEL_TEXTURE_BUDGET", "贴图数量、文件大小或解码后总字节数超过预算，未上传");
+        Summarize(nonBlendWater_, "WORLD_MODEL_WATER_NOT_BLEND", "水面材质的模型没有 Blend 层，游戏里保持原样显示");
         return Result<WorldModelScene>::Success(std::move(scene_));
     }
 
@@ -277,6 +282,8 @@ private:
             scene_.warnings.push_back({DiagnosticSeverity::Warning, std::string(kSubsystem),
                 "WORLD_MODEL_RIGID_STATIC_PREVIEW", std::move(message), std::move(origin)});
         }
+        for (const auto& material : result.model->materials)
+            for (const auto& layer : material.layers) if (layer.filterMode == MdxFilterMode::Blend) result.blendLayer = true;
         for (const auto& texture : result.model->textures) {
             if (texture.replaceableId == 1 || texture.replaceableId == 2) result.teamDependent = true;
             else if (texture.replaceableId != 0) result.replaceableDependent = true;
@@ -286,7 +293,7 @@ private:
 
     // 带表面材质的模型（非半透明预览）按表面材质档读取自己的贴图，其余按普通档。
     std::uint32_t TextureDimension(const ModelInstanceRequest& request) const {
-        return request.surfaceMaterial && !request.previewGhost ? ModelTextureDimensionCap(limits_) : limits_.maxTextureDimension;
+        return DrawsModelSurface(request) ? ModelTextureDimensionCap(limits_) : limits_.maxTextureDimension;
     }
     std::uint32_t Texture(const MdxTexture& texture, const ModelInstanceRequest& request) {
         return TextureAt(texture, request, TextureDimension(request));
@@ -761,7 +768,7 @@ private:
     std::unordered_map<std::string, TextureRequest> textureRequests_;
     std::unordered_map<std::string, std::uint32_t> textures_;
     std::unordered_map<std::uint32_t, std::array<float, 3>> detailMeans_;
-    std::map<std::string, std::size_t> failedModels_, budgetModels_, failedTextures_, budgetTextures_;
+    std::map<std::string, std::size_t> failedModels_, budgetModels_, failedTextures_, budgetTextures_, nonBlendWater_;
     struct BudgetGeometry { std::uint64_t vertices = 0, indices = 0; };
     std::map<std::string, BudgetGeometry> budgetGeometry_;
     std::uint64_t textureBytes_ = 0;
@@ -1034,7 +1041,7 @@ Result<WorldModelScene> BuildWorldModelScene(std::span<const ModelInstanceReques
 }
 
 std::string ModelSurfaceVariantKey(const ModelInstanceRequest& request) {
-    if (!request.surfaceMaterial) return {};
+    if (!request.surfaceMaterial || request.surfaceMaterial->shader != ModelSurfaceShader::Surface) return {};
     const auto& m = *request.surfaceMaterial;
     std::string key = "|surface:" + PathKey(m.normalPath) + "|" + PathKey(m.ormPath) + "|" + PathKey(m.detailNormalPath)
         + "|" + PathKey(m.detailOrmPath) + "|" + PathKey(m.detailAlbedoPath);
