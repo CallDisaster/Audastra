@@ -114,6 +114,10 @@ private:
     std::unique_ptr<Stroke> stroke_;
     std::map<std::string, std::uint64_t> mapTypeCounts_;
     std::size_t mapDoodads_ = 0;
+    // 最近一次预算：地图装饰物数（含进行中的一笔）、调色板类型顶点合计、顶点是否已全部读到。
+    std::int64_t budgetMapCount_ = 0;
+    std::uint64_t budgetVertexCount_ = 0;
+    bool budgetVerticesComplete_ = true;
     std::function<void()> activator_;
     std::optional<std::uint64_t> nextSeed_;
     std::string builtKey_, buildingKey_;

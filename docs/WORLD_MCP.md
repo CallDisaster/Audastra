@@ -20,7 +20,7 @@
 - `seed`：可选十进制整数串，相同参数和种子得到相同落点。
 - `dry_run`：`true` 只返回落点，不改地图。
 
-模型表面在后台读取，过滤、地形开关或调色板变化后第一次调用返回 `WORLD_SCATTER_SURFACE_BUILDING`，稍后用同样参数重试。成功结果包含 `placed`/`erased`、被拒绝的数目（无表面、坡度、间距）、前 64 个落点、表面三角形数、`map_doodads`、`palette_vertices` 和新的 `document_revision`。散布出的装饰物使用绝对高度（标志 0x04）。
+模型表面在后台读取，过滤、地形开关或调色板变化后第一次调用返回 `WORLD_SCATTER_SURFACE_BUILDING`，稍后用同样参数重试。成功结果包含 `placed`/`erased`、被拒绝的数目（无表面、坡度、间距）、前 64 个落点、表面三角形数、`map_doodads`（这一笔之后的地图装饰物数）、`palette_vertices`（调色板类型在地图里的顶点合计；`palette_vertices_complete` 为假时还有模型未读完）和新的 `document_revision`。散布出的装饰物使用绝对高度（标志 0x04）。
 
 ## 完成帧截图
 

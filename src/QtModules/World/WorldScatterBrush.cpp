@@ -721,8 +721,9 @@ QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
         Finish();
         report.insert("applied", project_.mapEdits_->Revision() != revision);
     }
-    report.insert("map_doodads", budgetMap_->text());
-    report.insert("palette_vertices", budgetVertices_->text());
+    report.insert("map_doodads", static_cast<qint64>(budgetMapCount_));
+    report.insert("palette_vertices", static_cast<qint64>(budgetVertexCount_));
+    report.insert("palette_vertices_complete", budgetVerticesComplete_);
     return report;
 }
 
@@ -749,7 +750,10 @@ void WorldScatterBrush::UpdateBudget() {
         if (!row.vertices) { unknown = unknown || count > 0; continue; }
         vertices += static_cast<std::uint64_t>(std::max<std::int64_t>(count, 0)) * *row.vertices;
     }
-    budgetMap_->setText(tr("地图装饰物 %1").arg(static_cast<qint64>(mapDoodads_) + strokeTotal));
+    budgetMapCount_ = static_cast<std::int64_t>(mapDoodads_) + strokeTotal;
+    budgetVertexCount_ = vertices;
+    budgetVerticesComplete_ = !unknown;
+    budgetMap_->setText(tr("地图装饰物 %1").arg(static_cast<qint64>(budgetMapCount_)));
     budgetStroke_->setText(strokeTotal >= 0 ? tr("本笔 +%1").arg(strokeTotal) : tr("本笔 %1").arg(strokeTotal));
     budgetVertices_->setText(unknown ? tr("调色板类型顶点 %1（部分模型未读完）").arg(vertices) : tr("调色板类型顶点 %1").arg(vertices));
 }

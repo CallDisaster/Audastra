@@ -3872,6 +3872,8 @@ void WorldModuleTests::ScatterToolMatchesDryRunAndRefusesMissingSurface() {
     const auto applied = scatter->RunTool(args);
     QVERIFY(applied.value("ok").toBool() && applied.value("applied").toBool());
     QCOMPARE(applied.value("candidates"), preview.value("candidates"));
+    QCOMPARE(applied.value("map_doodads").toInteger(), qint64{18});
+    QCOMPARE(preview.value("map_doodads").toInteger(), qint64{0});
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
     QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{18});
 
