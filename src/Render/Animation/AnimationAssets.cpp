@@ -400,6 +400,9 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
         return fail("ANIMATION_SESSION_INVALID", "来源代次、读取器或实例/内存预算无效。");
     auto state = std::make_unique<State>();
     state->limits=limits;
+    // 蒙皮顶点缓冲整场景一块：按单资源上限封顶。存进 state 让之后的增量追加（预取、实例增量）同受此限，
+    // 超出的模型照常按存放顺序跳过并列入模型诊断。
+    state->limits.geometry.maxVertices = std::min(state->limits.geometry.maxVertices, kSkinnedSceneMaxVertices);
     if (resident) {
         state->assets=resident->assets; state->assetPaths=resident->assetPaths;
         state->resources=resident->resources; state->sourceBytes=resident->sourceBytes; state->resourceBytes=resident->resourceBytes;
@@ -648,7 +651,7 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     }
     // 复用原材质/队伍色/替换贴图逻辑；每个资源由实际来源读取器提供。不在每帧调用。
     std::vector<Diagnostic> resourceFailures;
-    auto geometryLimits = limits.geometry;
+    auto geometryLimits = state->limits.geometry; // 已按蒙皮单资源上限封顶
     geometryLimits.allowRigidStaticPreview = limits.allowRigidStaticPreview;
     // 追加准备继承常驻场景的材质模式；缺图变体也须为最终合并场景冻结缺失sidecar。
     scene.dynamicMaterialStates=(resident && resident->scene->dynamicMaterialStates) ||

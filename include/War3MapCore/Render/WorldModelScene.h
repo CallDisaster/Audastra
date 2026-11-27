@@ -64,6 +64,16 @@ struct BakedModelMesh {
     std::uint32_t samplerFlags = 3; // TEXS: bit0 U wrap、bit1 V wrap；旧原创 producer 默认保持双 wrap。
 };
 
+// D3D11 对单个资源只保证 128 MiB（D3D11_REQ_RESOURCE_SIZE_IN_MEGABYTES_EXPRESSION_A_TERM）。动画场景的蒙皮顶点缓冲
+// 整场景一块（36 字节/顶点），顶点数按此封顶：超出的模型按存放顺序跳过并列入模型诊断，
+// 不让整块缓冲在显存小的显卡（如核显）上创建失败。静态顶点 32 字节，场景上限正好 128 MiB。
+inline constexpr std::size_t kGpuSingleResourceBytes = 128ull * 1024 * 1024;
+inline constexpr std::uint32_t kSkinnedSceneMaxVertices =
+    static_cast<std::uint32_t>(kGpuSingleResourceBytes / sizeof(War3RenderSkinnedModelVertexV2));
+static_assert(std::size_t{kSkinnedSceneMaxVertices} * sizeof(War3RenderSkinnedModelVertexV2) <= kGpuSingleResourceBytes);
+static_assert(std::size_t{WAR3_RENDER_MODEL_MAX_VERTICES} * sizeof(War3RenderModelVertexV2) <= kGpuSingleResourceBytes);
+static_assert(std::size_t{WAR3_RENDER_MODEL_MAX_INDICES} * sizeof(std::uint16_t) <= kGpuSingleResourceBytes);
+
 struct WorldModelLimits {
     std::size_t maxModelBytes = 16 * 1024 * 1024;
     std::size_t maxTextureBytes = 16 * 1024 * 1024; // 单个 BLP 文件

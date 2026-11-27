@@ -12,6 +12,7 @@
 #include "ModelPreviewReplacementTests.h"
 #include "War3MapCore/Render/ModelAnimationCapture.h"
 #include "../src/Render/Animation/AnimationWorkers.h"
+#include "support/GeosetLimitMdxFixture.h"
 #include <fstream>
 #include <algorithm>
 #include <bit>
@@ -677,6 +678,50 @@ void RequestGeometryBudget() {
     Require(!capacityRefused.Succeeded() && capacityRefused.diagnostics.front().code=="ANIMATION_DELTA_BUDGET",
         "Delta ignored the actual spare capacity of the retained provenance table");
     std::cout<<"geometry_provenance_budget exact="<<exact.maxFrameBytes<<" create_delta_one_byte_under_refused=1 capacity_not_size=1\n";
+}
+void SkinnedSceneVertexCap() {
+    // 蒙皮顶点缓冲整场景一块，必须守住 D3D11 单资源 128 MiB：九个原创合成模型合计低于旧场景上限、高于蒙皮上限，
+    // 世界浏览须照常显示前八个，第九个按存放顺序跳过并写明原因；整场景不能失败，也不能把超限缓冲交给后端。
+    constexpr std::size_t count = 9, geosets = 7;
+    std::vector<std::vector<std::byte>> models(count);
+    std::vector<AnimationInstanceSpec> specs(count);
+    std::uint64_t firstEight = 0, all = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto vertices = static_cast<std::uint32_t>(64000 - i); // 每个模型字节不同，16 MiB 单模型读取预算内
+        models[i] = GeosetLimitFixture::BuildMdx(std::vector<GeosetLimitFixture::Geoset>(geosets, {vertices, 64002}));
+        (i + 1 < count ? firstEight : all) += std::uint64_t(vertices) * geosets;
+        specs[i].identity = {i + 1, 7}; specs[i].hostKey = "skinned-cap:" + std::to_string(i);
+        specs[i].model.modelPath = "skinned-cap-" + std::to_string(i) + ".mdx";
+        specs[i].model.position = {static_cast<float>(i) * 512, 0, 0};
+    }
+    all += firstEight;
+    Require(firstEight <= kSkinnedSceneMaxVertices && all > kSkinnedSceneMaxVertices && all <= WAR3_RENDER_MODEL_MAX_VERTICES,
+        "fixture must fit the old scene cap and exceed only the skinned single-resource cap");
+    const auto read = [&](std::string_view path, std::uint64_t) {
+        for (std::size_t i = 0; i < count; ++i) if (path == specs[i].model.modelPath) {
+            auto digest = std::string(63, 'a'); digest.push_back("0123456789"[i]);
+            return Result<AnimationResource>::Success({models[i], "synthetic", digest});
+        }
+        return Result<AnimationResource>::Failure("Test", "missing", "合成模型没有贴图文件。");
+    };
+    auto limits = InteractiveAnimationPreviewLimits(); limits.retainUnsupportedStatic = true;
+    Require(limits.geometry.maxVertices == WAR3_RENDER_MODEL_MAX_VERTICES, "default world limits changed; fixture no longer proves the cap");
+    const auto service = Good(ModelAnimationService::Create({7, 33, "skinned-cap"}, specs, read, limits));
+    const auto& geometry = service->Scene()->geometry;
+    const auto budgetWarning = std::any_of(geometry.warnings.begin(), geometry.warnings.end(),
+        [](const auto& d) { return d.code == "WORLD_MODEL_BUDGET"; });
+    Require(geometry.vertices.size() == firstEight && geometry.vertices.size() * sizeof(War3RenderSkinnedModelVertexV2) <= kGpuSingleResourceBytes,
+        "skinned vertex buffer exceeded the single-resource cap or dropped models that fit");
+    Require(geometry.instances.size() == count - 1 && geometry.budgetSkippedRequests == std::vector<std::uint32_t>{count - 1} && budgetWarning,
+        "over-cap model was not skipped by map storage order with a WORLD_MODEL_BUDGET warning");
+    // 增量追加沿用同一上限：常驻八个模型后再加第九个，不能越过单资源上限。
+    const auto resident = Good(ModelAnimationService::Create({7, 33, "skinned-cap"}, std::span(specs).first(count - 1), read, limits));
+    AnimationInstanceDelta delta; delta.session = {7, 34, "skinned-cap"}; delta.additions = {specs.back()};
+    const auto appended = resident->PrepareInstanceCatalog(delta, read);
+    Require(!appended.Succeeded() && appended.diagnostics.front().code == "ANIMATION_DELTA_ASSET_BUDGET",
+        "instance delta bypassed the skinned single-resource cap");
+    std::cout << "skinned_scene_cap vertices=" << geometry.vertices.size() << " cap=" << kSkinnedSceneMaxVertices
+        << " requested=" << all << " skipped_request=" << geometry.budgetSkippedRequests.front() << " delta_refused=1\n";
 }
 void Geometry() {
     Input in; BakedModelMesh cliff;
@@ -1423,6 +1468,7 @@ int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
     if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); ParallelPoses(); ParallelPoses(2600); ParallelPoses(2600,true); WorkerSharing(false); WorkerSharing(true); ResidentFrames(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
     else if(which=="submission") Submission();
+    else if(which=="skinned-cap") SkinnedSceneVertexCap();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();
     else return 2;
