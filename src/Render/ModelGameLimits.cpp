@@ -34,7 +34,7 @@ std::optional<Diagnostic> GeosetGameLimitWarning(const MdxModel& model, std::str
     }
     if (findings.size() > kListedGeosets) message += "；另有 " + std::to_string(findings.size() - kListedGeosets) + " 个";
     message += "。超过游戏上限（" + std::to_string(kGameGeosetMaxVertices) + " 顶点 / " + std::to_string(kGameGeosetMaxIndices)
-        + " 索引）：1.27a + WarVK 里这些几何体整块不画；视野内有它们时，同帧 WarVK 阴影可能整帧放弃。建议拆到每块不超过 "
+        + " 索引）：1.27a + WarVK 里这些几何体整块不画；旧版 WarVK 里，视野内有它们时同帧阴影可能整帧放弃。建议拆到每块不超过 "
         + std::to_string(kGameGeosetSafeVertices) + " 顶点、" + std::to_string(kGameGeosetSafeIndices) + " 索引。";
     return Diagnostic{DiagnosticSeverity::Warning, "Render.Model", std::string(kGeosetOverGameLimitCode), std::move(message),
         OriginSpan{std::filesystem::path(std::u8string(modelPath.begin(), modelPath.end())), 0, 0, {}}};

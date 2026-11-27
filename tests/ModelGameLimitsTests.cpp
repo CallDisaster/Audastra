@@ -58,7 +58,7 @@ void TestFindingsAndMessage() {
     Require(warning->origin && warning->origin->source == std::filesystem::path(u8"Doodads\\Big.mdx"), "提醒带模型路径");
     const auto& text = warning->message;
     for (const auto* part : {"模型 Doodads\\Big.mdx：", "第 2 个几何体 16385 顶点、3 索引", "第 3 个几何体 3 顶点、49155 索引",
-             "16384 顶点 / 49152 索引", "整块不画", "可能整帧放弃", "16000 顶点、48000 索引"})
+             "16384 顶点 / 49152 索引", "整块不画", "旧版 WarVK 里，视野内有它们时同帧阴影可能整帧放弃", "16000 顶点、48000 索引"})
         Require(text.find(part) != std::string::npos, std::string("提示缺少：") + part);
     Require(text.find("第 1 个") == std::string::npos && text.find("第 4 个") == std::string::npos, "未超限的几何体不列");
 }
