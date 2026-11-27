@@ -216,6 +216,9 @@ QString FrameSummary(const Render::AnimatedModelScene& scene, const Render::Anim
     auto result=QObject::tr("%1 个动画 · %2 个静态 · %3 个本帧隐藏 · %4 个不可用")
         .arg(frame.animatedInstances).arg(frame.retainedStaticInstances).arg(frame.hiddenInstances)
         .arg(scene.unavailableInstances.size());
+    // 超出场景显示预算（含单块显存缓冲上限）被跳过的摆放；逐个列在模型诊断里。
+    if (!scene.geometry.budgetSkippedRequests.empty())
+        result += QObject::tr(" · %1 个超出显示预算未显示").arg(scene.geometry.budgetSkippedRequests.size());
     if (frame.budgetStaticInstances)
         result += QObject::tr(" · %1 个因内存预算以 Stand 静态显示").arg(frame.budgetStaticInstances);
     result += QObject::tr(" · 视野外 %1 · 预算省略 %2").arg(frame.offscreenInstances).arg(frame.budgetParticleInstances);

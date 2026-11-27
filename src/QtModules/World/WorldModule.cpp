@@ -960,7 +960,11 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
         UpdateOverlay(); UpdateSelectionText();
         if (placementsDirty_) RefreshPlacements();
         QString skipped;
-        if (scene->skippedInstances != 0) skipped += tr(" · %1 个不可用").arg(Count(scene->skippedInstances));
+        // skippedInstances 含超出显示预算的摆放；两者分开显示，预算跳过的逐个列在模型诊断里。
+        const auto budgetSkipped = std::min(scene->budgetSkippedRequests.size(), scene->skippedInstances);
+        if (scene->skippedInstances > budgetSkipped)
+            skipped += tr(" · %1 个不可用").arg(Count(scene->skippedInstances - budgetSkipped));
+        if (budgetSkipped != 0) skipped += tr(" · %1 个超出显示预算未显示").arg(Count(budgetSkipped));
         modelStatus_->setText((animationReason.isEmpty() ? QString{} : tr("动画未启用 · ")) +
             tr("%1 个实例 · %2 种模型").arg(Count(scene->instances.size()), Count(scene->models.size())) + unresolved + skipped);
         QStringList notes{counts, tr("%1 张贴图 · 静态姿态").arg(Count(scene->textures.size()))};
