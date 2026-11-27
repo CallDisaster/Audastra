@@ -9,17 +9,18 @@
 namespace War3Map::Services {
 namespace {
 using ObjectData::ObjectType;
-Status TypeExists(const ObjectCommandContext& context, const std::string& rawcode) {
+Result<NewPlacementRecord> Failure(const char* code, const char* text) {
+    return Result<NewPlacementRecord>::Failure("Placement.Create", code, text);
+}
+}
+
+Status PlacementTypeExists(const ObjectCommandContext& context, const std::string& rawcode) {
     if (context.document && !context.document->IsStructurallySafe())
         return Status::Failure("Placement.Create", "PLACEMENT_OBJECT_SOURCE_UNSAFE", "该类物编尚未完整读取，不能确认新建类型。");
     const auto fields = ReadObjectFields(context, rawcode); // 同一父链/标准来源验证，不另写继承解析。
     if (!fields.Succeeded() && fields.diagnostics.empty())
         return Status::Failure("Placement.Create", "PLACEMENT_OBJECT_UNAVAILABLE", "不能确认物体类型及其父链。");
     return {fields.diagnostics};
-}
-Result<NewPlacementRecord> Failure(const char* code, const char* text) {
-    return Result<NewPlacementRecord>::Failure("Placement.Create", code, text);
-}
 }
 
 NewPlacementRecord MakeDefaultPlacement(ObjectType type, const std::string& rawcode,
@@ -67,7 +68,7 @@ Result<NewPlacementRecord> PreparePlacementCreation(const PlacementCreateRequest
         return Failure("PLACEMENT_UNIT_FIELD_INVALID", "英雄等级与绝对魔法值只用于单位，等级须至少为 1，魔法为 -1 或非负整数。");
     if (request.hitPointsPercent && (*request.hitPointsPercent < (unit ? -1 : 0) || *request.hitPointsPercent > 100 || item))
         return Failure("PLACEMENT_LIFE_INVALID", "单位生命为默认 -1 或 0..100%；地物为 0..100%；物品不接受该字段。");
-    if (const auto exists = TypeExists(source, request.rawcode); !exists.Succeeded()) return {std::nullopt, exists.diagnostics};
+    if (const auto exists = PlacementTypeExists(source, request.rawcode); !exists.Succeeded()) return {std::nullopt, exists.diagnostics};
     if (request.rawcode == "sloc" && unit)
         return Failure("MAP_PLACEMENT_START_CREATE_UNSUPPORTED", "起始位置需要单独同步玩家设置。");
     if (request.itemSets.size() > 32 || (!request.itemSets.empty() && type != ObjectType::Unit && type != ObjectType::Destructable))
@@ -85,7 +86,7 @@ Result<NewPlacementRecord> PreparePlacementCreation(const PlacementCreateRequest
                     return Failure("PLACEMENT_DROPS_INVALID", "每组掉落的概率须为 0..100 整数且总和不超过 100。");
                 chance += choice.chance;
                 if (checked.insert(choice.rawcode).second) {
-                    const auto exists = TypeExists(*drops, choice.rawcode);
+                    const auto exists = PlacementTypeExists(*drops, choice.rawcode);
                     if (!exists.Succeeded()) return {std::nullopt, exists.diagnostics};
                 }
             }

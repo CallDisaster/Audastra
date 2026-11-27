@@ -118,6 +118,8 @@ public:
     // 切图或重建期间拒绝向工具暴露保留的旧画面。
     [[nodiscard]] WorldViewport* ViewportForTools() const;
     [[nodiscard]] WorldScatterBrush* ScatterForTools() const noexcept { return scatter_; }
+    // 散布调色板类型是否存在：与普通摆放用同一份物编目录检查。
+    [[nodiscard]] Status ScatterTypeStatus(ObjectData::ObjectType type, const std::string& rawcode);
     [[nodiscard]] WorldAnimationPlayer* AnimationPlayer() const noexcept { return animation_; }
     // 探针等待只读轻量终态；每次整图 Refresh 都先清除上一代失败。
     [[nodiscard]] bool TerrainLoadFailed() const noexcept { return terrainLoadFailed_; }

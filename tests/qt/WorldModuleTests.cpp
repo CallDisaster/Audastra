@@ -3809,9 +3809,16 @@ void WorldModuleTests::ScatterBrushPaintsErasesAndUndoesPerStroke() {
     viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeFinished();
     QCOMPARE(project.mapDataUndoStack_->count(), 0);
 
+    // 夹具没有物编目录：真实类型判断拒绝，调色板保持为空、不提交。
+    scatter->AddType(ObjectData::ObjectType::Doodad, QStringLiteral("STr0"), QStringLiteral("Synthetic tree"));
+    viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    scatter->SetTypeValidator([](ObjectData::ObjectType, const std::string& rawcode) {
+        return rawcode == "STr0" ? War3Map::Status::Ok() : War3Map::Status::Failure("Test", "TYPE_MISSING", "合成夹具没有此类型");
+    });
     scatter->AddType(ObjectData::ObjectType::Doodad, QStringLiteral("STr0"), QStringLiteral("Synthetic tree"));
     density->setCurrentIndex(1); perDab->setValue(6); radius->setValue(128); spacing->setValue(0);
-    // 按下一笔，拖到 512：沿路径每半径一半补一笔，共三笔。
+    // 按下一笔，拖到 512：沿路径每半径一半补一笔，共三笔（384、448、512），最后一笔正好在光标处，不越过。
     viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeMoved(512, 384); viewport->TerrainStrokeFinished();
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
     const auto painted = project.mapEdits_->Snapshot().Doodads()->doodads;
@@ -3858,6 +3865,12 @@ void WorldModuleTests::ScatterToolMatchesDryRunAndRefusesMissingSurface() {
         {"settings", QJsonObject{{"radius", 128}, {"count_per_dab", 6}, {"min_spacing", 0}}},
         {"surface", QJsonObject{{"terrain", true}, {"filter", ""}}},
         {"path", QJsonArray{QJsonArray{384, 384}, QJsonArray{512, 384}}}, {"seed", "42"}, {"dry_run", true}};
+    // 真实类型判断：夹具没有物编目录，明确拒绝且不启用工具、不改界面。
+    QCOMPARE(code(scatter->RunTool(args)), QString("WORLD_SCATTER_TYPE"));
+    QVERIFY(!toggle->isChecked());
+    scatter->SetTypeValidator([](ObjectData::ObjectType, const std::string& rawcode) {
+        return rawcode == "STr0" ? War3Map::Status::Ok() : War3Map::Status::Failure("Test", "TYPE_MISSING", "合成夹具没有此类型");
+    });
     auto preview = scatter->RunTool(args);
     QVERIFY(toggle->isChecked());
     if (!preview.value("ok").toBool()) {
@@ -3873,12 +3886,35 @@ void WorldModuleTests::ScatterToolMatchesDryRunAndRefusesMissingSurface() {
     QVERIFY(applied.value("ok").toBool() && applied.value("applied").toBool());
     QCOMPARE(applied.value("candidates"), preview.value("candidates"));
     QCOMPARE(applied.value("map_doodads").toInteger(), qint64{18});
+    QCOMPARE(applied.value("settings").toObject().value("radius").toDouble(), 128.0);
+    QVERIFY(!applied.value("capped").toBool());
     QCOMPARE(preview.value("map_doodads").toInteger(), qint64{0});
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
     QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{18});
 
     auto bad = args; bad["path"] = QJsonArray{QJsonArray{384}};
     QCOMPARE(code(scatter->RunTool(bad)), QString("WORLD_SCATTER_ARGUMENT"));
+    // 超出控件范围明确拒绝，不夹值；不存在的类型拒绝；组合无效时恢复调用前的界面。
+    auto* radiusBox = page->findChild<QDoubleSpinBox*>("worldScatterRadius");
+    auto* scaleMinBox = page->findChild<QDoubleSpinBox*>("worldScatterScaleMin");
+    QVERIFY(radiusBox && scaleMinBox);
+    auto far = args; far["settings"] = QJsonObject{{"radius", 100000}};
+    QCOMPARE(code(scatter->RunTool(far)), QString("WORLD_SCATTER_ARGUMENT"));
+    QCOMPARE(radiusBox->value(), 128.0);
+    auto fractional = args; fractional["settings"] = QJsonObject{{"count_per_dab", 2.5}};
+    QCOMPARE(code(scatter->RunTool(fractional)), QString("WORLD_SCATTER_ARGUMENT"));
+    auto missingType = args; missingType["palette"] = QJsonArray{QJsonObject{{"rawcode", "ZZZZ"}}};
+    QCOMPARE(code(scatter->RunTool(missingType)), QString("WORLD_SCATTER_TYPE"));
+    auto inverted = args; inverted["settings"] = QJsonObject{{"scale_min", 3}, {"scale_max", 2}};
+    QCOMPARE(code(scatter->RunTool(inverted)), QString("WORLD_SCATTER_SETTINGS"));
+    QCOMPARE(scaleMinBox->value(), 0.8);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    // 最大的 64 位种子能原样回传。
+    auto bigSeed = args; bigSeed["seed"] = "18446744073709551615"; bigSeed["dry_run"] = true;
+    QJsonObject big;
+    QTRY_VERIFY(code(big = scatter->RunTool(bigSeed)) != QString("WORLD_SCATTER_SURFACE_BUILDING"));
+    QVERIFY(big.value("ok").toBool());
+    QCOMPARE(big.value("seed").toString(), QString("18446744073709551615"));
     args["surface"] = QJsonObject{{"terrain", true}, {"filter", "NoSuchModel*"}};
     auto missing = scatter->RunTool(args);
     QTRY_VERIFY(code(missing = scatter->RunTool(args)) != QString("WORLD_SCATTER_SURFACE_BUILDING"));

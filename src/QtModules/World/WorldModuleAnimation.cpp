@@ -1388,6 +1388,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         animation_->Clear(); (void)viewport_->SetModelScene(nullptr); scene_.reset();
         cliffsInLayer_=false; if (cliffLayer_) cliffLayer_->Clear();
         requests_=placed->requests; placementIds_=placed->ids; unresolvedPlacements_=placed->unresolvedRows;
+        SyncScatterScene();
         FinishEmptyModelCapture();
         modelStatus_->setText(tr("无模型")); UpdateOverlay(); return;
     }
@@ -1558,6 +1559,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             return;
         }
         scene_=animation_->Picking(); requests_=placed->requests; placementIds_=placed->ids;
+        SyncScatterScene();
         RecordModelLoad("prepared-animated");
         unresolvedPlacements_ = placed->unresolvedRows;
         cliffsInLayer_ = cliffLayer && work->cliffLayer;

@@ -334,6 +334,7 @@ QWidget* WorldModule::BuildToolPanel() {
     toolStack_->addWidget(BuildTerrainPage());
     scatter_ = new WorldScatterBrush(project_, this);
     scatter_->SetActivator([this] { if (scatterToggle_ && !scatterToggle_->isChecked()) scatterToggle_->setChecked(true); });
+    scatter_->SetTypeValidator([this](ObjectData::ObjectType type, const std::string& rawcode) { return ScatterTypeStatus(type, rawcode); });
     toolStack_->addWidget(scatter_->BuildPage(panel));
     column->addWidget(toolStack_, 1);
     column->addWidget(new WorldMinimapPreview(project_, panel, viewport_));

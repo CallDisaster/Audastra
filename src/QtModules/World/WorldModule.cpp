@@ -556,6 +556,8 @@ void WorldModule::Refresh() {
     InvalidateWaterBrushCapture();
     resumeBrushAfterRender_ = false;
     if (terrainToggle_ && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
+    // 散布的地形、模型表面与缓存都属于旧地图：换图或重读时关掉。
+    if (scatterToggle_ && scatterToggle_->isChecked()) scatterToggle_->setChecked(false);
     // 同一张地图重新读取时保留当前视角；换图时下面的比较不成立，回到默认游戏视角。
     if (viewport_ && viewport_->VertexCount() != 0 && !shownMap_.isEmpty()) {
         pendingCamera_ = viewport_->SaveCamera(); pendingCameraMap_ = shownMap_;

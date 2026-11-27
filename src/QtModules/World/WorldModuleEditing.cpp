@@ -533,7 +533,14 @@ void WorldModule::SyncScatterScene() {
     if (!scatter_ || !scatterToggle_ || !scatterToggle_->isChecked()) return;
     scatter_->SceneChanged({requests_, placementIds_, [this](std::uint32_t request) {
         return request < placementIds_.size() && worldSelection_.Flags(Services::WorldObjectId{placementIds_[request]}).visible;
-    }});
+    }, terrainHeightRules_ ? terrainHeightRules_->HeightMaximumCliffLevel() : std::nullopt});
+}
+
+Status WorldModule::ScatterTypeStatus(ObjectData::ObjectType type, const std::string& rawcode) {
+    auto context = QtProject::MakeObjectContextProvider(project_);
+    const auto object = context(type);
+    if (!object.Succeeded()) return {object.diagnostics};
+    return Services::PlacementTypeExists(*object.value, rawcode);
 }
 
 void WorldModule::ChoosePlacement(const QtApp::ObjectViewEntry& entry) {

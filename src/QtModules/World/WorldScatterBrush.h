@@ -47,7 +47,10 @@ public:
         std::vector<Render::ModelInstanceRequest> requests;
         std::vector<MapData::PlacementId> ids;
         std::function<bool(std::uint32_t request)> visible;
+        std::optional<std::uint8_t> maximumCliffLevel; // 同地图实际规则给出的最高悬崖层；缺少时坡道高度按近似处理
     };
+    // 物体类型是否存在（宿主用当前物编目录判断）；没有设置时一律拒绝。
+    using TypeValidator = std::function<Status(ObjectData::ObjectType, const std::string& rawcode)>;
 
     explicit WorldScatterBrush(QtProject::EditorProject& project, QObject* parent = nullptr);
     ~WorldScatterBrush() override;
@@ -71,6 +74,7 @@ public:
     // MCP world_scatter_stroke：设置界面状态后按同一规则画一笔（一笔一步撤销）；模型表面未就绪时返回可重试的失败。
     [[nodiscard]] QJsonObject RunTool(const QJsonObject& arguments);
     void SetActivator(std::function<void()> activate) { activator_ = std::move(activate); }
+    void SetTypeValidator(TypeValidator validator) { typeValidator_ = std::move(validator); }
 
 signals:
     void OverlayChanged();
@@ -90,7 +94,9 @@ private:
 
     [[nodiscard]] std::optional<Services::ScatterBrushSettings> Settings(QString* error = nullptr) const;
     [[nodiscard]] std::vector<Services::ScatterPaletteType> PaletteTypes() const;
-    [[nodiscard]] std::optional<Services::ScatterSurfaceSample> Probe(double x, double y) const;
+    // placement = 真正落点：须在地图地形范围内，地形坡道上的近似高度不用（与普通摆放同一规则）；笔刷圈只取高度。
+    [[nodiscard]] std::optional<Services::ScatterSurfaceSample> Probe(double x, double y, bool placement = false) const;
+    [[nodiscard]] QString TypeProblem(ObjectData::ObjectType type, const std::string& rawcode) const;
     void Dab(double x, double y);
     void RebuildPalette();
     void RequestRebuild();
@@ -119,6 +125,8 @@ private:
     std::uint64_t budgetVertexCount_ = 0;
     bool budgetVerticesComplete_ = true;
     std::function<void()> activator_;
+    TypeValidator typeValidator_;
+    std::uint64_t sceneSerial_ = 0; // 摆放场景每变一次加一，落点表面的身份里带上它
     std::optional<std::uint64_t> nextSeed_;
     std::string builtKey_, buildingKey_;
     QString surfaceError_; // 最近一次表面读取失败的原因；成功读取后清空

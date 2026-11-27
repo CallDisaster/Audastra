@@ -78,6 +78,11 @@ std::uint64_t VertexCount(const Render::MdxModel& model) {
 }
 } // namespace
 
+namespace {
+// 一笔最多落这么多个：再多既写不进一次批量摆放，也会长时间占住界面线程。
+constexpr std::size_t kMaxStrokeItems = 20000;
+}
+
 struct WorldScatterBrush::Stroke {
     bool erase = false;
     Services::ScatterBrushSettings settings;
@@ -91,6 +96,7 @@ struct WorldScatterBrush::Stroke {
     std::vector<std::uint32_t> eraseOrder;
     std::array<double, 2> last{};
     std::uint32_t noSurface = 0, slope = 0, crowded = 0;
+    bool capped = false; // 到了每笔上限，后面的补笔不再落点
 };
 
 struct WorldScatterBrush::BuildResult {
@@ -223,6 +229,7 @@ QWidget* WorldScatterBrush::BuildPage(QWidget* parent) {
 }
 
 void WorldScatterBrush::SetMapKey(const QString& key) {
+    if (key != mapKey_) { models_.clear(); surface_.reset(); builtKey_.clear(); }
     mapKey_ = key;
     if (!unitsPerMetre_) return;
     const QSignalBlocker blocker(unitsPerMetre_);
@@ -237,13 +244,19 @@ void WorldScatterBrush::SaveUnitsPerMetre() {
 void WorldScatterBrush::SetActive(bool active) {
     if (active_ == active) return;
     active_ = active;
-    if (!active) { Cancel(); hover_.reset(); models_.clear(); surface_.reset(); return; }
+    if (!active) {
+        // 关掉后还在读的表面作废（序号加一），再打开时重新读取。
+        Cancel(); hover_.reset(); models_.clear(); surface_.reset();
+        ++buildSerial_; builtKey_.clear(); buildingKey_.clear(); surfaceError_.clear(); rebuildPending_ = false;
+        return;
+    }
     RequestRebuild();
     UpdateBudget();
 }
 
 void WorldScatterBrush::SceneChanged(Scene scene) {
     scene_ = std::move(scene);
+    ++sceneSerial_;
     if (!active_) return;
     RequestRebuild();
     UpdateBudget();
@@ -256,6 +269,7 @@ void WorldScatterBrush::AddType(ObjectData::ObjectType type, const QString& rawc
     }
     const auto code = rawcode.toStdString();
     if (std::any_of(palette_.begin(), palette_.end(), [&](const auto& row) { return row.rawcode == code; })) return;
+    if (const auto problem = TypeProblem(type, code); !problem.isEmpty()) { emit StatusText(problem); return; }
     PaletteRow row;
     row.type = type; row.rawcode = code; row.name = name.isEmpty() ? rawcode : name;
     row.variations = PlacementVariationCount(project_, type, code);
@@ -314,10 +328,17 @@ std::vector<Services::ScatterPaletteType> WorldScatterBrush::PaletteTypes() cons
     return types;
 }
 
-std::optional<Services::ScatterSurfaceSample> WorldScatterBrush::Probe(double x, double y) const {
+std::optional<Services::ScatterSurfaceSample> WorldScatterBrush::Probe(double x, double y, bool placement) const {
+    bool approximateGround = false;
+    if (placement) {
+        if (!project_.mapEdits_) return std::nullopt;
+        const auto ground = project_.mapEdits_->InspectTerrainPoint({x, y}, scene_.maximumCliffLevel);
+        if (!ground.Succeeded() || !ground.value) return std::nullopt; // 地图范围外：模型表面上也不落
+        approximateGround = ground.value->groundHeightApproximate;
+    }
     std::optional<Services::ScatterSurfaceSample> best;
     if (surface_) if (const auto hit = surface_->Drop(x, y)) best = Services::ScatterSurfaceSample{hit->position, hit->normal};
-    if (terrain_ && onTerrain_ && onTerrain_->isChecked()) {
+    if (terrain_ && onTerrain_ && onTerrain_->isChecked() && !approximateGround) {
         if (const auto z = Render::SampleTerrainHeight(*terrain_, x, y); z && (!best || *z > best->position[2])) {
             const auto h = [&](double dx, double dy) { return Render::SampleTerrainHeight(*terrain_, x + dx, y + dy).value_or(*z); };
             const double d = kTerrainNormalStep;
@@ -382,7 +403,8 @@ void WorldScatterBrush::Extend(double x, double y) {
     const double distance = std::hypot(dx, dy);
     if (distance < step) return;
     const int count = static_cast<int>(std::min(distance / step, 256.0));
-    for (int i = 1; i <= count; ++i) Dab(stroke_->last[0] + dx * i / count, stroke_->last[1] + dy * i / count);
+    const auto start = stroke_->last; // Dab 会改 last，补笔位置必须从这一段的起点算
+    for (int i = 1; i <= count; ++i) Dab(start[0] + dx * i / count, start[1] + dy * i / count);
 }
 
 void WorldScatterBrush::Dab(double x, double y) {
@@ -392,14 +414,16 @@ void WorldScatterBrush::Dab(double x, double y) {
         for (const auto index : Services::SelectScatterErase(x, y, stroke.settings.radius, stroke.palette, stroke.doodads))
             if (!stroke.erased[index]) { stroke.erased[index] = true; stroke.eraseOrder.push_back(index); }
     } else {
+        if (stroke.placed.size() >= kMaxStrokeItems) { stroke.capped = true; return; }
         auto report = Services::ScatterDab(x, y, stroke.settings, stroke.palette,
-            [this](double px, double py) { return Probe(px, py); }, *stroke.spacing, *stroke.random);
+            [this](double px, double py) { return Probe(px, py, true); }, *stroke.spacing, *stroke.random);
         if (!report.Succeeded() || !report.value) {
             emit StatusText(report.diagnostics.empty() ? tr("散布失败") : QString::fromStdString(report.diagnostics.front().message));
             return;
         }
         stroke.noSurface += report.value->noSurface; stroke.slope += report.value->slope; stroke.crowded += report.value->spacing;
         for (auto& item : report.value->placed) stroke.placed.push_back(std::move(item));
+        if (stroke.placed.size() > kMaxStrokeItems) { stroke.placed.resize(kMaxStrokeItems); stroke.capped = true; }
     }
     UpdateBudget();
     emit OverlayChanged();
@@ -450,6 +474,7 @@ void WorldScatterBrush::Finish() {
         emit StatusText(skipped ? tr("已散布 %1 个装饰物；未落下 %2 个（无表面 %3，坡度 %4，间距 %5）").arg(records.size()).arg(skipped)
                                      .arg(stroke->noSurface).arg(stroke->slope).arg(stroke->crowded)
                                 : tr("已散布 %1 个装饰物").arg(records.size()));
+        if (stroke->capped) emit StatusText(tr("已散布 %1 个装饰物：这一笔到了 %2 个的上限").arg(records.size()).arg(kMaxStrokeItems));
     }
     UpdateBudget();
     emit OverlayChanged();
@@ -496,7 +521,7 @@ std::string WorldScatterBrush::SurfaceKey() const {
     for (const auto& row : palette_) codes.push_back(row.rawcode);
     std::sort(codes.begin(), codes.end());
     for (const auto& code : codes) key += "|" + code;
-    return key;
+    return key + "|scene" + std::to_string(sceneSerial_);
 }
 
 void WorldScatterBrush::RequestRebuild() {
@@ -507,6 +532,7 @@ void WorldScatterBrush::RequestRebuild() {
 
 void WorldScatterBrush::StartRebuild() {
     if (!active_) return;
+    terrain_ = project_.mapEdits_ ? project_.mapEdits_->Terrain() : nullptr;
     if (building_) { rebuildPending_ = true; return; }
     if (stroke_) { rebuildTimer_->start(); return; } // 一笔进行中保持同一表面
     const auto filter = surfaceFilter_ ? surfaceFilter_->text().trimmed().toStdString() : std::string{};
@@ -618,6 +644,15 @@ void WorldScatterBrush::StartRebuild() {
     worker->start(QThread::LowPriority);
 }
 
+QString WorldScatterBrush::TypeProblem(ObjectData::ObjectType type, const std::string& rawcode) const {
+    const auto code = QString::fromStdString(rawcode);
+    if (!typeValidator_) return tr("不能确认物体类型 %1").arg(code);
+    const auto status = typeValidator_(type, rawcode);
+    if (status.Succeeded()) return {};
+    return tr("不能散布 %1：%2").arg(code, status.diagnostics.empty() ? tr("物体类型不存在")
+        : QString::fromStdString(status.diagnostics.front().message));
+}
+
 QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
     const auto fail = [](const char* code, const QString& message) {
         return QJsonObject{{"ok", false}, {"diagnostics", QJsonArray{QJsonObject{{"severity", "error"},
@@ -626,9 +661,15 @@ QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
     if (!project_.mapEdits_) return fail("WORLD_SCATTER_NO_MAP", tr("没有打开的地图"));
     if (stroke_) return fail("WORLD_SCATTER_STROKE_ACTIVE", tr("界面里正在画一笔，稍后再试"));
     const auto finite = [](const QJsonValue& value) { return value.isDouble() && std::isfinite(value.toDouble()); };
-    // 先完整校验，再改界面状态。
+    if (!page_) return fail("WORLD_SCATTER_INACTIVE", tr("散布工具没有启用"));
+    // 先完整校验（数量、范围、类型），再改界面状态；超出控件范围的值明确拒绝，不静默夹值。
+    const auto paletteValues = args.value("palette").toArray();
+    const auto pathValues = args.value("path").toArray();
+    if (paletteValues.isEmpty() || pathValues.isEmpty()) return fail("WORLD_SCATTER_ARGUMENT", tr("调色板和路径都不能为空"));
+    if (paletteValues.size() > 64 || pathValues.size() > 256)
+        return fail("WORLD_SCATTER_ARGUMENT", tr("调色板最多 64 项，路径最多 256 个点"));
     std::vector<PaletteRow> palette;
-    for (const auto& value : args.value("palette").toArray()) {
+    for (const auto& value : paletteValues) {
         const auto entry = value.toObject();
         const auto code = entry.value("rawcode").toString().toStdString();
         if (code.size() != 4) return fail("WORLD_SCATTER_ARGUMENT", tr("调色板 rawcode 须为四字符"));
@@ -637,6 +678,9 @@ QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
         PaletteRow row;
         row.type = entry.value("type").toString() == QStringLiteral("destructable") ? ObjectData::ObjectType::Destructable
                                                                                      : ObjectData::ObjectType::Doodad;
+        if (std::any_of(palette.begin(), palette.end(), [&](const auto& other) { return other.rawcode == code; }))
+            return fail("WORLD_SCATTER_ARGUMENT", tr("调色板里 %1 重复").arg(QString::fromStdString(code)));
+        if (const auto problem = TypeProblem(row.type, code); !problem.isEmpty()) return fail("WORLD_SCATTER_TYPE", problem);
         row.rawcode = code; row.name = QString::fromStdString(code);
         row.weight = entry.contains("weight") ? entry.value("weight").toDouble() : 1;
         row.variations = PlacementVariationCount(project_, row.type, code);
@@ -644,41 +688,74 @@ QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
         palette.push_back(std::move(row));
     }
     std::vector<std::array<double, 2>> path;
-    for (const auto& value : args.value("path").toArray()) {
+    for (const auto& value : pathValues) {
         const auto point = value.toArray();
         if (point.size() != 2 || !finite(point[0]) || !finite(point[1])) return fail("WORLD_SCATTER_ARGUMENT", tr("路径点须为两个有限数"));
         path.push_back({point[0].toDouble(), point[1].toDouble()});
     }
-    if (palette.empty() || path.empty()) return fail("WORLD_SCATTER_ARGUMENT", tr("调色板和路径都不能为空"));
+    const std::array<std::pair<const char*, QDoubleSpinBox*>, 10> boxes{{{"radius", radius_}, {"units_per_metre", unitsPerMetre_},
+        {"density_per_100m2", density_}, {"yaw_min", yawMin_}, {"yaw_max", yawMax_}, {"scale_min", scaleMin_},
+        {"scale_max", scaleMax_}, {"min_spacing", spacing_}, {"slope_min", slopeMin_}, {"slope_max", slopeMax_}}};
     const auto settings = args.value("settings").toObject();
-    for (auto it = settings.begin(); it != settings.end(); ++it)
-        if (it.key() != QStringLiteral("random_variation") && !finite(it.value()))
-            return fail("WORLD_SCATTER_ARGUMENT", tr("设置 %1 须为有限数").arg(it.key()));
+    for (auto it = settings.begin(); it != settings.end(); ++it) {
+        const auto key = it.key().toStdString();
+        if (key == "random_variation") {
+            if (!it.value().isBool()) return fail("WORLD_SCATTER_ARGUMENT", tr("random_variation 须为布尔值"));
+            continue;
+        }
+        if (!finite(it.value())) return fail("WORLD_SCATTER_ARGUMENT", tr("设置 %1 须为有限数").arg(it.key()));
+        const double value = it.value().toDouble();
+        if (key == "count_per_dab") {
+            if (std::floor(value) != value || value < perDab_->minimum() || value > perDab_->maximum())
+                return fail("WORLD_SCATTER_ARGUMENT", tr("count_per_dab 须为 %1–%2 的整数").arg(perDab_->minimum()).arg(perDab_->maximum()));
+            continue;
+        }
+        const auto box = std::find_if(boxes.begin(), boxes.end(), [&](const auto& item) { return key == item.first; });
+        if (box == boxes.end()) return fail("WORLD_SCATTER_ARGUMENT", tr("未知设置 %1").arg(it.key()));
+        if (value < box->second->minimum() || value > box->second->maximum())
+            return fail("WORLD_SCATTER_ARGUMENT", tr("%1 须在 %2–%3 之间").arg(it.key()).arg(box->second->minimum()).arg(box->second->maximum()));
+    }
     std::optional<std::uint64_t> seed;
     if (args.contains("seed")) {
         bool parsed = false;
         seed = args.value("seed").toString().toULongLong(&parsed);
-        if (!parsed) return fail("WORLD_SCATTER_ARGUMENT", tr("seed 须为十进制整数串"));
+        if (!parsed) return fail("WORLD_SCATTER_ARGUMENT", tr("seed 须为 0–18446744073709551615 的十进制整数串"));
     }
     const bool erase = args.value("mode").toString() == QStringLiteral("erase");
     const bool dryRun = args.value("dry_run").toBool();
 
     if (activator_) activator_();
-    if (!active_ || !page_) return fail("WORLD_SCATTER_INACTIVE", tr("散布工具没有启用"));
+    if (!active_) return fail("WORLD_SCATTER_INACTIVE", tr("散布工具没有启用"));
+    // 组合设置（如最小值大于最大值）只有填进界面后才能整体判断；无效时恢复调用前的界面状态。
+    const auto previousPalette = palette_;
+    const int previousMode = mode_->checkedId();
+    std::array<double, 10> previousValues{};
+    for (std::size_t i = 0; i < boxes.size(); ++i) previousValues[i] = boxes[i].second->value();
+    const int previousPerDab = perDab_->value(), previousDensityMode = densityMode_->currentIndex();
+    const bool previousVariation = randomVariation_->isChecked(), previousTerrain = onTerrain_->isChecked();
+    const QString previousFilter = surfaceFilter_->text();
     palette_ = std::move(palette);
     RebuildPalette();
     if (auto* button = mode_->button(erase ? 1 : 0)) button->setChecked(true);
-    const auto set = [&](const char* key, QDoubleSpinBox* box) { if (settings.contains(key)) box->setValue(settings.value(key).toDouble()); };
-    set("radius", radius_); set("units_per_metre", unitsPerMetre_); set("density_per_100m2", density_);
-    set("yaw_min", yawMin_); set("yaw_max", yawMax_); set("scale_min", scaleMin_); set("scale_max", scaleMax_);
-    set("min_spacing", spacing_); set("slope_min", slopeMin_); set("slope_max", slopeMax_);
+    for (const auto& [key, box] : boxes) if (settings.contains(QLatin1String(key))) box->setValue(settings.value(QLatin1String(key)).toDouble());
     if (settings.contains("count_per_dab")) { perDab_->setValue(settings.value("count_per_dab").toInt()); densityMode_->setCurrentIndex(1); }
     else if (settings.contains("density_per_100m2")) densityMode_->setCurrentIndex(0);
     if (settings.contains("random_variation")) randomVariation_->setChecked(settings.value("random_variation").toBool());
     const auto surface = args.value("surface").toObject();
     if (surface.contains("terrain")) onTerrain_->setChecked(surface.value("terrain").toBool());
     if (surface.contains("filter")) surfaceFilter_->setText(surface.value("filter").toString());
-    // 落点表面必须是本次参数对应的那一份：否则先开始读取并请调用方重试。
+    QString error;
+    if (!Settings(&error)) {
+        palette_ = previousPalette;
+        RebuildPalette();
+        if (auto* button = mode_->button(previousMode)) button->setChecked(true);
+        for (std::size_t i = 0; i < boxes.size(); ++i) boxes[i].second->setValue(previousValues[i]);
+        perDab_->setValue(previousPerDab); densityMode_->setCurrentIndex(previousDensityMode);
+        randomVariation_->setChecked(previousVariation); onTerrain_->setChecked(previousTerrain);
+        surfaceFilter_->setText(previousFilter);
+        return fail("WORLD_SCATTER_SETTINGS", error);
+    }
+    // 落点表面必须是本次参数和当前场景对应的那一份：否则先开始读取并请调用方重试。
     if (building_ || rebuildTimer_->isActive() || builtKey_ != SurfaceKey()) {
         if (!building_) { rebuildTimer_->stop(); StartRebuild(); }
         return fail("WORLD_SCATTER_SURFACE_BUILDING", tr("落点表面正在读取，稍后重试"));
@@ -688,8 +765,6 @@ QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
         return fail("WORLD_SCATTER_NO_SURFACE", surfaceError_.isEmpty() ? tr("过滤没有得到可用的模型表面") : surfaceError_);
     if (!erase && !surface_ && !(onTerrain_->isChecked() && terrain_))
         return fail("WORLD_SCATTER_NO_SURFACE", tr("没有可落点的表面：未给模型过滤，且未勾选地形"));
-    QString error;
-    if (!Settings(&error)) return fail("WORLD_SCATTER_SETTINGS", error);
 
     nextSeed_ = seed;
     const auto revision = project_.mapEdits_->Revision();
@@ -701,6 +776,11 @@ QJsonObject WorldScatterBrush::RunTool(const QJsonObject& args) {
     if (!erase) report.insert("seed", QString::number(stroke_->seed));
     report.insert("rejected", QJsonObject{{"no_surface", static_cast<qint64>(stroke_->noSurface)},
         {"slope", static_cast<qint64>(stroke_->slope)}, {"spacing", static_cast<qint64>(stroke_->crowded)}});
+    report.insert("capped", stroke_->capped);
+    QJsonObject used{{"count_per_dab", perDab_->value()}, {"random_variation", randomVariation_->isChecked()},
+        {"density_mode", densityMode_->currentIndex() == 1 ? QStringLiteral("per_dab") : QStringLiteral("per_area")}};
+    for (const auto& [key, box] : boxes) used.insert(QLatin1String(key), box->value());
+    report.insert("settings", used);
     if (erase) report.insert("erased", static_cast<qint64>(stroke_->eraseOrder.size()));
     else {
         report.insert("placed", static_cast<qint64>(stroke_->placed.size()));

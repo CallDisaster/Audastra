@@ -55,7 +55,7 @@ std::vector<ToolDefinition> WorldViewportToolDefinitions() {
                     {"filter", QJsonObject{{"type", "string"}, {"maxLength", 512}}}}}});
             properties.insert("path", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256},
                 {"items", QJsonObject{{"type", "array"}, {"minItems", 2}, {"maxItems", 2}, {"items", number}}}});
-            properties.insert("seed", QJsonObject{{"type", "string"}, {"pattern", "^[0-9]{1,19}$"}});
+            properties.insert("seed", QJsonObject{{"type", "string"}, {"pattern", "^[0-9]{1,20}$"}});
             properties.insert("dry_run", QJsonObject{{"type", "boolean"}});
             for (const auto* key : {"mode", "palette", "path", "dry_run"}) required.append(key);
         } else if (tool.name == "world_viewport_capture") {

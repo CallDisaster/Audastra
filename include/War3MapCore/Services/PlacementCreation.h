@@ -26,6 +26,9 @@ struct PlacementCreateRequest {
     std::vector<MapData::PlacementItemSet> itemSets;
 };
 
+// 物编来源里是否有这个类型（同一父链/标准来源验证）；新建摆放与散布共用。
+[[nodiscard]] Status PlacementTypeExists(const ObjectCommandContext& context, const std::string& rawcode);
+
 // source 来自可信宿主当前物编目录；sample 来自同修订 InspectTerrainPoint，必须和请求点相同。
 // drops 只在确有掉落时提供，借用真实 Item 目录，不能用调用方声称“类型存在”的布尔值替代。
 [[nodiscard]] Result<NewPlacementRecord> PreparePlacementCreation(const PlacementCreateRequest& request,

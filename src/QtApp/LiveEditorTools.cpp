@@ -2143,8 +2143,11 @@ private:
                     const auto check = CheckContext(args, false, edits);
                     if (!check.value("ok").toBool()) return check;
                     auto result = Mcp::InvokeWorldViewportTool(name, args, {worldViewport_});
-                    if (edits && result.value("ok").toBool())
-                        result.insert("document_revision", QString::number(project_.editRevision_.Revision()));
+                    if (edits && result.value("ok").toBool()) {
+                        const auto revision = QString::number(project_.editRevision_.Revision());
+                        result.insert("document_revision", revision);
+                        result.insert("revision", revision);
+                    }
                     return result;
                 }, definition.maxRequestIdBytes, definition.maxResponseBytes, definition.pngImageResult);
         }

@@ -17,10 +17,12 @@
 - `path`：1–256 个 `[x, y]` 游戏坐标；按下第一个点，再沿路径每半径一半补一笔。
 - `settings`：可选，未给出的项沿用界面当前值。`radius`、`min_spacing` 用游戏单位；`density_per_100m2` 配合 `units_per_metre`（默认 40）换算；给 `count_per_dab` 时改为每笔个数。`yaw_min`/`yaw_max`、`slope_min`/`slope_max` 用度，`scale_min`/`scale_max` 为统一缩放，`random_variation` 随机变体。
 - `surface`：`terrain` 是否落在地形上，`filter` 为模型路径或类型代码的通配（`*`、`?`，分号或空格分隔，不分大小写）。给了过滤时只要最上层的可见装饰物模型命中；没有可用模型表面时明确失败，不退回地形。
-- `seed`：可选十进制整数串，相同参数和种子得到相同落点。
+- `seed`：可选十进制整数串（0 至 2^64−1），相同参数和种子得到相同落点；结果里的 `seed` 可原样回传。
 - `dry_run`：`true` 只返回落点，不改地图。
 
-模型表面在后台读取，过滤、地形开关或调色板变化后第一次调用返回 `WORLD_SCATTER_SURFACE_BUILDING`，稍后用同样参数重试。成功结果包含 `placed`/`erased`、被拒绝的数目（无表面、坡度、间距）、前 64 个落点、表面三角形数、`map_doodads`（这一笔之后的地图装饰物数）、`palette_vertices`（调色板类型在地图里的顶点合计；`palette_vertices_complete` 为假时还有模型未读完）和新的 `document_revision`。散布出的装饰物使用绝对高度（标志 0x04）。
+调色板类型须在当前物编目录里存在（与普通摆放同一检查），否则返回 `WORLD_SCATTER_TYPE`。设置超出界面控件范围时返回 `WORLD_SCATTER_ARGUMENT`，不夹值；最小值大于最大值等组合无效时返回 `WORLD_SCATTER_SETTINGS`，界面恢复调用前的状态。落点须在地图地形范围内；落在地形上时，没有实际最高悬崖层来源的坡道点不落（与普通摆放一致）。一笔最多 20000 个，到上限后 `capped` 为真。
+
+模型表面在后台读取，过滤、地形开关、调色板或摆放场景变化后第一次调用返回 `WORLD_SCATTER_SURFACE_BUILDING`，稍后用同样参数重试。成功结果包含 `placed`/`erased`、被拒绝的数目（无表面、坡度、间距）、前 64 个落点、表面三角形数、`map_doodads`（这一笔之后的地图装饰物数）、`palette_vertices`（调色板类型在地图里的顶点合计；`palette_vertices_complete` 为假时还有模型未读完）、实际使用的 `settings`，以及新的 `revision`/`document_revision`。散布出的装饰物使用绝对高度（标志 0x04）。
 
 ## 完成帧截图
 
