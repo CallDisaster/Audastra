@@ -86,7 +86,10 @@ QJsonObject Info(const ObjectResourceInfo& info) {
     for (const auto& sequence : info.sequences) sequences.append(QJsonObject{{"name", QString::fromStdString(sequence.name)},
         {"start_ms", static_cast<double>(sequence.startMs)}, {"end_ms", static_cast<double>(sequence.endMs)},
         {"loops", sequence.loops}, {"usable", sequence.usable}});
-    return {{"ok", true}, {"value", QString::fromStdString(info.requestedValue)}, {"resource_path", QString::fromStdString(info.resourcePath)},
+    QJsonArray geosets;
+    for (const auto& geoset : info.geosets) geosets.append(QJsonObject{{"vertices", static_cast<double>(geoset.vertices)},
+        {"indices", static_cast<double>(geoset.indices)}, {"over_game_limit", geoset.overGameLimit}});
+    return {{"ok", true}, {"geosets", geosets}, {"value", QString::fromStdString(info.requestedValue)}, {"resource_path", QString::fromStdString(info.resourcePath)},
         {"kind", QString::fromUtf8(ObjectResourceKindName(info.kind))}, {"source_id", QString::fromStdString(info.source.sourceId)},
         {"source_path", QString::fromStdString(info.source.sourcePath)}, {"source_priority", info.source.priority},
         {"source_verified", true}, {"bytes", QString::number(info.bytes)},

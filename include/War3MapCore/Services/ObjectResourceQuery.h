@@ -93,6 +93,8 @@ struct ObjectResourcePage {
     const ObjectResourceQuery& query, const std::optional<ObjectResourceCursor>& cursor = {});
 
 struct ObjectResourceSequence { std::string name; std::uint32_t startMs = 0, endMs = 0; bool loops = true, usable = false; };
+// 模型每个几何体的顶点数/三角形索引数；overGameLimit 按游戏上限（Render/ModelGameLimits.h）判定。
+struct ObjectResourceGeoset { std::size_t vertices = 0, indices = 0; bool overGameLimit = false; };
 struct ObjectResourceInfo {
     std::string requestedValue, resourcePath;
     ObjectResourceKind kind = ObjectResourceKind::Model;
@@ -100,6 +102,7 @@ struct ObjectResourceInfo {
     std::size_t bytes = 0;
     std::optional<std::uint32_t> width, height;
     std::vector<ObjectResourceSequence> sequences;
+    std::vector<ObjectResourceGeoset> geosets;
     std::vector<Diagnostic> diagnostics;
 };
 // Resolver 的只读回调须在分配前有界读取。读取、解码失败直接报告原原因，绝不回退低层。

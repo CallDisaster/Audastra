@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/WorldModelScene.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 #include "War3RenderCore/MaterialTextures.h"
 
 #include "War3MapCore/Image/BlpImage.h"
@@ -246,6 +247,7 @@ private:
             result.model = std::make_shared<const MdxModel>(std::move(*model.value));
         }
         if (!result.model) return result;
+        if (auto limit = GeosetGameLimitWarning(*result.model, path)) scene_.warnings.push_back(std::move(*limit));
         if (result.model->rigidStaticPreviewSource) {
             if (!limits_.allowRigidStaticPreview) {
                 scene_.warnings.push_back({DiagnosticSeverity::Warning, std::string(kSubsystem),

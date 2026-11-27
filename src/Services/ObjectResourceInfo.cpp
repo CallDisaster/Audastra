@@ -1,6 +1,7 @@
 #include "ObjectResourceQueryDetail.h"
 #include "War3MapCore/Game/SoundInfoTables.h"
 #include "War3MapCore/Render/MdxModel.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/Text/SlkCells.h"
@@ -84,6 +85,11 @@ Result<ObjectResourceInfo> InspectObjectResource(const Resources::ResourceResolv
         for (const auto& sequence : model.value->sequences)
             result.sequences.push_back({sequence.name, sequence.start, sequence.end, sequence.flags == 0, sequence.Usable()});
         result.diagnostics.insert(result.diagnostics.end(), model.diagnostics.begin(), model.diagnostics.end());
+        for (const auto& geoset : model.value->geosets)
+            result.geosets.push_back({geoset.positions.size(), geoset.indices.size(),
+                Render::GeosetOverGameLimit(geoset.positions.size(), geoset.indices.size())});
+        if (auto limit = Render::GeosetGameLimitWarning(*model.value, result.resourcePath))
+            result.diagnostics.push_back(std::move(*limit));
     } else if (kind == ObjectResourceKind::Icon || kind == ObjectResourceKind::Texture) {
         auto image = Image::DecodeTexture(result.resourcePath, resource.value->bytes);
         if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};

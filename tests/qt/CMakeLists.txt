@@ -577,6 +577,13 @@ target_compile_options(war3-map-world-animation-diagnostics-tests PRIVATE /W4 /p
 add_test(NAME qt-world-animation-diagnostics COMMAND war3-map-world-animation-diagnostics-tests)
 set_tests_properties(qt-world-animation-diagnostics PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+qt_add_executable(war3-map-world-geoset-limit-tests WorldGeosetLimitMarksTests.cpp ../support/GeosetLimitMdxFixture.h)
+target_link_libraries(war3-map-world-geoset-limit-tests PRIVATE War3MapEditor::QtModuleWorld)
+target_compile_definitions(war3-map-world-geoset-limit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-world-geoset-limit-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-world-geoset-limit COMMAND war3-map-world-geoset-limit-tests)
+set_tests_properties(qt-world-geoset-limit PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 qt_add_executable(war3-map-world-resource-reader-tests WorldResourceReaderTests.cpp)
 target_link_libraries(war3-map-world-resource-reader-tests PRIVATE War3MapEditor::QtModuleWorld)
 target_compile_definitions(war3-map-world-resource-reader-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

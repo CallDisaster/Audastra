@@ -63,6 +63,8 @@ struct MapSaveJob final : Services::MapSaveTask {
     // worker 结论：本次只因小地图生成失败而未保存，选择无视风险后可以继续。
     bool minimapRiskAvailable = false;
     std::optional<Status> terrainReadbackStatus;
+    // 准备阶段核对待写入的导入模型：几何体超出游戏上限的提醒（只提醒，不拦截保存）。
+    std::vector<Diagnostic> modelGameLimitWarnings;
     std::string terrainReadbackArchiveSha256;
     // 阶段提示可从工作线程调用，由 UI 调用方排队到界面线程。
     std::function<void(const QString&)> progress;

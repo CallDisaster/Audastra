@@ -44,6 +44,7 @@
 #include "Commands/TriggerCommands.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/VerifiedFile.h"
@@ -1470,6 +1471,14 @@ private:
             if (!sha.Succeeded()) return Mcp::Failure("LIVE_EDITOR_SAVE_OUTPUT_MISSING", "宿主报告成功，但无法读取输出身份。");
             SyncIdentity();
             emit owner_.Changed();
+            // 保存准备阶段写进问题列表的不拦截提醒（如模型几何体超出游戏上限）一并带回。
+            QJsonArray warnings;
+            if (const auto* model = project_.diagnosticsModel_)
+                for (int row = firstDiagnostic; row < model->rowCount() && warnings.size() < 32; ++row) {
+                    const auto code = model->index(row, 2).data().toString();
+                    if (code.toStdString() != Render::kGeosetOverGameLimitCode) continue;
+                    warnings.append(QJsonObject{{"code", code}, {"message", model->index(row, 3).data().toString().left(4096)}});
+                }
             const QJsonObject output{{"path", QString::fromStdWString(path.wstring())}, {"sha256", QString::fromStdString(*sha.value)}};
             const QJsonObject item{{"kind", "file"}, {"object_id", ""}, {"title", QString::fromStdWString(path.filename().wstring())},
                 {"target", QString::fromStdWString(path.wstring())}, {"before", previous}, {"after", output}};
@@ -1477,7 +1486,7 @@ private:
                 {"runtime_purpose", purpose}, {"project_baseline_changed", !validation},
                 {"path", QString::fromStdWString(path.wstring())}, {"sha256", QString::fromStdString(*sha.value)},
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
-                {"save_evidence", "host-common-save-handler"}, {"game_verified", false},
+                {"save_evidence", "host-common-save-handler"}, {"game_verified", false}, {"warnings", warnings},
                 {"changes", QJsonObject{{"files", 1}, {"items", QJsonArray{item}}}}};
         });
     }
@@ -1817,16 +1826,26 @@ private:
             if (!rejected.isEmpty()) return Mcp::Failure("IMPORTS_ADD_REJECTED", rejected.toStdString());
             SyncIdentity();
             emit owner_.Changed();
-            QJsonArray added, items;
+            QJsonArray added, items, warnings;
             for (const auto& payload : payloads) {
                 const auto sha = Sha256(*payload.bytes);
                 const auto shaText = sha.Succeeded() && sha.value ? QString::fromStdString(*sha.value) : QString();
-                added.append(QJsonObject{{"archive_path", payload.archivePath},
-                    {"size", static_cast<qint64>(payload.bytes->size())}, {"sha256", shaText}, {"replaced", payload.replaced}});
+                QJsonObject row{{"archive_path", payload.archivePath},
+                    {"size", static_cast<qint64>(payload.bytes->size())}, {"sha256", shaText}, {"replaced", payload.replaced}};
+                // 模型几何体超出游戏上限：只提醒，照常导入。
+                const auto archivePath = payload.archivePath.toStdString();
+                if (Render::IsMdxPath(archivePath))
+                    if (auto limit = Render::GeosetGameLimitWarning(*payload.bytes, archivePath)) {
+                        const QJsonObject warning{{"code", QString::fromStdString(limit->code)},
+                            {"message", QString::fromStdString(limit->message)}};
+                        row.insert("warnings", QJsonArray{warning}); warnings.append(warning);
+                        project_.AddDiagnostics({std::move(*limit)});
+                    }
+                added.append(row);
                 items.append(QJsonObject{{"kind", "import"}, {"object_id", ""}, {"title", payload.archivePath},
                     {"target", payload.archivePath}, {"before", QJsonValue::Null}, {"after", shaText}});
             }
-            return QJsonObject{{"ok", true}, {"added", added}, {"saved", false},
+            return QJsonObject{{"ok", true}, {"added", added}, {"warnings", warnings}, {"saved", false},
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", added.size()}, {"items", items}}}};
         }

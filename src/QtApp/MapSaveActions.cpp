@@ -387,6 +387,9 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             ? tr("已按源图声明边距补建缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。")
             : tr("已补建源图缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。"));
     }
+    if (!job->modelGameLimitWarnings.empty())
+        details << tr("%1 个模型的几何体超出游戏上限，游戏里这些几何体不画，详见问题列表。")
+            .arg(static_cast<qulonglong>(job->modelGameLimitWarnings.size()));
     if (!saved->backup.empty()) details << (job->inPlaceOptions.keepBackups == 0
         ? tr("原文件备份：%1（不限保留数量）").arg(QString::fromStdWString(saved->backup.wstring()))
         : tr("原文件备份：%1（每张源图保留最近 %2 份）").arg(QString::fromStdWString(saved->backup.wstring()))

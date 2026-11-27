@@ -38,6 +38,7 @@
 #include "../MapDataSpatialFixtures.h"
 #include "../TerrainCornerRampFixtures.h"
 #include "../support/TerrainTextureSlotSaveFixture.h"
+#include "../support/GeosetLimitMdxFixture.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -363,6 +364,7 @@ private slots:
     void LuaFileToolsShareAssetUndoAndRejectStaleText();
     void LuaFileToolsCreateOnlyAtProvenArchiveAbsence();
     void ImportsAddQueuesOwnedBytesWithUndo();
+    void ImportsAddWarnsGeosetOverGameLimit();
     void LuaFilesListPagesCapturedDirectoryAndRejectsStaleContinuation();
     void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
@@ -2451,6 +2453,41 @@ void LiveEditorToolsTests::LuaFileToolsCreateOnlyAtProvenArchiveAbsence() {
     QVERIFY(!f.tools->Invoke("lua_file_read", read).value("ok").toBool());
 }
 
+void LiveEditorToolsTests::ImportsAddWarnsGeosetOverGameLimit() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = std::filesystem::path(f.outputs.filePath("geoset-limit-source.w3x").toStdWString());
+    const std::array<MapArchiveMember, 1> members{{{"war3mapImported\\keep.txt", {std::byte{0x4b}}}}};
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    auto archive = MapArchiveSession::Open(source); QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.sourceArchivePath_ = source;
+    f.project.ResetEditTracking();
+    f.tools = std::make_unique<LiveEditorTools>(f.project);
+    const auto write = [&](const QString& name, const std::vector<std::byte>& bytes) {
+        const auto path = f.outputs.filePath(name);
+        return WriteFile(path, QByteArray(reinterpret_cast<const char*>(bytes.data()), static_cast<qsizetype>(bytes.size()))) ? path : QString();
+    };
+    const auto big = write("big.mdx", GeosetLimitFixture::BuildMdx({{16385, 3}}));
+    const auto edge = write("edge.mdx", GeosetLimitFixture::BuildMdx({{16384, 49152}}));
+    QVERIFY(!big.isEmpty() && !edge.isEmpty());
+    auto request = f.Context();
+    request.insert("files", QJsonArray{
+        QJsonObject{{"disk_path", QDir::toNativeSeparators(big)}, {"archive_path", "war3mapImported\\big.mdx"}},
+        QJsonObject{{"disk_path", QDir::toNativeSeparators(edge)}, {"archive_path", "war3mapImported\\edge.mdx"}}});
+    const auto added = f.tools->Invoke("imports_add", request);
+    // 只提醒，照常导入：超限的那个带 warnings，恰好等于上限的不带。
+    QVERIFY2(added.value("ok").toBool(), qPrintable(Explain(added)));
+    const auto rows = added.value("added").toArray();
+    QCOMPARE(rows.size(), 2);
+    const auto warning = rows[0].toObject().value("warnings").toArray();
+    QCOMPARE(warning.size(), 1);
+    QCOMPARE(warning[0].toObject().value("code").toString(), QStringLiteral("MODEL_GEOSET_OVER_GAME_LIMIT"));
+    QVERIFY(warning[0].toObject().value("message").toString().contains(QStringLiteral("第 1 个几何体 16385 顶点")));
+    QVERIFY(!rows[1].toObject().contains("warnings"));
+    QCOMPARE(added.value("warnings").toArray().size(), 1);
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+}
+
 void LiveEditorToolsTests::ImportsAddQueuesOwnedBytesWithUndo() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const auto source = std::filesystem::path(f.outputs.filePath("imports-source.w3x").toStdWString());
@@ -2485,6 +2522,7 @@ void LiveEditorToolsTests::ImportsAddQueuesOwnedBytesWithUndo() {
     QCOMPARE(row.value("size").toInt(), 13);
     QVERIFY(!row.value("replaced").toBool());
     QCOMPARE(row.value("sha256").toString().size(), 64);
+    QVERIFY(!row.contains("warnings") && added.value("warnings").toArray().isEmpty()); // 不是有效模型：解析另有校验，这里不提醒
     QCOMPARE(f.project.AssetUndoStack()->count(), 1);
     // 调用时已读入内存，磁盘文件之后再变不影响待导入内容。
     QVERIFY(WriteFile(disk, "MDLX-changed-later"));

@@ -1455,6 +1455,17 @@ void WorldModule::UpdateOverlay() {
         if (cameraDraft_) { shown.targetX = (*cameraDraft_)[0]; shown.targetY = (*cameraDraft_)[1]; }
         Render::AppendCameraMarker(lines, terrain, shown, kSelected);
     }
+    // 几何体超出游戏上限的摆放：警示橙包围框，常显（隐藏的摆放不画）。框在世界坐标里，不随相机重算。
+    if (const auto& limits = GeosetLimitMarks(); scene_ && !limits.requests.empty()) {
+        const WorldRequestVisible visible = [this](std::uint32_t request) {
+            return request < placementIds_.size() && worldSelection_.Flags(Services::WorldObjectId{placementIds_[request]}).visible;
+        };
+        const auto animated = animation_ ? animation_->Scene() : nullptr;
+        const auto frame = animation_ ? animation_->Frame() : nullptr;
+        if (animated && frame && scene_ == animation_->Picking() && frame->sceneVersion == animated->sceneVersion)
+            AppendGeosetLimitBoxes(lines, GeosetLimitInstances(*animated, *frame, limits, visible));
+        else AppendGeosetLimitBoxes(lines, GeosetLimitInstances(*scene_, limits, visible));
+    }
     if (scene_) for (const auto& id : selectedPlacements_) {
         const auto found = std::find(placementIds_.begin(), placementIds_.end(), id);
         if (found == placementIds_.end()) continue;

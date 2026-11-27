@@ -13,6 +13,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectFreeze.h"
@@ -574,6 +575,11 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         if (!payload.Succeeded()) {
             return fail(tr("IMPORT_SNAPSHOT_CHANGED"), tr("导入文件被占用或内容与保存开始时不同：%1").arg(entry.diskPath));
         }
+        if (Render::IsMdxPath(name))
+            if (auto limit = Render::GeosetGameLimitWarning(*payload.value, entry.archivePath.toStdString())) {
+                AddDiagnostics({*limit});
+                job->modelGameLimitWarnings.push_back(std::move(*limit));
+            }
         replaceMember(name, std::move(*payload.value));
         const auto registered = importTable.Upsert(name, [this](std::string_view path) { return archiveSession_->HasMember(path); });
         AddDiagnostics(registered.diagnostics);

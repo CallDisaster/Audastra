@@ -1,5 +1,6 @@
 #include "War3MapCore/Services/PlacementImport.h"
 #include "War3MapCore/Services/PlacementCreation.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 
 #include <cmath>
 #include <format>
@@ -113,6 +114,9 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
     plan.report.files = manifest.files.size();
     if (inputs.memberExists)
         for (const auto& file : manifest.files) if (inputs.memberExists(file.archivePath)) ++plan.report.replacedFiles;
+    for (const auto& file : manifest.files)
+        if (Render::IsMdxPath(file.archivePath))
+            if (auto limit = Render::GeosetGameLimitWarning(file.bytes, file.archivePath)) plan.report.warnings.push_back(std::move(*limit));
     return R::Success(std::move(plan));
 }
 

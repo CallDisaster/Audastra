@@ -31,6 +31,7 @@ struct PlacementImportReport {
     std::vector<PlacementImportTypeResult> types;
     std::size_t files = 0, replacedFiles = 0;
     std::size_t doodads = 0, fixedHeightDoodads = 0, units = 0;
+    std::vector<Diagnostic> warnings; // 不拦截的提醒，如模型几何体超出游戏上限
 };
 
 struct PlacementImportInputs {

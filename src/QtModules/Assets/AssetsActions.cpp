@@ -5,6 +5,7 @@
 #include "EditorProject.h"
 #include "Icons/SvgIcons.h"
 #include "Modules/ModuleHost.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -32,6 +33,24 @@ namespace War3Map::Modules {
 
 using namespace AssetsDetail;
 
+namespace {
+// 导入或替换的模型里有几何体超出游戏上限时记入问题列表（只提醒，照常导入）；返回涉及的模型数。
+int ReportModelGameLimits(QtProject::EditorProject& project, const QStringList& diskPaths) {
+    int flagged = 0;
+    for (const auto& disk : diskPaths) {
+        const auto name = QFileInfo(disk).fileName().toStdString();
+        if (!Render::IsMdxPath(name)) continue;
+        if (auto limit = Render::GeosetGameLimitWarningForFile(std::filesystem::path(disk.toStdWString()), name)) {
+            project.AddDiagnostics({std::move(*limit)}); ++flagged;
+        }
+    }
+    return flagged;
+}
+QString ModelGameLimitNote(int flagged) {
+    return flagged ? QObject::tr("；%1 个模型的几何体超出游戏上限，详见问题列表").arg(flagged) : QString{};
+}
+} // namespace
+
 QString AssetsModule::Record(const QString& text, const std::function<QString(QtProject::AssetState&)>& edit) {
     const auto problem = project_.RecordAssetEdit(text, edit);
     if (!problem.isEmpty()) Status(problem);
@@ -45,7 +64,8 @@ void AssetsModule::AddFiles(const QStringList& diskPaths, const QString& folder)
         added = project_.AddImportFiles(state, diskPaths, Normalized(folder));
         return added > 0 ? QString{} : tr("没有可以导入的文件。");
     });
-    if (added > 0) Status(tr("已添加 %1 个文件到导入列表，保存地图时写入。").arg(added));
+    if (added > 0) Status(tr("已添加 %1 个文件到导入列表，保存地图时写入。").arg(added)
+        + ModelGameLimitNote(ReportModelGameLimits(project_, diskPaths)));
 }
 
 QString AssetsModule::MoveAssets(const QStringList& paths, const QString& folder) {
@@ -115,7 +135,8 @@ QString AssetsModule::ReplaceAssetFile(const QString& path, const QString& diskP
     const QString result = Record(tr("替换文件"), [&](QtProject::AssetState& state) {
         return project_.ReplaceAssetFile(state, path, diskPath);
     });
-    if (result.isEmpty()) Status(tr("已用 %1 替换 %2（路径不变），保存地图时写入。").arg(QFileInfo(diskPath).fileName(), path));
+    if (result.isEmpty()) Status(tr("已用 %1 替换 %2（路径不变），保存地图时写入。").arg(QFileInfo(diskPath).fileName(), path)
+        + ModelGameLimitNote(ReportModelGameLimits(project_, {diskPath})));
     return result;
 }
 

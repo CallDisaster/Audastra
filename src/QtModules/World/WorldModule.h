@@ -19,6 +19,7 @@
 #include "WorldSelectionProperties.h"
 #include "WorldStartLocations.h"
 #include "WorldAnimationDiagnostics.h"
+#include "WorldGeosetLimitMarks.h"
 #include "WorldPlacementModels.h"
 #include "WorldPlacementPending.h"
 #include "WorldInstanceTiming.h"
@@ -164,6 +165,7 @@ private:
     void RefreshInstanceDiagnostics();
     void OpenModelDiagnostics();
     [[nodiscard]] std::vector<WorldModelDiagnosticRow> ModelDiagnosticRows() const;
+    [[nodiscard]] const WorldGeosetLimitMarks& GeosetLimitMarks() const;
     void RefreshEffectBudgetStatus();
     [[nodiscard]] bool InstanceDiagnosticsCurrent() const;
     [[nodiscard]] bool EmptyModelCaptureCurrent() const;
@@ -555,6 +557,10 @@ private:
     std::vector<Render::ModelInstanceRequest> requests_;
     std::vector<MapData::PlacementId> placementIds_;
     std::vector<WorldUnresolvedPlacement> unresolvedPlacements_;
+    // 超出游戏几何体上限的摆放：随场景警告与请求表重算，模型诊断与警示框共用。
+    mutable WorldGeosetLimitMarks geosetLimitMarks_;
+    mutable std::weak_ptr<const void> geosetLimitSource_;
+    mutable std::size_t geosetLimitRequestCount_ = 0;
     QPointer<WorldModelDiagnosticsDialog> modelDiagnosticsDialog_;
     QPushButton* effectBudgetStatus_ = nullptr;
     // 仅绑定成功接收的场景；typed 摆放映射加载一次，逐实例诊断由 Core 公共查询提供。

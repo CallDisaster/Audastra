@@ -42,6 +42,7 @@ QString ReportText(const MapData::PlacementManifest& manifest, const Services::P
             QString::fromStdString(type.base)).arg(type.instances);
     }
     if (report.types.size() > kListedTypes) lines << QObject::tr("  等 %1 个").arg(report.types.size());
+    for (const auto& warning : report.warnings) lines << QObject::tr("提醒：%1").arg(QString::fromStdString(warning.message));
     return lines.join(QLatin1Char('\n'));
 }
 } // namespace

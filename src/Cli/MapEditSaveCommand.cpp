@@ -795,6 +795,9 @@ int RunMapEditSave(int argc, wchar_t** argv) {
                 << (type.kind == MapData::PlacementManifestKind::Unit ? "unit" : "doodad") << ',' << type.rawcode
                 << ',' << type.base << ',' << type.instances;
         }
+        std::cout << "\nplacement_import_warning_count=" << report.warnings.size();
+        for (std::size_t index = 0; index < report.warnings.size(); ++index)
+            std::cout << "\nplacement_import_warning_" << index << '=' << report.warnings[index].code << ',' << report.warnings[index].message;
     }
     std::cout << "\nheightfield_count=" << receipt.heightfieldReports.size();
     for (std::size_t index = 0; index < receipt.heightfieldReports.size(); ++index) {

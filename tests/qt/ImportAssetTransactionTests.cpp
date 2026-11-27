@@ -9,6 +9,7 @@
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "../AuxiliarySaveFixtures.h"
+#include "../support/GeosetLimitMdxFixture.h"
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUndoStack>
@@ -125,6 +126,25 @@ private slots:
             QVERIFY(receipt.open(QIODevice::WriteOnly | QIODevice::NewOnly));
             const auto json = QJsonDocument(proof).toJson(); QCOMPARE(receipt.write(json), static_cast<qint64>(json.size()));
         }
+    }
+    void GeosetOverGameLimitWarnsWithoutBlockingSave() {
+        using namespace AuxiliarySaveFixtures;
+        Fixture fixture; auto& project = *fixture.project;
+        const auto big = std::make_shared<const std::vector<std::byte>>(GeosetLimitFixture::BuildMdx({{16385, 3}, {4, 6}}));
+        const auto edge = std::make_shared<const std::vector<std::byte>>(GeosetLimitFixture::BuildMdx({{16384, 49152}}));
+        std::vector<EditorProject::ImportPayload> payloads{{"war3mapImported\\big.mdx", big}, {"war3mapImported\\edge.mdx", edge}};
+        const auto problem = project.AddImportPayloads(payloads, false, "oversized geoset import");
+        QVERIFY2(problem.isEmpty(), qPrintable(problem));
+        const auto target = fixture.inputs.root / "geoset-limit-candidate.w3x";
+        auto job = project.PrepareMapTestCopy(target); QVERIFY(job);
+        // 准备阶段只对超限的那个模型提醒；保存照常完成，模型字节原样写出。
+        QCOMPARE(job->modelGameLimitWarnings.size(), std::size_t{1});
+        QCOMPARE(job->modelGameLimitWarnings.front().code, std::string("MODEL_GEOSET_OVER_GAME_LIMIT"));
+        QVERIFY(job->modelGameLimitWarnings.front().message.find("war3mapImported\\big.mdx") != std::string::npos);
+        EditorProject::RunMapSave(*job); QVERIFY2(job->succeeded, Problems(job->diagnostics).c_str());
+        auto reopened = Take(MapArchiveSession::Open(target));
+        QCOMPARE(Take(reopened.ReadMember("war3mapImported\\big.mdx")), *big);
+        QCOMPARE(Take(reopened.ReadMember("war3mapImported\\edge.mdx")), *edge);
     }
     void FailedPreparationAndStaleProofKeepStateAndHistory() {
         Fixture fixture; auto& project = *fixture.project;

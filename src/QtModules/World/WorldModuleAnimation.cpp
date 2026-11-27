@@ -18,6 +18,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Render/AnimationParticleCoverage.h"
 #include "War3MapCore/Render/FrameCapture.h"
+#include "War3MapCore/Render/ModelGameLimits.h"
 #include <QLabel>
 #include <QComboBox>
 #include <QPushButton>
@@ -672,9 +673,25 @@ void WorldModule::SetupAnimationControls() {
         }
     });
 }
+const WorldGeosetLimitMarks& WorldModule::GeosetLimitMarks() const {
+    std::shared_ptr<const void> source; const std::vector<Diagnostic>* warnings = nullptr;
+    const auto animated = animation_ ? animation_->Scene() : nullptr;
+    if (animated && scene_ && scene_ == animation_->Picking()) { source = animated; warnings = &animated->geometry.warnings; }
+    else if (scene_) { source = scene_; warnings = &scene_->warnings; }
+    const auto count = std::min(requests_.size(), placementIds_.size());
+    if (!source || source != geosetLimitSource_.lock() || count != geosetLimitRequestCount_) {
+        geosetLimitMarks_ = warnings ? FindWorldGeosetLimitMarks(*warnings, count,
+            [this](std::size_t request) -> std::string_view { return requests_[request].modelPath; }) : WorldGeosetLimitMarks{};
+        geosetLimitSource_ = source; geosetLimitRequestCount_ = count;
+    }
+    return geosetLimitMarks_;
+}
 std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
     std::vector<WorldModelDiagnosticRow> rows;
     const auto document = CurrentDocument(); if (!document) return rows;
+    const auto& limits = GeosetLimitMarks();
+    const auto limitCode = QString::fromUtf8(Render::kGeosetOverGameLimitCode.data(),
+        static_cast<qsizetype>(Render::kGeosetOverGameLimitCode.size()));
     std::map<std::pair<MapData::PlacementFile, std::uint32_t>, QString> models;
     for (std::size_t i = 0; i < std::min(placementIds_.size(), requests_.size()); ++i)
         models.emplace(std::make_pair(placementIds_[i].file, placementIds_[i].index), QString::fromStdString(requests_[i].modelPath));
@@ -703,6 +720,8 @@ std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
         WorldAnimationDiagnostics diagnostics;
         const auto summary = diagnostics.Summarize(instanceDiagnosticScene_, *animation_->Frame());
         for (const auto& group : summary.modelGroups) {
+            // 超出游戏上限的模型下面逐个摆放列出；没对上摆放的（辅助模型等）仍保留这条汇总。
+            if (group.code == limitCode && group.requests.empty() && limits.Detail(group.modelPath.toStdString())) continue;
             WorldModelDiagnosticRow row;
             row.modelPath = group.modelPath; row.reasonCode = group.code; row.reason = group.stage + QStringLiteral(" · ") + group.reason;
             row.records = group.records;
@@ -728,6 +747,19 @@ std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
             row.sourceText = tr("地图存放顺序");
             describeOwners(row); rows.push_back(std::move(row));
         }
+    }
+    // 几何体超出游戏上限：场景按模型只报一次，这里逐个摆放列出，可定位。
+    for (const auto request : limits.requests) {
+        if (request >= placementIds_.size() || request >= requests_.size()) continue;
+        const auto& owner = placementIds_[request];
+        const auto* detail = limits.Detail(requests_[request].modelPath);
+        if (!detail || !MapData::FindPlacement(*document, owner).Succeeded()) continue;
+        WorldModelDiagnosticRow row; row.owners = {owner}; row.records = 1; row.canMerge = true;
+        row.modelPath = QString::fromStdString(requests_[request].modelPath);
+        row.reasonCode = limitCode;
+        row.reason = tr("游戏上限 · %1").arg(QString::fromStdString(*detail));
+        row.sourceText = tr("模型几何体顶点数/索引数");
+        describeOwners(row); rows.push_back(std::move(row));
     }
     // 缺模型的行从未进入scene；单独复用同一个只读捕获，不伪造requestIndex。
     const auto unresolved = CaptureWorldPlacements(project_, *document, std::nullopt, PlacementGround());
@@ -775,6 +807,8 @@ std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
             .arg(static_cast<qulonglong>(placeholderPlan->completedContentVersion));
         else if (row.reasonCode == QStringLiteral("WORLD_MODEL_FIELD_EMPTY"))
             row.placeholderState = tr("显式空模型；不生成故障占位");
+        else if (row.reasonCode == limitCode)
+            row.placeholderState = tr("编辑器照常显示，游戏里超限的几何体不画；不生成故障占位");
         else row.placeholderState = tr("未准备故障占位；不据此判定故障");
     }
     return grouped;
