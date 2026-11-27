@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/ModelGameLimits.h"
+#include "War3MapCore/ProductFeatures.h"
 
 #include <algorithm>
 #include <fstream>
@@ -24,6 +25,7 @@ std::vector<GeosetGameLimitFinding> FindGeosetsOverGameLimit(const MdxModel& mod
 }
 
 std::optional<Diagnostic> GeosetGameLimitWarning(const MdxModel& model, std::string_view modelPath) {
+    if (!WarVKFeaturesShown()) return std::nullopt; // 正式版不提醒；所有路径都经过这里
     const auto findings = FindGeosetsOverGameLimit(model);
     if (findings.empty()) return std::nullopt;
     std::string message = "模型 " + std::string(modelPath) + "：";
@@ -41,6 +43,7 @@ std::optional<Diagnostic> GeosetGameLimitWarning(const MdxModel& model, std::str
 }
 
 std::optional<Diagnostic> GeosetGameLimitWarning(std::span<const std::byte> mdx, std::string_view modelPath) {
+    if (!WarVKFeaturesShown()) return std::nullopt; // 不为不显示的提醒解析模型
     const auto model = ParseMdx(mdx);
     if (!model.Succeeded() || !model.value) return std::nullopt;
     return GeosetGameLimitWarning(*model.value, modelPath);
@@ -48,6 +51,7 @@ std::optional<Diagnostic> GeosetGameLimitWarning(std::span<const std::byte> mdx,
 
 std::optional<Diagnostic> GeosetGameLimitWarningForFile(const std::filesystem::path& file,
     std::string_view modelPath, std::size_t maxBytes) {
+    if (!WarVKFeaturesShown()) return std::nullopt;
     std::error_code error;
     const auto size = std::filesystem::file_size(file, error);
     if (error || size == 0 || size > maxBytes) return std::nullopt;

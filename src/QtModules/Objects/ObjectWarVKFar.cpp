@@ -3,6 +3,7 @@
 #include "ObjectModule.h"
 #include "EditorProject.h"
 #include "ObjectModels.h"
+#include "War3MapCore/ProductFeatures.h"
 
 #include <QCheckBox>
 #include <QSignalBlocker>
@@ -52,7 +53,8 @@ QString ObjectModule::CurrentObjectRawcode() const {
 
 void ObjectModule::UpdateFarDoodadToggle() {
     if (!farDoodad_) return;
-    const bool doodads = currentObjectType_ == static_cast<int>(ObjectData::ObjectType::Doodad) && !project_->projectRoot_.empty();
+    const bool doodads = WarVKFeaturesShown()
+        && currentObjectType_ == static_cast<int>(ObjectData::ObjectType::Doodad) && !project_->projectRoot_.empty();
     farDoodad_->setVisible(doodads);
     if (!doodads) return;
     const auto code = CurrentObjectRawcode();

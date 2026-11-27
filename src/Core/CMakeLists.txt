@@ -3,6 +3,12 @@ configure_file(
     CompatibilityProfiles.generated.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/generated/CompatibilityProfiles.generated.h"
     @ONLY)
+if(AUDASTRA_WARVK_FEATURES)
+    set(AUDASTRA_WARVK_FEATURES_VALUE true)
+else()
+    set(AUDASTRA_WARVK_FEATURES_VALUE false)
+endif()
+configure_file(ProductFeatures.cpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/ProductFeatures.cpp" @ONLY)
 
 add_library(War3MapCore STATIC
     ApplicationPaths.cpp
@@ -129,6 +135,8 @@ add_library(War3MapCore STATIC
     Mpq/MpqExplode.cpp
     Mpq/MpqInflate.cpp
     Mpq/MpqWriter.cpp)
+
+target_sources(War3MapCore PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/ProductFeatures.cpp")
 
 target_include_directories(War3MapCore
     PUBLIC

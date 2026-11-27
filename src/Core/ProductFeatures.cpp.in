@@ -1,0 +1,8 @@
+// 由 CMake 按 AUDASTRA_WARVK_FEATURES 生成；切换开关只重编这一个文件。
+#include "War3MapCore/ProductFeatures.h"
+
+namespace War3Map {
+
+bool WarVKFeaturesShown() noexcept { return @AUDASTRA_WARVK_FEATURES_VALUE@; }
+
+} // namespace War3Map

@@ -2,6 +2,7 @@
 #include "MapPlayerEnumDelegate.h"
 #include "MapTechPage.h"
 #include "MapWarVKPage.h"
+#include "War3MapCore/ProductFeatures.h"
 #include "../NavigationBookmarkDetail.h"
 
 #include "EditorProject.h"
@@ -699,11 +700,14 @@ void MapSettingsModule::BuildForms() {
     }
 
     // WarVK 设置是编辑器自有的地图成员，不进上方 W3I 草稿：每次改动立即提交为一条地图设置撤销。
-    auto* warvk = addForm(tr("WarVK"), "lucide/mountain");
-    warvkPage_ = new MapWarVKPage(project_, this,
-        [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },
-        [this](const QString& problem) { SetMessage(problem, true); }, rawFields_ && rawFields_->isChecked(), warvk->parentWidget());
-    warvk->addRow(warvkPage_);
+    // 正式版不显示这一分组；地图里已有的设置照常保存。
+    if (WarVKFeaturesShown()) {
+        auto* warvk = addForm(tr("WarVK"), "lucide/mountain");
+        warvkPage_ = new MapWarVKPage(project_, this,
+            [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },
+            [this](const QString& problem) { SetMessage(problem, true); }, rawFields_ && rawFields_->isChecked(), warvk->parentWidget());
+        warvk->addRow(warvkPage_);
+    }
 
     UpdateLabels();
     sections_->setCurrentRow(std::clamp(pendingSection_, 0, pages_->count() - 1));

@@ -45,6 +45,7 @@
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Render/ModelGameLimits.h"
+#include "War3MapCore/ProductFeatures.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/VerifiedFile.h"
@@ -2366,7 +2367,8 @@ private:
                     });
                 });
         }
-        for (auto definition : LiveWarVKTools()) {
+        // 正式版不注册 WarVK 工具；地图里已有的设置照常保存。
+        if (WarVKFeaturesShown()) for (auto definition : LiveWarVKTools()) {
             auto properties = IdentityProperties();
             for (auto field = definition.properties.begin(); field != definition.properties.end(); ++field)
                 properties.insert(field.key(), field.value());
