@@ -735,11 +735,15 @@ void TestSurfaceMaterials() {
     Require(capped.Succeeded() && capped.value->textures[SurfaceOf(*capped.value, 1).normalTexture].width == 512,
         "表面材质档低于普通档时取两者较大值");
 
-    // 移动实例原地更新；改材质需要重建。
+    // 移动实例原地更新；改成场景里没有的材质需要重建，改成已有材质则共用那个变体。
     auto moved = requests; moved[1].position[0] = 150;
     Require(ReplaceModelInstances(scene, requests, moved), "移动带材质实例应原地更新");
-    auto rematerialized = moved; rematerialized[1].surfaceMaterial = other;
-    Require(!ReplaceModelInstances(scene, moved, rematerialized), "改材质不能复用旧变体");
+    auto fresh = std::make_shared<ModelSurfaceMaterial>(*material); fresh->roughness = 0.25f;
+    auto rematerialized = moved; rematerialized[1].surfaceMaterial = fresh;
+    Require(!ReplaceModelInstances(scene, moved, rematerialized), "改成场景里没有的材质不能复用旧变体");
+    auto shared = moved; shared[1].surfaceMaterial = other;
+    Require(ReplaceModelInstances(scene, moved, shared) && &SurfaceOf(scene, 1) == &SurfaceOf(scene, 3),
+        "改成场景里已有的材质共用那个变体");
 
     // 烘焙网格在前插入、替换、清空时，材质与模型一一对应。
     const std::vector<ModelInstanceRequest> single{surfaced};
