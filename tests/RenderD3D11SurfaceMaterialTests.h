@@ -58,8 +58,13 @@ void TestSurfaceMaterials(const War3RenderPluginApiV2* api, const War3RenderCrea
         tail.base.base.structSize = sizeof(tail);
         return api->submitSkinnedModelScene(renderer.handle, surface ? &tail.base.base : &scene);
     };
+    int step = 0;
     const auto render = [&](const War3RenderModelSurfaceV2* surface) {
-        Require(submit(surface) == 0, "surface scene rejected");
+        ++step;
+        if (const auto code = submit(surface); code != 0) {
+            std::cerr << "surface step " << step << " rejected, code " << code << '\n';
+            Require(false, "surface scene rejected");
+        }
         return capture();
     };
     const auto expect = [&](const std::vector<std::uint8_t>& pixels, int level, const char* what) {
