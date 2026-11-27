@@ -284,12 +284,20 @@ private:
         return result;
     }
 
+    // 带表面材质的模型（非半透明预览）按表面材质档读取自己的贴图，其余按普通档。
+    std::uint32_t TextureDimension(const ModelInstanceRequest& request) const {
+        return request.surfaceMaterial && !request.previewGhost ? ModelTextureDimensionCap(limits_) : limits_.maxTextureDimension;
+    }
     std::uint32_t Texture(const MdxTexture& texture, const ModelInstanceRequest& request) {
+        return TextureAt(texture, request, TextureDimension(request));
+    }
+    std::uint32_t TextureAt(const MdxTexture& texture, const ModelInstanceRequest& request, std::uint32_t dimension) {
         const auto requestedPath = ModelTexturePath(texture, request);
         if (requestedPath.empty()) { ++scene_.untexturedLayers; return WAR3_RENDER_MODEL_NO_TEXTURE; }
-        // 同名普通 TEXS 与物编替换入口可能命中不同后缀，不能共用请求缓存。
+        // 同名普通 TEXS 与物编替换入口可能命中不同后缀，不能共用请求缓存；两种读取尺寸也各自缓存。
         const bool objectReplacement = texture.replaceableId >= 3;
-        const auto requestKey = std::string(objectReplacement ? "object:" : "exact:") + PathKey(requestedPath);
+        const auto dimensionKey = dimension == limits_.maxTextureDimension ? std::string{} : "|max" + std::to_string(dimension);
+        const auto requestKey = std::string(objectReplacement ? "object:" : "exact:") + PathKey(requestedPath) + dimensionKey;
         if (const auto found = textureRequests_.find(requestKey); found != textureRequests_.end()) {
             if (found->second.index == WAR3_RENDER_MODEL_NO_TEXTURE) {
                 ++scene_.untexturedLayers;
@@ -309,7 +317,7 @@ private:
             bytes.diagnostics = std::move(resolved.diagnostics);
         } else bytes = read_(path);
         ModelTextureRgba resourceKey; resourceKey.path = path;
-        const auto key = ModelTextureAssetKey(resourceKey);
+        const auto key = ModelTextureAssetKey(resourceKey) + dimensionKey;
         // 解析后按实际资源去重：请求规则不同，但成功读到同一资源时只占一份上传预算。
         if (bytes.Succeeded() && bytes.value->size() <= limits_.maxTextureBytes) {
             if (const auto found = textures_.find(key); found != textures_.end()) {
@@ -326,16 +334,16 @@ private:
             const auto textureCeiling = limits_.maxTotalTextureBytes
                 - std::min(limits_.maxTotalTextureBytes, limits_.textureMetadataReserveBytes);
             const auto remaining = textureCeiling - std::min(textureCeiling, textureBytes_);
-            const auto cached = decoded_ ? decoded_(path, *bytes.value, limits_.maxTextureDimension) : nullptr;
+            const auto cached = decoded_ ? decoded_(path, *bytes.value, dimension) : nullptr;
             const bool usable = cached && cached->ownedIdentity.empty() && PathKey(cached->path) == PathKey(path)
                 && cached->mipPolicyVersion == ModelTextureMipPolicyVersion
-                && ModelTextureValid(*cached, limits_.maxTextureDimension) && ModelTextureRgbaBytes(*cached) <= remaining;
+                && ModelTextureValid(*cached, dimension) && ModelTextureRgbaBytes(*cached) <= remaining;
             auto image = usable ? Result<ModelTextureRgba>::Success(*cached)
-                : DecodeModelTexture(path, *bytes.value, limits_.maxTextureDimension, remaining);
+                : DecodeModelTexture(path, *bytes.value, dimension, remaining);
             if (image.Succeeded()) {
                 auto decoded = std::move(*image.value);
                 const auto rgbaBytes = ModelTextureRgbaBytes(decoded);
-                const bool rgbaFits = ModelTextureValid(decoded, limits_.maxTextureDimension)
+                const bool rgbaFits = ModelTextureValid(decoded, dimension)
                     && rgbaBytes <= textureCeiling && textureBytes_ <= textureCeiling - rgbaBytes;
                 if (rgbaFits && MaterialStorageFits(textureBytes_ + rgbaBytes, textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
                     textureBytes_ += rgbaBytes;
@@ -379,7 +387,7 @@ private:
         if (path.empty()) return WAR3_RENDER_MODEL_NO_TEXTURE;
         const auto untextured = scene_.untexturedLayers;
         MdxTexture texture; texture.path = path;
-        const auto index = Texture(texture, ModelInstanceRequest{});
+        const auto index = TextureAt(texture, ModelInstanceRequest{}, ModelTextureDimensionCap(limits_));
         scene_.untexturedLayers = untextured;
         return index;
     }
@@ -1198,7 +1206,7 @@ bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModel
     for (const auto& bindings : scene.modelTextureBindings)
         if (bindings) samplerStorage += std::uint64_t(bindings->capacity()) * sizeof(ModelTextureBinding);
     for (const auto& texture : scene.textures) {
-        if (!ModelTextureValid(texture, limits.maxTextureDimension)
+        if (!ModelTextureValid(texture, ModelTextureDimensionCap(limits))
             || !ChargeModelTextureRgba(texture, samplerStorage, limits.maxTotalTextureBytes)) return false;
     }
     if (samplerStorage > limits.maxTotalTextureBytes) return false;

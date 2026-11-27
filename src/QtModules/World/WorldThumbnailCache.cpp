@@ -111,7 +111,7 @@ struct Worker {
             limits.maxInstances = 1; limits.maxAssetBytes = 16 * 1024 * 1024;
             limits.maxFrameBytes = 8 * 1024 * 1024; limits.geometry.maxModels = limits.geometry.maxInstances = 1;
             limits.geometry.maxVertices = 262144; limits.geometry.maxIndices = 786432;
-            limits.geometry.maxTextures = 64; limits.geometry.maxTextureDimension = 256;
+            limits.geometry.maxTextures = 64; limits.geometry.maxTextureDimension = limits.geometry.surfaceTextureDimension = 256;
             limits.geometry.maxTotalTextureBytes = 16 * 1024 * 1024;
             auto service = Render::ModelAnimationService::Create({resident->viewRevision, resident->viewRevision, sourceKey.toStdString()},
                 std::span(&spec, 1), [&](std::string_view path, std::uint64_t maximum) {

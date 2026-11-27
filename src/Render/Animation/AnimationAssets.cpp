@@ -131,7 +131,7 @@ Status PromoteMaterialTextureBindings(AnimatedModelScene& scene, std::span<const
     bool fits=take(std::uint64_t(g.layerSamplerFlags.capacity())*sizeof(std::uint32_t));
     if (!g.layerSamplerFlags.empty()) fits &= take(sizeof(War3RenderStaticSamplerModelSceneV2)-sizeof(War3RenderModelSceneV2));
     for (const auto& texture:g.textures)
-        fits &= ModelTextureValid(texture,limits.maxTextureDimension) && take(ModelTextureRgbaBytes(texture));
+        fits &= ModelTextureValid(texture,ModelTextureDimensionCap(limits)) && take(ModelTextureRgbaBytes(texture));
     for (const auto& binding:g.modelTextureBindings) if (binding)
         fits &= take(std::uint64_t(binding->capacity())*sizeof(ModelTextureBinding));
     if (!fits) return fail("ANIMATION_DELTA_TEXTURE_BUDGET","静态材质提升的常驻来源元数据超过原预算。");
@@ -323,7 +323,7 @@ Status CheckAnimationStaticAppend(const AnimatedModelScene& current,
         return AnimationFailure("ANIMATION_DELTA_TEXTURE_BUDGET", "sampler 常驻及合并暂存超过原材质预算。");
     const auto addTextures = [&](const auto& values) {
         for (const auto& texture : values) {
-            if (!ModelTextureValid(texture,limits.maxTextureDimension)) return false;
+            if (!ModelTextureValid(texture,ModelTextureDimensionCap(limits))) return false;
             if (!textures.insert(ModelTextureAssetKey(texture)).second) continue;
             if (!fits(bytes, ModelTextureRgbaBytes(texture), limits.maxTotalTextureBytes) ||
                 textures.size() > limits.maxTextures) return false;

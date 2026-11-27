@@ -674,9 +674,9 @@ const War3RenderModelSurfaceV2& SurfaceOf(const WorldModelScene& scene, std::uin
 void TestSurfaceMaterials() {
     Files files;
     files.files[Key("Units\\Crate.mdx")] = MdxTest::BuildTestMdx();
-    files.files[Key("Textures\\Crate.blp")] = Blp(4, 4, 90);
+    files.files[Key("Textures\\Crate.blp")] = Blp(1024, 4, 90);
     files.files[Key(TeamColorTexture(0))] = Blp(2, 2, 255);
-    files.files[Key("Sonne\\n.blp")] = Blp(2, 2, 128);
+    files.files[Key("Sonne\\n.blp")] = Blp(1024, 4, 128);
     files.files[Key("Sonne\\orm.blp")] = Blp(2, 2, 64);
     files.files[Key("Sonne\\col.blp")] = Blp(2, 2, 200);
     auto material = std::make_shared<ModelSurfaceMaterial>();
@@ -717,6 +717,23 @@ void TestSurfaceMaterials() {
     Require(SurfaceOf(scene, 5).normalTexture == none && HasWarning(scene, "WORLD_MODEL_TEXTURE_UNAVAILABLE"),
         "读不到的材质图照旧着色并给出警告");
     Require(scene.untexturedLayers == 0, "材质图不计入按白色显示的模型层");
+    // 表面材质档：材质图与带材质模型自己的贴图保留 1024；同一贴图在无材质模型上仍缩到 512，两份身份不同。
+    const auto crateOf = [&](std::uint32_t request) -> const ModelTextureRgba& {
+        for (std::size_t i = 0; i < scene.instances.size(); ++i) {
+            if (scene.instanceRequests[i] != request) continue;
+            const auto& model = scene.models[scene.instances[i].model];
+            return scene.textures[scene.layers[scene.meshes[model.firstMesh].firstLayer + 1].textureIndex];
+        }
+        throw std::runtime_error("请求没有实例");
+    };
+    Require(scene.textures[s.normalTexture].width == 1024, "材质法线图按表面材质档读取");
+    Require(crateOf(0).width == 512 && crateOf(1).width == 1024 && crateOf(4).width == 512,
+        "带材质模型的贴图保留 1024，无材质与预览仍为 512");
+    Require(ModelTextureAssetKey(crateOf(0)) != ModelTextureAssetKey(crateOf(1)), "两种尺寸的同一贴图身份不同");
+    WorldModelLimits small; small.surfaceTextureDimension = 256;
+    auto capped = BuildWorldModelScene(requests, files.Reader(), small);
+    Require(capped.Succeeded() && capped.value->textures[SurfaceOf(*capped.value, 1).normalTexture].width == 512,
+        "表面材质档低于普通档时取两者较大值");
 
     // 移动实例原地更新；改材质需要重建。
     auto moved = requests; moved[1].position[0] = 150;

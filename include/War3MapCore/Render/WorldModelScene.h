@@ -94,6 +94,9 @@ struct WorldModelLimits {
     std::size_t maxModelBytes = 16 * 1024 * 1024;
     std::size_t maxTextureBytes = 16 * 1024 * 1024; // 单个 BLP 文件
     std::uint32_t maxTextureDimension = 512;         // 更大的贴图按 2 倍逐级缩小
+    // 地图表面材质的图，以及带表面材质的模型自己的贴图：按此尺寸读取（渲染接口单张上限 2048），
+    // 其余模型仍按 maxTextureDimension。同一文件两种尺寸各占一份，身份键含实际尺寸，不会互相顶替。
+    std::uint32_t surfaceTextureDimension = 2048;
     // 全部模型贴图解码后的总量上限。大型地图有上千张自定义贴图，64 位程序不需要卡在几百 MiB。
     std::uint64_t maxTotalTextureBytes = 2048ull * 1024 * 1024;
     // 从上面的总量里为 sampler / 绑定等小型来源元数据预留的字节数。非 0 时贴图只用到“总量 − 预留”，
@@ -129,6 +132,10 @@ struct ModelTextureRgba {
 [[nodiscard]] std::uint64_t ModelTextureStorageBytes(const ModelTextureRgba& texture) noexcept;
 [[nodiscard]] std::uint64_t ModelDiagnosticStorageBytes(const std::vector<Diagnostic>& diagnostics) noexcept;
 [[nodiscard]] bool ModelTextureValid(const ModelTextureRgba& texture, std::uint32_t maxDimension = 4096) noexcept;
+// 场景里贴图可能的最大边长（普通与表面材质两档取大者），用于核对已建好的场景。
+[[nodiscard]] inline std::uint32_t ModelTextureDimensionCap(const WorldModelLimits& limits) noexcept {
+    return limits.maxTextureDimension > limits.surfaceTextureDimension ? limits.maxTextureDimension : limits.surfaceTextureDimension;
+}
 [[nodiscard]] bool ModelTextureHasLegacyOwnedState(const ModelTextureRgba& texture) noexcept;
 [[nodiscard]] bool ChargeModelTextureRgba(const ModelTextureRgba& texture, std::uint64_t& bytes, std::uint64_t limit) noexcept;
 
@@ -164,6 +171,7 @@ private:
     std::optional<std::array<float, 2>> sourcePlanarFootprint, const WorldModelLimits& limits = {});
 // 唯一资产匹配规则；普通资源规范路径保持旧值，owned身份使用非法资源路径的独立typed前缀。
 [[nodiscard]] std::string ModelAssetKey(const ModelInstanceRequest& request);
+// 资源贴图按路径去重；边长超过 512 的（表面材质档）另带实际尺寸，与同一文件的普通档分开。
 [[nodiscard]] std::string ModelTextureAssetKey(const ModelTextureRgba& texture);
 
 // 显式 CPU 刚性姿态请求：同一场景中所有摆放模型共享这一时刻；不推测默认动作或时钟。

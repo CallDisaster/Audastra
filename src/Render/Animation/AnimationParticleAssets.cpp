@@ -312,8 +312,9 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                     overBudget(); break;
                 }
                 ModelTextureRgba decoded;
+                // 只复用普通档的模型贴图；表面材质档的大图不进粒子配额。
                 const auto existing = std::find_if(geometry.textures.begin(), geometry.textures.end(),
-                    [&](const auto& t) { return AnimationPathKey(t.path) == key; });
+                    [&](const auto& t) { return AnimationPathKey(t.path) == key && ModelTextureValid(t,limits.geometry.maxTextureDimension); });
                 const auto combinedBytes=modelTextureBytes+textureBytes;
                 const auto remaining=std::min(64ull*1024*1024-textureBytes, combinedBytes<limits.geometry.maxTotalTextureBytes
                     ? limits.geometry.maxTotalTextureBytes-combinedBytes : 0);

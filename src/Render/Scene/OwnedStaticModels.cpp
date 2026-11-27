@@ -41,7 +41,9 @@ std::string ModelAssetKey(const ModelInstanceRequest& request) {
         : ResourceKey(request.modelPath);
 }
 std::string ModelTextureAssetKey(const ModelTextureRgba& texture) {
-    return texture.ownedIdentity.empty() ? ResourceKey(texture.path) : std::string("\x01owned-texture-v1:") + texture.ownedIdentity;
+    if (!texture.ownedIdentity.empty()) return std::string("\x01owned-texture-v1:") + texture.ownedIdentity;
+    if (texture.width <= 512 && texture.height <= 512) return ResourceKey(texture.path);
+    return ResourceKey(texture.path) + "|" + std::to_string(texture.width) + "x" + std::to_string(texture.height);
 }
 
 Result<std::shared_ptr<const OwnedStaticModelAsset>> FreezeOwnedStaticModelAsset(
