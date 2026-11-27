@@ -2,6 +2,7 @@
 #include "War3MapCore/RenderPluginMaterialState.h"
 #include "AnimationParticleMaterial.h"
 #include "AnimationMaterialFrame.h"
+#include "AnimationSurfaceMaterial.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -74,6 +75,7 @@ bool SameResidentAssets(const AnimatedModelScene& a, const AnimatedModelScene& b
         && a.geometry.models.SharesStorageWith(b.geometry.models)
         && a.geometry.textures.SharesStorageWith(b.geometry.textures)
         && a.geometry.vertexGroups.SharesStorageWith(b.geometry.vertexGroups)
+        && a.geometry.modelSurfaces.SharesStorageWith(b.geometry.modelSurfaces)
         && a.particleTextures.SharesStorageWith(b.particleTextures);
 }
 template<class T>
@@ -126,6 +128,7 @@ bool SameAssetPrefix(const AnimatedModelScene& before, const AnimatedModelScene&
         && SamePrefix(before.geometry.models, after.geometry.models)
         && SamePrefix(before.geometry.vertexGroups, after.geometry.vertexGroups)
         && SamePrefix(before.geometry.textures, after.geometry.textures)
+        && SamePrefix(before.geometry.modelSurfaces, after.geometry.modelSurfaces)
         && SamePrefix(before.particleTextures, after.particleTextures);
 }
 template<class T> const auto* SuffixData(const T& values, std::size_t prefix) {
@@ -218,6 +221,8 @@ Result<std::uint64_t> AnimationRenderer::QueueRoster(std::shared_ptr<const Anima
     request.visibility = &mask;
     War3RenderEditorAssetRosterV2 extended{};
     War3RenderAssetAppendV2 append{};
+    War3RenderSurfaceAssetAppendV2 surfaceAppend{};
+    auto surfaceWarning = Status::Ok();
     ModelSceneDescriptor modelTextures, particleTextures;
     if (assetsChanged) {
         if (base.assetIdentity == UINT64_MAX)
@@ -246,6 +251,17 @@ Result<std::uint64_t> AnimationRenderer::QueueRoster(std::shared_ptr<const Anima
         append.particleTextures = append.particleTextureCount ? particleTextures.chains.data() : nullptr;
         extended.base = request; extended.base.structSize = sizeof(extended);
         extended.base.flags = WAR3_RENDER_ROSTER_APPEND_ASSETS; extended.assets = &append;
+        const auto& surfaces = scene->geometry.modelSurfaces;
+        if (!surfaces.empty() && surfaces.size() != scene->models.size())
+            return Output::Failure("Render.Animation", "ANIMATION_SURFACE_MAPPING", "表面材质数量与模型数量不一致，未提交事务。");
+        const bool surfaceSupported = AnimationSurfaceMaterialSupported(api_, handle_);
+        surfaceWarning = AnimationSurfaceMaterialWarning(*scene, surfaceSupported);
+        if (surfaceSupported && append.modelCount && AnimationSceneHasSurfaces(*scene)) {
+            surfaceAppend.base = append; surfaceAppend.base.structSize = sizeof(surfaceAppend);
+            surfaceAppend.surfaceFormat = WAR3_RENDER_MODEL_SURFACE_V1; surfaceAppend.surfaceCount = append.modelCount;
+            surfaceAppend.surfaces = SuffixData(surfaces, scene_->models.size());
+            extended.assets = &surfaceAppend.base;
+        }
     }
     std::uint64_t ticket = 0;
     if (api_->submitEditorInstanceRoster(handle_, assetsChanged ? &extended.base : &request, &ticket) != 0 || !ticket)
@@ -261,6 +277,7 @@ Result<std::uint64_t> AnimationRenderer::QueueRoster(std::shared_ptr<const Anima
     pendingScene_ = std::move(scene); pendingFrame_ = std::move(frame);
     auto result=Output::Success(ticket);
     result.diagnostics=std::move(particleWarning.diagnostics);
+    result.diagnostics.insert(result.diagnostics.end(), surfaceWarning.diagnostics.begin(), surfaceWarning.diagnostics.end());
     return result;
 } catch (const std::exception&) { return Result<std::uint64_t>::Failure("Render.Animation", "ANIMATION_ROSTER_FAILED", "实例事务准备失败，未替换Target。"); }
 Result<War3RenderInstanceRosterResultV2> AnimationRenderer::CancelRoster(std::uint64_t ticket) {
@@ -372,6 +389,24 @@ Status AnimationRenderer::Submit(std::shared_ptr<const AnimatedModelScene> scene
         colored.colorCount=static_cast<std::uint32_t>(scene->meshColors.size());
         colored.colors=scene->meshColors.data(); submission=&colored.base;
     }
+    const auto& surfaces=scene->geometry.modelSurfaces;
+    if (!surfaces.empty() && surfaces.size()!=scene->models.size())
+        return Failure("ANIMATION_SURFACE_MAPPING","表面材质数量与模型数量不一致，旧目标保留。");
+    const bool surfaceSupported=AnimationSceneHasSurfaces(*scene) && AnimationSurfaceMaterialSupported(api_,handle_);
+    auto surfaceWarning=AnimationSurfaceMaterialWarning(*scene,surfaceSupported);
+    War3RenderSurfaceSkinnedSceneV2 surfaced{};
+    std::vector<War3RenderMeshColorV2> whiteColors;
+    if (surfaceSupported) {
+        // 材质尾部接在静态 RGB 尾部之后；没有 GEOA 颜色时按白色填满，等同旧路径。
+        const War3RenderMeshColorV2* colors=scene->meshColors.data();
+        if (scene->meshColors.empty()) { whiteColors.assign(scene->meshes.size(),War3RenderMeshColorV2{{1.0f,1.0f,1.0f}}); colors=whiteColors.data(); }
+        surfaced.base.base=descriptor.scene; surfaced.base.base.structSize=sizeof(surfaced);
+        surfaced.base.colorFormat=WAR3_RENDER_STATIC_MESH_RGB_V1;
+        surfaced.base.colorCount=Count32(scene->meshes.size()); surfaced.base.colors=colors;
+        surfaced.surfaceFormat=WAR3_RENDER_MODEL_SURFACE_V1;
+        surfaced.surfaceCount=Count32(surfaces.size()); surfaced.surfaces=surfaces.data();
+        submission=&surfaced.base.base;
+    }
     if (scene->dynamicColors) {
         War3RenderSkinDynamicColorCapabilitiesV2 capabilities{}; capabilities.base.base.structSize=sizeof(capabilities);
         if (frame->colors.size()!=frame->alphas.size()) return Failure("ANIMATION_COLOR_MAPPING","动态RGB和透明度数量不符。");
@@ -415,6 +450,7 @@ Status AnimationRenderer::Submit(std::shared_ptr<const AnimatedModelScene> scene
     }
     particleMode_ = scene->particlesEnabled && scene->particleInstanceCount;
     scene_=std::move(scene); frame_=std::move(frame);
+    particleWarning.diagnostics.insert(particleWarning.diagnostics.end(),surfaceWarning.diagnostics.begin(),surfaceWarning.diagnostics.end());
     return particleWarning;
 } catch (const std::exception&) { return Failure("ANIMATION_SUBMIT_FAILED","动画提交失败，未宣称上传成功。"); }
 std::optional<AnimationPreparedMode> AnimationRenderer::PreparedMode() const {

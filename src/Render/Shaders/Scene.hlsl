@@ -218,6 +218,19 @@ cbuffer ModelLayer : register(b2) {
     uint layerFilter; // MDX 过滤模式
     uint layerFlags;  // 1 = 无光照、2 = 不受雾影响
     uint layerTextured;
+    // 表面材质（地图 WarVK\materials.ini）：surfaceEnabled=0 时走旧逐顶点光照。
+    uint surfaceEnabled, surfaceHasNormal, surfaceHasOrm;
+    float surfaceNormalScale;
+    float surfaceNormalYSign; // 沿贴图 +v（向下）方向绿色的符号
+    float surfaceRoughness, surfaceMetallic, surfaceOcclusion;
+    float surfaceSpecular;
+    float3 cameraEye;         // 世界坐标
+    uint surfaceHasDetailNormal, surfaceHasDetailOrm;
+    float surfaceDetailRepeat;   // 每世界单位重复次数（1 / detailScale）
+    float surfaceDetailStrength;
+    float2 surfaceDetailMean;    // 细节 ORM 图 R、G 的均值
+    uint surfaceHasDetailAlbedo;
+    float surfaceDetailAlbedoMean; // 细节颜色图亮度均值
 };
 struct ModelInput {
     float3 position : POSITION; float3 normal : NORMAL; float2 uv : TEXCOORD0;
@@ -227,6 +240,8 @@ struct ModelOutput {
     float4 position : SV_POSITION; float3 color : COLOR; float2 uv : TEXCOORD0;
     float depth : TEXCOORD1; float opacity : TEXCOORD2; float resolvedLayerAlpha : TEXCOORD3;
     nointerpolation uint hasDynamicLayerAlpha : TEXCOORD4;
+    // 表面材质逐像素光照用：世界位置、世界法线、未乘光照的顶点颜色。
+    float3 world : TEXCOORD5; float3 normal : TEXCOORD6; float3 tint : TEXCOORD7;
 };
 ModelOutput VSModel(ModelInput input) {
     ModelOutput output;
@@ -241,6 +256,9 @@ ModelOutput VSModel(ModelInput input) {
     output.color = input.tint * light;
     output.uv = input.uv;
     output.depth = output.position.w;
+    output.world = world;
+    output.normal = normal;
+    output.tint = input.tint;
     output.opacity = 1.0;
     output.resolvedLayerAlpha = layerAlpha;
     output.hasDynamicLayerAlpha = 0;
@@ -248,7 +266,116 @@ ModelOutput VSModel(ModelInput input) {
 }
 Texture2D<float4> modelTexture : register(t0);
 SamplerState modelSampler : register(s1);
+Texture2D<float4> surfaceNormalTexture : register(t12);       // 切线空间法线（xy，z 由 xy 重建）
+Texture2D<float4> surfaceOrmTexture : register(t13);          // R 遮蔽、G 粗糙度、B 金属度（glTF）
+Texture2D<float4> surfaceDetailNormalTexture : register(t14); // 世界平铺细节法线（OpenGL 约定）
+Texture2D<float4> surfaceDetailOrmTexture : register(t15);    // 世界平铺细节 ORM（只取相对均值的变化）
+Texture2D<float4> surfaceDetailAlbedoTexture : register(t16); // 世界平铺细节颜色（只取亮度相对均值的变化）
+SamplerState surfaceDetailSampler : register(s3);             // 重复寻址、各向异性 8
+// 地图表面材质（WarVK\materials.ini）。公式与 WarVK 的 war3_surface_material.frag.in 相同（同一作者，
+// 按 LICENSE-AUDASTRA 授权）：屏幕导数构造切线框架；漫反射是游戏的光照和逐像素求值并照样夹到 1；
+// 直射高光 GGX + 高度相关 Smith + Schlick；环境项是 split-sum 解析近似。平法线、粗糙度 1、无金属时
+// 漫反射就是游戏的 Gouraud 光照改为逐像素。细节层按世界坐标三平面投影，whiteout 叠在本类型法线之后；
+// 细节颜色只取亮度（Rec.709）相对均值缩放基础色。环境光随最终法线比几何法线更朝天（或朝地）的程度增减。
+float3 SurfaceUnpackNormal(float4 texel) {
+    float2 xy = texel.xy * 2.0 - 1.0;
+    return float3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+}
+float2 SurfaceEnvironment(float roughness, float ndv) {
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    float4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
+    return float2(-1.04, 1.04) * a004 + r.zw;
+}
+float3 SurfaceShade(ModelOutput input, float3 albedo, float3 dpx, float3 dpy, float2 duvx, float2 duvy) {
+    const float3 rec709 = float3(0.2126, 0.7152, 0.0722);
+    float3 toEye = cameraEye - input.world;
+    float3 v = dot(toEye, toEye) > 1e-6 ? normalize(toEye) : float3(0, 0, 1);
+    float3 n = input.normal;
+    n = dot(n, n) > 1e-12 ? normalize(n) : v;
+    // 看到的那一面：双面卡片显示背面时法线翻过来。
+    float3 face = cross(dpx, dpy);
+    face = dot(face, face) > 1e-24 ? normalize(face) : n;
+    if (dot(face, v) < 0.0) face = -face;
+    if (dot(n, face) < 0.0) n = -n;
+    float3 geometric = n;
+    if (surfaceHasNormal != 0) {
+        float3 dpyPerp = cross(dpy, n), dpxPerp = cross(n, dpx);
+        float3 t = dpyPerp * duvx.x + dpxPerp * duvy.x; // 沿 +u
+        float3 b = dpyPerp * duvx.y + dpxPerp * duvy.y; // 沿 +v（贴图向下）
+        float det = dot(dpx, dpyPerp);
+        float scale = rsqrt(max(max(dot(t, t), dot(b, b)), 1e-30)) * (det < 0.0 ? -1.0 : 1.0);
+        float3 m = SurfaceUnpackNormal(surfaceNormalTexture.SampleGrad(modelSampler, input.uv, duvx, duvy));
+        m.xy *= surfaceNormalScale;
+        m.y *= surfaceNormalYSign;
+        n = normalize(t * scale * m.x + b * scale * m.y + n * m.z);
+    }
+    float occlusion = 1.0, roughness = surfaceRoughness, metal = 0.0;
+    if (surfaceHasOrm != 0) {
+        float3 orm = surfaceOrmTexture.SampleGrad(modelSampler, input.uv, duvx, duvy).rgb;
+        occlusion = lerp(1.0, orm.r, surfaceOcclusion);
+        roughness *= orm.g;
+        metal = orm.b * surfaceMetallic;
+    }
+    if (surfaceHasDetailNormal != 0 || surfaceHasDetailOrm != 0 || surfaceHasDetailAlbedo != 0) {
+        float3 w = pow(abs(geometric), 4.0);
+        w /= max(w.x + w.y + w.z, 1e-5);
+        float3 p = input.world * surfaceDetailRepeat;
+        float3 dpxd = dpx * surfaceDetailRepeat, dpyd = dpy * surfaceDetailRepeat;
+        float2 uvX = p.zy, uvY = p.xz, uvZ = p.xy;
+        float strength = surfaceDetailStrength;
+        if (surfaceHasDetailNormal != 0) {
+            float3 tX = SurfaceUnpackNormal(surfaceDetailNormalTexture.SampleGrad(surfaceDetailSampler, uvX, dpxd.zy, dpyd.zy));
+            float3 tY = SurfaceUnpackNormal(surfaceDetailNormalTexture.SampleGrad(surfaceDetailSampler, uvY, dpxd.xz, dpyd.xz));
+            float3 tZ = SurfaceUnpackNormal(surfaceDetailNormalTexture.SampleGrad(surfaceDetailSampler, uvZ, dpxd.xy, dpyd.xy));
+            tX.xy *= strength; tY.xy *= strength; tZ.xy *= strength;
+            tX = float3(tX.xy + n.zy, abs(tX.z) * n.x);
+            tY = float3(tY.xy + n.xz, abs(tY.z) * n.y);
+            tZ = float3(tZ.xy + n.xy, abs(tZ.z) * n.z);
+            n = normalize(tX.zyx * w.x + tY.xzy * w.y + tZ.xyz * w.z);
+        }
+        if (surfaceHasDetailOrm != 0) {
+            float2 o = surfaceDetailOrmTexture.SampleGrad(surfaceDetailSampler, uvX, dpxd.zy, dpyd.zy).rg * w.x
+                + surfaceDetailOrmTexture.SampleGrad(surfaceDetailSampler, uvY, dpxd.xz, dpyd.xz).rg * w.y
+                + surfaceDetailOrmTexture.SampleGrad(surfaceDetailSampler, uvZ, dpxd.xy, dpyd.xy).rg * w.z;
+            float s = saturate(strength);
+            occlusion *= lerp(1.0, clamp(o.r / surfaceDetailMean.x, 0.0, 1.25), s);
+            roughness *= lerp(1.0, o.g / surfaceDetailMean.y, s);
+        }
+        if (surfaceHasDetailAlbedo != 0) {
+            float b = dot(surfaceDetailAlbedoTexture.SampleGrad(surfaceDetailSampler, uvX, dpxd.zy, dpyd.zy).rgb, rec709) * w.x
+                + dot(surfaceDetailAlbedoTexture.SampleGrad(surfaceDetailSampler, uvY, dpxd.xz, dpyd.xz).rgb, rec709) * w.y
+                + dot(surfaceDetailAlbedoTexture.SampleGrad(surfaceDetailSampler, uvZ, dpxd.xy, dpyd.xy).rgb, rec709) * w.z;
+            albedo *= lerp(1.0, clamp(b / surfaceDetailAlbedoMean, 0.0, 2.0), saturate(strength));
+        }
+    }
+    // 天在上、地在下：环境光跟随最终法线比几何法线多（或少）朝天的程度；平法线时不变。
+    float hemi = clamp(1.0 + 0.5 * (n.z - geometric.z), 0.0, 2.0);
+    roughness = clamp(roughness, 0.045, 1.0);
+    metal = saturate(metal);
+    float3 l = modelTowardLight;
+    float ndl = saturate(dot(n, l));
+    float ndv = max(dot(n, v), 1e-3);
+    float3 h = l + v;
+    h = dot(h, h) > 1e-12 ? normalize(h) : n;
+    float ndh = saturate(dot(n, h));
+    float a = roughness * roughness, a2 = a * a;
+    float dd = ndh * ndh * (a2 - 1.0) + 1.0;
+    float d = a2 / (3.14159265 * dd * dd);
+    float visibility = 0.5 / (ndl * sqrt(ndv * ndv * (1.0 - a2) + a2) + ndv * sqrt(ndl * ndl * (1.0 - a2) + a2) + 1e-5);
+    float3 f0 = lerp(float3(0.04, 0.04, 0.04), albedo, metal);
+    float3 f = f0 + (1.0 - f0) * pow(1.0 - saturate(dot(v, h)), 5.0);
+    float3 diffuse = saturate(modelAmbient * occlusion * hemi + modelDiffuse * ndl * (1.0 - metal));
+    float3 highlight = 3.14159265 * d * visibility * f * ndl * modelDiffuse * surfaceSpecular;
+    float2 environment = SurfaceEnvironment(roughness, ndv);
+    float3 sky = modelAmbient * occlusion * (f0 * environment.x + environment.y) * surfaceSpecular;
+    return albedo * diffuse + highlight + sky;
+}
 float4 PSModel(ModelOutput input) : SV_TARGET {
+    // 表面材质的导数在任何 discard 之前取，采样一律用显式梯度。
+    float3 dpx = ddx(input.world), dpy = ddy(input.world);
+    float2 duvx = ddx(input.uv), duvy = ddy(input.uv);
     float4 texel = layerTextured != 0 ? modelTexture.Sample(modelSampler, input.uv) : float4(1, 1, 1, 1);
     if (input.opacity <= 0.0) discard;
     // 旧路径仍在PS取原uniform，避免把静态alpha经插值改成另一条算术路径。
@@ -260,6 +387,7 @@ float4 PSModel(ModelOutput input) : SV_TARGET {
     // 不透明与透明测试写入不透明 alpha；混合模式的目标 alpha 由混合状态保持。
     if (layerFilter <= 1) alpha = 1.0;
     float3 color = texel.rgb * input.color;
+    if (surfaceEnabled != 0) color = SurfaceShade(input, texel.rgb * input.tint, dpx, dpy, duvx, duvy);
     // 雾：普通层混向雾色；叠加层淡到 0、调制层淡到中性值，避免雾色被叠加或相乘。
     float keep = (layerFlags & 2) != 0 ? 1.0 : FogKeep(input.depth);
     if (layerFilter == 3 || layerFilter == 4) color *= keep;

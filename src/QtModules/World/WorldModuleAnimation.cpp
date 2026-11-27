@@ -1349,7 +1349,7 @@ Result<WorldModelDiagnosticsCapture> WorldModule::CaptureModelDiagnosticsView() 
 }
 
 WorldPlacementGround WorldModule::PlacementGround() const {
-    return {terrain_.get(), waterSurfaceOffset_, deepWaterLevel_};
+    return {terrain_.get(), waterSurfaceOffset_, deepWaterLevel_, surfaceMaterials_};
 }
 Services::WorldSelectionVersion WorldModule::PlacementPresentationVersion() const {
     const auto context = SelectionContext();

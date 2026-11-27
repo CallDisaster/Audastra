@@ -30,6 +30,11 @@ namespace War3Map::Mpq {
     std::span<const std::byte> input,
     std::uint32_t expectedSize);
 
+// 同上，但输出超过 maxOutput 字节即失败（不截断）；用于图片等不可信来源，避免小输入解出超大数据。
+[[nodiscard]] Result<std::vector<std::byte>> InflateLimited(
+    std::span<const std::byte> input,
+    std::size_t maxOutput);
+
 // PKWARE Data Compression Library “explode”（对应 implode 的解压）。
 [[nodiscard]] Result<std::vector<std::byte>> PkwareExplode(
     std::span<const std::byte> input,

@@ -101,6 +101,7 @@ std::string VariantKey(const AnimationInstanceSpec& spec,const AnimationAsset& a
     if (team) key+="|team"+std::to_string(spec.model.teamColor);
     if (replacement) key+="|"+AnimationPathKey(spec.model.replaceableTexture);
     if (spec.model.previewGhost) key+="|preview-ghost";
+    key+=ModelSurfaceVariantKey(spec.model);
     return key;
 }
 std::string VariantKey(const AnimationInstanceSpec& spec,const AnimationAsset& asset) {
@@ -317,7 +318,8 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
     for (const auto& spec:delta.additions) {
         const auto found=paths.find(ModelAssetKey(spec.model));
         const auto key=found==paths.end() ? ModelAssetKey(spec.model)+"|"+
-            std::to_string(spec.model.teamColor)+"|"+AnimationPathKey(spec.model.replaceableTexture)+(spec.model.previewGhost ? "|ghost" : "") :
+            std::to_string(spec.model.teamColor)+"|"+AnimationPathKey(spec.model.replaceableTexture)+(spec.model.previewGhost ? "|ghost" : "")
+            +ModelSurfaceVariantKey(spec.model) :
             VariantKey(spec,candidate->assets[found->second],found->first);
         if ((found==paths.end() || !variants.contains(key)) && loading.insert(key).second) missing.push_back(spec);
     }
@@ -330,7 +332,8 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
             const auto matched = std::find_if(missing.begin(), missing.end(), [&](const auto& spec) {
                 return !spec.model.previewGhost && ModelAssetKey(spec.model) == prepared->assetKey_ &&
                     spec.model.teamColor == prepared->teamColor_ &&
-                    AnimationPathKey(spec.model.replaceableTexture) == prepared->replacementKey_;
+                    AnimationPathKey(spec.model.replaceableTexture) == prepared->replacementKey_ &&
+                    ModelSurfaceVariantKey(spec.model) == prepared->surfaceKey_;
             });
             if (matched == missing.end()) {
                 miss(missing.empty() ? "ANIMATION_PREPARED_NOT_NEEDED" : "ANIMATION_PREPARED_REQUEST_MISMATCH");

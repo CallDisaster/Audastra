@@ -222,7 +222,7 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainBoundsEditing TerrainBoundsSession TerrainBlockEditing TerrainRampEditing TerrainCliffEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainUnitPlacementNativeSave TerrainBoundaryNativeSave TerrainCliffPaletteNativeSave TerrainUniformDoodadFootprint TerrainDoodadFootprint TerrainBlpFootprint TerrainWaterBrush TerrainWaterBrushResources TerrainWaterSession TerrainDerivedCodec NativeMinimapMarkers TerrainShadowRebuild TerrainShadowResources PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
+foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainBoundsEditing TerrainBoundsSession TerrainBlockEditing TerrainRampEditing TerrainCliffEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainUnitPlacementNativeSave TerrainBoundaryNativeSave TerrainCliffPaletteNativeSave TerrainUniformDoodadFootprint TerrainDoodadFootprint TerrainBlpFootprint TerrainWaterBrush TerrainWaterBrushResources TerrainWaterSession TerrainDerivedCodec NativeMinimapMarkers TerrainShadowRebuild TerrainShadowResources PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage TextureImage BlpOpaqueQuantize BlpJpegEncode)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -466,7 +466,7 @@ foreach(slk_service IN ITEMS MapSourceSnapshot OrderedCreation)
 endforeach()
 
 add_executable(war3-map-render-d3d11-tests RenderD3D11Tests.cpp RealTerrainPairAudit.cpp RenderD3D11ModelSourceMipTests.h
-    RenderD3D11TerrainTransitionTests.h)
+    RenderD3D11TerrainTransitionTests.h RenderD3D11SurfaceMaterialTests.h)
 target_include_directories(war3-map-render-d3d11-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(war3-map-render-d3d11-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-render-d3d11-tests PRIVATE /W4 /permissive- /utf-8)

@@ -3,6 +3,7 @@
 #include "War3MapCore/RenderPluginInstanceRoster.h"
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/RenderPluginMaterialState.h"
+#include "War3MapCore/RenderPluginSurfaceMaterial.h"
 #include "War3MapCore/RenderPluginStaticSamplers.h"
 #include "War3MapCore/RenderPluginTerrainBlight.h"
 #include "War3MapCore/RenderPluginTerrainGrid.h"
@@ -1379,6 +1380,10 @@ std::int32_t WAR3_RENDER_CALL GetSkinStatus(War3RendererHandle handle, War3Rende
             auto& extended = *reinterpret_cast<War3RenderParticleMaterialCapabilitiesV2*>(output);
             extended.particleMaterialFlagsFormat = WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1;
             extended.particleMaterialFlagsMask = WAR3_PARTICLE_UNFOGGED;
+        }
+        if (capacity >= sizeof(War3RenderSkinSurfaceCapabilitiesV2)) {
+            auto& extended = *reinterpret_cast<War3RenderSkinSurfaceCapabilitiesV2*>(output);
+            extended.surfaceFormat = WAR3_RENDER_MODEL_SURFACE_V1; extended.reserved = 0;
         }
         return 0;
     } catch (...) { return static_cast<std::int32_t>(E_FAIL); }

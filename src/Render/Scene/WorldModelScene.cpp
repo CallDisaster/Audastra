@@ -9,6 +9,8 @@
 #include "War3MapCore/Resources/ClassicObjectTexture.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -94,11 +96,14 @@ public:
         if (parsed->second.teamDependent) variant += "|team" + std::to_string(request.teamColor);
         if (parsed->second.replaceableDependent) variant += "|" + PathKey(request.replaceableTexture);
         if (request.previewGhost) variant += "|preview-ghost";
+        variant += ModelSurfaceVariantKey(request);
         auto model = models_.find(variant);
         if (model == models_.end()) {
             auto appended = Append(*parsed->second.model, request, parsed->second.animated, parsed->second.materialTextures.get());
             if (!appended.Succeeded()) return Status{std::move(appended.diagnostics)};
             model = models_.emplace(variant, std::move(*appended.value)).first;
+            if (model->second && request.surfaceMaterial && !request.previewGhost)
+                AssignSurface(*model->second, *request.surfaceMaterial);
         }
         if (!model->second || !InstanceBudget(scene_.instances.size()+1,limits_)) {
             if (rigidPose_) return Status::Failure(std::string(kSubsystem), "WORLD_MODEL_POSE_BUDGET",
@@ -167,6 +172,7 @@ public:
     }
 
     Result<WorldModelScene> Finish() {
+        if (!scene_.modelSurfaces.empty()) scene_.modelSurfaces.resize(scene_.models.size(), kNoModelSurface);
         if (samplerActive_ && scene_.layerSamplerFlags.size() != scene_.layers.size())
             return Result<WorldModelScene>::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_INVALID",
                 "来源 sampler 与实际发布的模型层数量不同。");
@@ -366,6 +372,61 @@ private:
             if (!budgetExceeded) ++failedTextures_[requestedPath];
         }
         return index;
+    }
+
+    // 表面材质的四张图走普通贴图的读取、缓存与预算；它们不是模型层，不计入“按白色显示的层”。
+    std::uint32_t SurfaceTexture(const std::string& path) {
+        if (path.empty()) return WAR3_RENDER_MODEL_NO_TEXTURE;
+        const auto untextured = scene_.untexturedLayers;
+        MdxTexture texture; texture.path = path;
+        const auto index = Texture(texture, ModelInstanceRequest{});
+        scene_.untexturedLayers = untextured;
+        return index;
+    }
+    // 细节图只取相对自身均值的变化：按最高一级 mip 的存储值算 R、G 与亮度（Rec.709）的均值，下限 1/1024 防止除零。
+    std::array<float, 3> DetailMeans(std::uint32_t index) {
+        if (const auto found = detailMeans_.find(index); found != detailMeans_.end()) return found->second;
+        const auto& texture = std::as_const(scene_).textures[index];
+        const std::size_t pixels = std::min<std::size_t>(static_cast<std::size_t>(texture.width) * texture.height,
+            texture.rgba.size() / 4);
+        double red = 0, green = 0, brightness = 0;
+        for (std::size_t i = 0; i < pixels; ++i) {
+            const auto* p = texture.rgba.data() + i * 4;
+            red += p[0]; green += p[1]; brightness += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        }
+        const auto mean = [&](double sum) {
+            return pixels ? std::clamp(static_cast<float>(sum / (255.0 * pixels)), 1.0f / 1024.0f, 1.0f) : 1.0f;
+        };
+        return detailMeans_.emplace(index, std::array<float, 3>{mean(red), mean(green), mean(brightness)}).first->second;
+    }
+    void AssignSurface(std::uint32_t model, const ModelSurfaceMaterial& material) {
+        auto surface = kNoModelSurface;
+        surface.normalTexture = SurfaceTexture(material.normalPath);
+        surface.ormTexture = SurfaceTexture(material.ormPath);
+        surface.detailNormalTexture = SurfaceTexture(material.detailNormalPath);
+        surface.detailOrmTexture = SurfaceTexture(material.detailOrmPath);
+        surface.detailAlbedoTexture = SurfaceTexture(material.detailAlbedoPath);
+        // 图都不可用时照旧着色；读不到的图已按路径记入贴图不可用诊断。
+        if (surface.normalTexture == WAR3_RENDER_MODEL_NO_TEXTURE && surface.ormTexture == WAR3_RENDER_MODEL_NO_TEXTURE
+            && surface.detailNormalTexture == WAR3_RENDER_MODEL_NO_TEXTURE && surface.detailOrmTexture == WAR3_RENDER_MODEL_NO_TEXTURE
+            && surface.detailAlbedoTexture == WAR3_RENDER_MODEL_NO_TEXTURE) return;
+        const auto clamp = [](float value, float low, float high) { return std::isfinite(value) ? std::clamp(value, low, high) : low; };
+        surface.normalScale = clamp(material.normalScale, 0.0f, 8.0f);
+        surface.normalYSign = material.normalYSign < 0 ? -1.0f : 1.0f;
+        surface.roughness = clamp(material.roughness, 0.0f, 4.0f);
+        surface.metallic = clamp(material.metallic, 0.0f, 1.0f);
+        surface.occlusion = clamp(material.occlusion, 0.0f, 1.0f);
+        surface.specular = clamp(material.specular, 0.0f, 4.0f);
+        surface.detailScale = clamp(material.detailScale, 8.0f, 65536.0f);
+        surface.detailStrength = clamp(material.detailStrength, 0.0f, 4.0f);
+        if (surface.detailOrmTexture != WAR3_RENDER_MODEL_NO_TEXTURE) {
+            const auto mean = DetailMeans(surface.detailOrmTexture);
+            surface.detailOrmMean[0] = mean[0]; surface.detailOrmMean[1] = mean[1];
+        }
+        if (surface.detailAlbedoTexture != WAR3_RENDER_MODEL_NO_TEXTURE)
+            surface.detailAlbedoMean = DetailMeans(surface.detailAlbedoTexture)[2];
+        if (scene_.modelSurfaces.size() < scene_.models.size()) scene_.modelSurfaces.resize(scene_.models.size(), kNoModelSurface);
+        scene_.modelSurfaces[model] = surface;
     }
 
     Status AddOwned(const ModelInstanceRequest& request, std::uint32_t requestIndex) {
@@ -691,6 +752,7 @@ private:
     struct TextureRequest { std::uint32_t index; bool budgetExceeded; };
     std::unordered_map<std::string, TextureRequest> textureRequests_;
     std::unordered_map<std::string, std::uint32_t> textures_;
+    std::unordered_map<std::uint32_t, std::array<float, 3>> detailMeans_;
     std::map<std::string, std::size_t> failedModels_, budgetModels_, failedTextures_, budgetTextures_;
     struct BudgetGeometry { std::uint64_t vertices = 0, indices = 0; };
     std::map<std::string, BudgetGeometry> budgetGeometry_;
@@ -963,6 +1025,17 @@ Result<WorldModelScene> BuildWorldModelScene(std::span<const ModelInstanceReques
     return builder.Finish();
 }
 
+std::string ModelSurfaceVariantKey(const ModelInstanceRequest& request) {
+    if (!request.surfaceMaterial) return {};
+    const auto& m = *request.surfaceMaterial;
+    std::string key = "|surface:" + PathKey(m.normalPath) + "|" + PathKey(m.ormPath) + "|" + PathKey(m.detailNormalPath)
+        + "|" + PathKey(m.detailOrmPath) + "|" + PathKey(m.detailAlbedoPath);
+    for (const float value : {m.normalScale, m.normalYSign, m.roughness, m.metallic, m.occlusion, m.specular,
+            m.detailScale, m.detailStrength})
+        key += "|" + std::to_string(std::bit_cast<std::uint32_t>(value));
+    return key;
+}
+
 Result<WorldModelScene> BuildAnimatedModelGeometry(std::span<const ModelInstanceRequest> requests,
     const ModelFileReader& read, const ModelGeometryProvider& assets, const WorldModelLimits& limits,
     std::span<const BakedModelMesh> baked, const ModelDecodedTextureProvider& decoded) {
@@ -982,7 +1055,8 @@ bool ReplaceModelInstances(WorldModelScene& scene, std::span<const ModelInstance
     if (!scene.vertexGroups.empty() || scene.instanceRequests.size() != scene.instances.size()) return false;
     const auto variantKey = [](const ModelInstanceRequest& request) {
         return ModelAssetKey(request) + "|" + std::to_string(request.teamColor) + "|"
-            + PathKey(request.replaceableTexture) + (request.previewGhost ? "|preview-ghost" : "");
+            + PathKey(request.replaceableTexture) + (request.previewGhost ? "|preview-ghost" : "")
+            + ModelSurfaceVariantKey(request);
     };
     // 变体 → 已显示的模型序号；空表示此前请求过但不可用。
     std::unordered_map<std::string, std::optional<std::uint32_t>> variants;
@@ -1040,6 +1114,7 @@ bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModel
         || (!scene.modelAssetKeys.empty() && scene.modelAssetKeys.size() != scene.models.size())
         || (!scene.modelTextureBindings.empty() && scene.modelTextureBindings.size() != scene.models.size())
         || (!scene.modelPaths.empty() && scene.modelPaths.size() != scene.models.size())
+        || (!scene.modelSurfaces.empty() && scene.modelSurfaces.size() != scene.models.size())
         || (!scene.layerSamplerFlags.empty() && (scene.layerSamplerFlags.size() != scene.layers.size()
             || std::any_of(scene.layerSamplerFlags.cbegin(), scene.layerSamplerFlags.cend(), [](auto flags) { return flags > 3; })))
         || scene.textures.size() > limits.maxTextures || baked.size() > limits.maxMeshes) return false;
@@ -1195,6 +1270,11 @@ bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModel
         modelPaths.reserve(newModels + keptModels); if (newModels) modelPaths.emplace_back();
         modelPaths.insert(modelPaths.end(), scene.modelPaths.cbegin() + static_cast<std::ptrdiff_t>(oldModels), scene.modelPaths.cend());
     }
+    std::vector<War3RenderModelSurfaceV2> surfaces;
+    if (!scene.modelSurfaces.empty()) {
+        surfaces.reserve(newModels + keptModels); if (newModels) surfaces.push_back(kNoModelSurface);
+        surfaces.insert(surfaces.end(), scene.modelSurfaces.cbegin() + static_cast<std::ptrdiff_t>(oldModels), scene.modelSurfaces.cend());
+    }
     if (newModels) {
         models.push_back({0, static_cast<std::uint32_t>(newMeshes)});
         std::array<float, 6> box{FLT_MAX, FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -1229,6 +1309,7 @@ bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModel
     outputScene.layerSamplerFlags = std::move(samplerFlags);
     outputScene.meshes = std::move(meshes); outputScene.models = std::move(models); outputScene.modelBounds = std::move(bounds);
     outputScene.modelAssetKeys = std::move(assetKeys); outputScene.modelPaths = std::move(modelPaths);
+    outputScene.modelSurfaces = std::move(surfaces);
     outputScene.modelTextureBindings = std::move(textureBindings);
     outputScene.instances = std::move(instances); outputScene.instanceRequests = std::move(requests);
     outputScene.untexturedLayers = scene.untexturedLayers - oldUntextured + newUntextured;

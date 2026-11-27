@@ -452,6 +452,8 @@ std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields
         // 编辑辅助采用真实来源平面尺寸，原版缩放/锚点未取证；不改持久PlacementTransform。
         if (helper) { request.scale = {1, 1, 1}; request.tint = {1, 1, 1}; request.replaceableTexture.clear(); }
     } else if (doodad) request.tint = fields.Tint({"vertr", "dvr1"}, {"vertg", "dvg1"}, {"vertb", "dvb1"});
+    if ((doodad || destructable) && !helper && ground.surfaceMaterials)
+        request.surfaceMaterial = ground.surfaceMaterials->Find(placement.rawcode);
     else {
         const auto scale = unit ? fields.Value({"modelscale", "usca"}, 1) : fields.Value({"scale", "isca"}, 1);
         for (auto& axis : request.scale) axis = static_cast<float>(axis * std::clamp(scale, 0.01, 100.0));
@@ -632,7 +634,7 @@ std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(const QtProj
     if (!fields.Find(type, placement.rawcode)) return std::nullopt;
     auto request = RequestFromFields(fields, type, placement, type == ObjectType::Item ? 15 : owner, -1, 0, ground);
     if (request) {
-        request->previewGhost = true;
+        request->previewGhost = true; request->surfaceMaterial.reset();
         if (presentation && type == ObjectType::Destructable)
             *presentation = {0, {type, placement.rawcode}, {}, fields.Presentation()};
     }

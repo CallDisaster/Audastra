@@ -48,6 +48,7 @@ QString VariantKey(const Render::ModelInstanceRequest& request) {
     Field(bytes, QByteArray::fromStdString(Render::AnimationPathKey(request.modelPath)));
     Field(bytes, QByteArray::fromStdString(Render::AnimationPathKey(request.replaceableTexture)));
     Field(bytes, QByteArray::number(request.teamColor));
+    Field(bytes, QByteArray::fromStdString(Render::ModelSurfaceVariantKey(request)));
     return Digest(bytes);
 }
 struct Resident {

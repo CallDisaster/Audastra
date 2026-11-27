@@ -7,7 +7,8 @@ namespace War3Map::Modules {
 namespace {
 std::string Variant(const Render::ModelInstanceRequest& request) {
     return Render::ModelAssetKey(request) + "|team:" + std::to_string(request.teamColor)
-        + "|replacement:" + Render::AnimationPathKey(request.replaceableTexture);
+        + "|replacement:" + Render::AnimationPathKey(request.replaceableTexture)
+        + Render::ModelSurfaceVariantKey(request);
 }
 }
 

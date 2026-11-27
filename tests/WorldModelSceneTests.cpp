@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/WorldModelScene.h"
+#include "War3MapCore/Render/SurfaceMaterialTable.h"
 #include "War3MapCore/Render/ModelPicking.h"
 #include "War3MapCore/Render/ModelAnimation.h"
 #include "War3MapCore/Image/BlpImage.h"
@@ -663,6 +664,129 @@ void TestReplaceBaked() {
     Require(!DescribeModelScene(scene).mips.empty(), "替换后仍可描述");
 }
 
+// 地图表面材质：按材质拆变体、四张图走普通贴图读取与缓存、细节 ORM 均值、参数夹到渲染范围；
+// 预览半透明不带材质；图都读不到时照旧着色并给贴图不可用警告；替换实例与烘焙网格时材质与模型保持对齐。
+const War3RenderModelSurfaceV2& SurfaceOf(const WorldModelScene& scene, std::uint32_t request) {
+    for (std::size_t i = 0; i < scene.instances.size(); ++i)
+        if (scene.instanceRequests[i] == request) return scene.modelSurfaces[scene.instances[i].model];
+    throw std::runtime_error("请求没有实例");
+}
+void TestSurfaceMaterials() {
+    Files files;
+    files.files[Key("Units\\Crate.mdx")] = MdxTest::BuildTestMdx();
+    files.files[Key("Textures\\Crate.blp")] = Blp(4, 4, 90);
+    files.files[Key(TeamColorTexture(0))] = Blp(2, 2, 255);
+    files.files[Key("Sonne\\n.blp")] = Blp(2, 2, 128);
+    files.files[Key("Sonne\\orm.blp")] = Blp(2, 2, 64);
+    files.files[Key("Sonne\\col.blp")] = Blp(2, 2, 200);
+    auto material = std::make_shared<ModelSurfaceMaterial>();
+    material->normalPath = "Sonne\\n.blp"; material->detailOrmPath = "sonne/ORM.blp"; material->detailAlbedoPath = "Sonne\\col.blp";
+    material->detailScale = 4; material->roughness = 9; material->normalYSign = 1;
+    auto other = std::make_shared<ModelSurfaceMaterial>(*material); other->roughness = 0.5f;
+    auto missing = std::make_shared<ModelSurfaceMaterial>(); missing->normalPath = "Sonne\\Missing.blp";
+    auto plain = At("Units\\Crate.mdx", 0, 0);
+    auto surfaced = At("Units\\Crate.mdx", 0, 100); surfaced.surfaceMaterial = material;
+    auto twin = At("Units\\Crate.mdx", 0, 200); twin.surfaceMaterial = std::make_shared<ModelSurfaceMaterial>(*material);
+    auto changed = At("Units\\Crate.mdx", 0, 300); changed.surfaceMaterial = other;
+    auto ghost = surfaced; ghost.previewGhost = true; ghost.position[0] = 400;
+    auto unreadable = At("Units\\Crate.mdx", 0, 500); unreadable.surfaceMaterial = missing;
+    const std::vector<ModelInstanceRequest> requests{plain, surfaced, twin, changed, ghost, unreadable};
+    auto built = BuildWorldModelScene(requests, files.Reader());
+    Require(built.Succeeded() && built.value, "带材质场景构建失败");
+    auto& scene = *built.value;
+    Require(scene.models.size() == 5 && scene.modelSurfaces.size() == scene.models.size() && scene.instances.size() == 6,
+        "同材质共用变体，不同材质、预览各自成变体");
+    Require(files.reads[Key("Sonne\\n.blp")] == 1 && files.reads[Key("Sonne\\orm.blp")] == 1, "材质图只读取一次");
+    const auto none = WAR3_RENDER_MODEL_NO_TEXTURE;
+    const auto& base = SurfaceOf(scene, 0);
+    Require(base.normalTexture == none && base.ormTexture == none && base.detailNormalTexture == none
+        && base.detailOrmTexture == none, "无材质模型保持四张图为空");
+    const auto& s = SurfaceOf(scene, 1);
+    Require(s.normalTexture != none && Key(scene.textures[s.normalTexture].path) == Key("Sonne\\n.blp")
+        && s.detailOrmTexture != none && s.ormTexture == none && s.detailNormalTexture == none, "材质图进入场景纹理表");
+    Require(std::abs(s.detailOrmMean[0] - 64.0f / 255.0f) < 0.01f && s.detailOrmMean[1] == 1.0f / 1024.0f,
+        "细节 ORM 均值按图算出并夹到下限");
+    Require(s.detailAlbedoTexture != none && std::abs(s.detailAlbedoMean - 0.2126f * 200.0f / 255.0f) < 0.01f,
+        "细节颜色亮度均值按 Rec.709 算出");
+    Require(s.detailScale == 8.0f && s.roughness == 4.0f && s.normalYSign == 1.0f && s.metallic == 1.0f
+        , "参数夹到渲染接口范围");
+    Require(&SurfaceOf(scene, 2) == &s, "内容相同的材质共用同一变体");
+    const auto& c = SurfaceOf(scene, 3);
+    Require(c.normalTexture == s.normalTexture && c.roughness == 0.5f, "不同参数是另一变体，共用纹理");
+    Require(SurfaceOf(scene, 4).normalTexture == none, "半透明预览不带材质");
+    Require(SurfaceOf(scene, 5).normalTexture == none && HasWarning(scene, "WORLD_MODEL_TEXTURE_UNAVAILABLE"),
+        "读不到的材质图照旧着色并给出警告");
+    Require(scene.untexturedLayers == 0, "材质图不计入按白色显示的模型层");
+
+    // 移动实例原地更新；改材质需要重建。
+    auto moved = requests; moved[1].position[0] = 150;
+    Require(ReplaceModelInstances(scene, requests, moved), "移动带材质实例应原地更新");
+    auto rematerialized = moved; rematerialized[1].surfaceMaterial = other;
+    Require(!ReplaceModelInstances(scene, moved, rematerialized), "改材质不能复用旧变体");
+
+    // 烘焙网格在前插入、替换、清空时，材质与模型一一对应。
+    const std::vector<ModelInstanceRequest> single{surfaced};
+    files.files[Key("Cliff\\A.blp")] = Blp(2, 2, 10);
+    auto baked = BuildWorldModelScene(single, files.Reader(), {}, std::vector<BakedModelMesh>{Triangle(0, "Cliff\\A.blp")});
+    Require(baked.Succeeded() && baked.value->models.size() == 2 && baked.value->modelSurfaces.size() == 2, "烘焙场景材质数量");
+    auto bakedScene = *baked.value;
+    const auto check = [&](const char* what) {
+        Require(bakedScene.modelSurfaces.size() == bakedScene.models.size(), what);
+        for (std::size_t i = 0; i < bakedScene.instances.size(); ++i) {
+            const auto& surface = bakedScene.modelSurfaces[bakedScene.instances[i].model];
+            Require((bakedScene.instanceRequests[i] == kBakedInstance) == (surface.normalTexture == none), what);
+        }
+    };
+    check("初始烘焙场景材质错位");
+    Require(ReplaceBakedMeshes(bakedScene, std::vector<BakedModelMesh>{Triangle(500, "Cliff\\A.blp"), Triangle(600, "Cliff\\A.blp")}),
+        "替换烘焙网格");
+    check("替换烘焙网格后材质错位");
+    Require(ReplaceBakedMeshes(bakedScene, {}) && bakedScene.models.size() == 1, "清空烘焙网格");
+    check("清空烘焙网格后材质错位");
+}
+
+// 材质表：BOM、注释、同名节合并、坏行逐条警告且不影响其它行、无图节丢弃、rawcode 区分大小写。
+void TestSurfaceMaterialTable() {
+    const auto table = ParseSurfaceMaterialTable(
+        "\xEF\xBB\xBF; 地图材质\n"
+        "[L053]\n"
+        "normal = Sonne\\Textures\\cliff_nor_gl.jpg ; 尾注释\r\n"
+        "ortho = 1\n"
+        "normalY = dx\n"
+        "roughness = 5\n"
+        "specular=+2\n"
+        "detailScale = 7\n"
+        "normalScale = abc\n"
+        "[L053]\n"
+        "orm = Sonne\\Textures\\cliff_arm.jpg\n"
+        "[XX]\n"
+        "normal = lost.png\n"
+        "[ABCD]\n"
+        "roughness = 1\n"
+        " [ EFGH ] \n"
+        "detailOrm = d.png # 注释\n"
+        "detailStrength = 0.5\n"
+        "novalue\n"
+        "[IJKL]\n"
+        "detailAlbedo = Sonne\\Textures\\H\\detail\\granite_col.png\n");
+    Require(table.byRawcode.size() == 3, "应得到三种物体类型");
+    const auto ijkl = table.Find("IJKL");
+    Require(ijkl && ijkl->detailAlbedoPath == "Sonne\\Textures\\H\\detail\\granite_col.png", "只有细节颜色图的节保留");
+    const auto l053 = table.Find("L053");
+    Require(l053 && l053->normalPath == "Sonne\\Textures\\cliff_nor_gl.jpg" && l053->ormPath == "Sonne\\Textures\\cliff_arm.jpg"
+        && l053->normalYSign == 1.0f && l053->roughness == 1.0f && l053->specular == 2.0f && l053->detailScale == 256.0f
+        && l053->normalScale == 1.0f, "同名节合并、坏值保留原值");
+    const auto efgh = table.Find("EFGH");
+    Require(efgh && efgh->detailOrmPath == "d.png" && efgh->detailStrength == 0.5f && efgh->normalPath.empty(), "只有细节图的节保留");
+    Require(!table.Find("l053") && !table.Find("ABCD") && !table.Find("XX"), "rawcode 区分大小写，无图节与坏节不进表");
+    const auto count = [&](std::string_view code) {
+        return std::count_if(table.warnings.begin(), table.warnings.end(), [&](const Diagnostic& d) { return d.code == code; });
+    };
+    // ortho、roughness、detailScale、normalScale、[XX]、lost.png（节外）、novalue 共 7 行；ABCD 无图 1 条。
+    Require(count("SURFACE_MATERIAL_LINE_INVALID") == 7 && count("SURFACE_MATERIAL_NO_IMAGES") == 1, "警告数量");
+    Require(ParseSurfaceMaterialTable("").byRawcode.empty() && ParseSurfaceMaterialTable("").warnings.empty(), "空表");
+}
+
 void TestBakedSamplerFlagsAndSnapshotRefresh() {
     Files files;
     files.files[Key("Original\\Sampler.mdx")] = RigidTestModel();
@@ -1076,6 +1200,8 @@ int main() {
         TestPreciseAnimatedPicking();
         TestPreparedAnimatedPicking();
         TestReplaceBaked();
+        TestSurfaceMaterials();
+        TestSurfaceMaterialTable();
         TestBakedSamplerFlagsAndSnapshotRefresh();
         TestStaticSamplerMetadataBudget();
         TestTextureMetadataReserveDegradesPerTexture();

@@ -549,6 +549,7 @@ private:
     std::uint64_t modelGeneration_ = 0; // 模型线程运行期间又换代时，结束后按此补一次加载
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain_;
     std::optional<float> waterSurfaceOffset_, deepWaterLevel_; // 与 terrain_ 同时发布，单位浮水用
+    std::shared_ptr<const Render::SurfaceMaterialTable> surfaceMaterials_; // 地图 WarVK 材质表；仅 WarVK 入口显示时读取
     std::shared_ptr<const WorldTerrainHeightRules> terrainHeightRules_; // 与最后实际显示地形同时发布的只读owner及来源租约。
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain_; // 对应编辑会话的不可变原始快照
     std::shared_ptr<const Render::TerrainCliffs> cliffs_; // 当前地形已烘焙的悬崖，随模型场景提交

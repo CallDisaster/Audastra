@@ -2,6 +2,7 @@
 
 #include "War3MapCore/RenderPluginV2.h"
 #include "War3MapCore/RenderPluginStaticSamplers.h"
+#include "War3MapCore/RenderPluginSurfaceMaterial.h"
 #include "War3MapCore/Render/MdxPose.h"
 #include "War3MapCore/Render/SharedSceneVector.h"
 #include "War3MapCore/Types.h"
@@ -38,6 +39,17 @@ enum class ModelGroundAnchor : std::uint8_t {
     GroundOrWater,    // 地面和水面取高者（船、悬浮单位）
     GroundOrDeepWater // 深水处在水面，其余在地面（两栖单位）
 };
+// 地图给某种物体类型附加的表面材质（WarVK\materials.ini 的一节）。路径是地图归档里的路径，空=没有该图。
+// 数值已由解析器按格式范围检查；渲染时再夹到渲染接口的范围。
+struct ModelSurfaceMaterial {
+    std::string normalPath, ormPath, detailNormalPath, detailOrmPath, detailAlbedoPath;
+    float normalScale = 1, normalYSign = -1, roughness = 1, metallic = 1, occlusion = 1, specular = 1;
+    float detailScale = 256, detailStrength = 1;
+};
+// 没有材质的模型（五张图都为空，参数取中性值）。
+inline constexpr War3RenderModelSurfaceV2 kNoModelSurface{WAR3_RENDER_MODEL_NO_TEXTURE, WAR3_RENDER_MODEL_NO_TEXTURE,
+    WAR3_RENDER_MODEL_NO_TEXTURE, WAR3_RENDER_MODEL_NO_TEXTURE, WAR3_RENDER_MODEL_NO_TEXTURE,
+    1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 256.0f, 1.0f, {1.0f, 1.0f}, 1.0f};
 struct ModelInstanceRequest {
     std::string modelPath;          // 含 .mdx 扩展名的虚拟路径
     std::string replaceableTexture; // 替换贴图 ID ≥ 3（树木等）使用的贴图路径；空则该层按白色
@@ -53,7 +65,11 @@ struct ModelInstanceRequest {
     ModelGroundAnchor groundAnchor = ModelGroundAnchor::Stored;
     // 编辑器原创辅助几何，独立typed资产身份；modelPath仍是原实际资源描述，不送入伪MDX读取器。
     std::shared_ptr<const OwnedStaticModelAsset> ownedStaticAsset;
+    // 地图表面材质；空=没有。带材质的请求按材质身份拆成独立模型变体（同一模型文件可有几种材质）。
+    std::shared_ptr<const ModelSurfaceMaterial> surfaceMaterial;
 };
+// 模型变体里表面材质那一段：没有材质时为空串，否则 "|surface:…"（图路径与参数）。所有按变体去重的地方共用。
+[[nodiscard]] std::string ModelSurfaceVariantKey(const ModelInstanceRequest& request);
 
 // 已在世界坐标烘焙好的几何（悬崖等逐顶点贴合地形、无法用实例变换表达的网格）。
 // 每块顶点数 ≤ 65536，全部并入一个恒等变换的模型；贴图按路径与普通模型共用缓存。
@@ -195,6 +211,8 @@ struct WorldModelScene {
     SharedSceneVector<std::string> modelAssetKeys; // 与models平行，typed资产身份，不能传给资源读取器。
     // 每个几何变体独立绑定 TEXS ID→常驻纹理，队伍色/替换贴图不会串；空表示旧静态资产。
     SharedSceneVector<std::shared_ptr<const std::vector<ModelTextureBinding>>> modelTextureBindings;
+    // 与 models 平行的表面材质，纹理序号属于本场景 textures；空=整个场景没有表面材质。
+    SharedSceneVector<War3RenderModelSurfaceV2> modelSurfaces;
 };
 
 // 持有 ABI 描述符及其指向的 mip 描述；scene 指针在本对象存活期间有效（移动不失效）。

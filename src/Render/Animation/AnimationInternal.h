@@ -106,6 +106,7 @@ struct AnimationStaticGeometry {
         SharedSceneVector<std::uint32_t> vertexGroups, meshGeosets;
         SharedSceneVector<std::string> modelPaths, modelAssetKeys;
         SharedSceneVector<std::shared_ptr<const std::vector<ModelTextureBinding>>> modelTextureBindings;
+        SharedSceneVector<War3RenderModelSurfaceV2> modelSurfaces;
         std::size_t untexturedLayers = 0, rigidStaticPreviewAssets = 0;
         std::vector<Diagnostic> warnings;
     } geometry;
@@ -130,7 +131,7 @@ class AnimationPreparedAssets {
     friend class ModelAnimationService;
     AnimationPreparedAssets() = default;
     std::uint64_t baseSceneVersion_ = 0, baseDocumentRevision_ = 0, generation_ = 0;
-    std::string sourceIdentity_, assetKey_, replacementKey_;
+    std::string sourceIdentity_, assetKey_, replacementKey_, surfaceKey_;
     std::uint32_t teamColor_ = 0, assetIndex_ = UINT32_MAX, modelIndex_ = UINT32_MAX;
     bool newAsset_ = false, collisionNodesRequired_ = false;
     AnimationAsset asset_;

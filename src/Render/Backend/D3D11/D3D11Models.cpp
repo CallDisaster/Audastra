@@ -1,4 +1,6 @@
 #include "D3D11Scene.h"
+#include <algorithm>
+#include <iterator>
 #include <new>
 #include <stdexcept>
 #include <limits>
@@ -38,6 +40,8 @@ HRESULT D3D11Scene::SetModels(const ModelScene& models, const SkinPose* latestPo
     auto meshGroups = models.meshGroups;
     auto meshColors = models.meshColors;
     if (!meshColors.empty() && meshColors.size() != models.meshes.size()) return E_INVALIDARG;
+    auto modelSurfaces = models.modelSurfaces;
+    if (!modelSurfaces.empty() && (!pose || modelSurfaces.size() != models.models.size())) return E_INVALIDARG;
     std::vector<std::pair<UINT, UINT>> ranges(models.models.size(), {0, 0});
     for (std::size_t i = 0; i < models.instances.size(); ++i) {
         auto& range = ranges[models.instances[i].model];
@@ -94,6 +98,7 @@ HRESULT D3D11Scene::SetModels(const ModelScene& models, const SkinPose* latestPo
     modelPages_.swap(pages); modelMeshPages_.swap(meshPages);
     modelVertexCount_ = models.VertexCount(); modelIndexCount_ = models.IndexCount();
     skinMeshColors_.swap(meshColors);
+    modelSurfaces_.swap(modelSurfaces);
     modelInstanceCount_ = static_cast<UINT>(models.instances.size());
     activeSkinBuffer_ = 0; skinned_ = pose != nullptr; skinDynamicColors_ = pose && (models.dynamicColors || !pose->colors.empty());
     skinDynamicMaterialAlphas_ = pose && models.dynamicMaterialAlphas;
@@ -116,6 +121,7 @@ HRESULT D3D11Scene::PrepareStaticAssets(const ModelScene& models, const Particle
         || models.prefixMeshes != modelMeshes_.size() || models.prefixModels != modelRanges_.size()
         || models.meshGroups.size() != models.meshes.size() || models.modelGroupCounts.size() != models.models.size()
         || (!models.meshColors.empty() && models.meshColors.size() != models.meshes.size())
+        || (!models.modelSurfaces.empty() && models.modelSurfaces.size() != models.models.size())
         || models.StaticVertexGroups().size() != models.StaticVertices().size()
         || (particles && particles->prefixTextures != particleTextures_.size())
         || (!particles && !particleTextures_.empty())) return E_INVALIDARG;
@@ -130,6 +136,7 @@ HRESULT D3D11Scene::PrepareStaticAssets(const ModelScene& models, const Particle
     output.textures = modelTextures_; output.particleTextures = particleTextures_;
     output.layers = models.layers; output.meshes = models.meshes; output.models = models.models;
     output.meshGroups = models.meshGroups; output.meshColors = models.meshColors;
+    output.modelSurfaces = models.modelSurfaces;
     output.vertexCount = models.VertexCount(); output.indexCount = models.IndexCount();
     output.dynamicMaterialAlphas = models.dynamicMaterialAlphas;
     output.dynamicMaterialStates = models.dynamicMaterialStates;
@@ -186,6 +193,29 @@ ID3D11RasterizerState* D3D11Scene::CullBackVariant(ID3D11RasterizerState* source
     cullSource_ = source; cullRasterizer_ = std::move(created);
     return cullRasterizer_.Get();
 }
+void D3D11Scene::ApplyModelSurface(std::size_t model, const War3RenderModelLayerV2& layer, ModelLayerConstants& values,
+    ID3D11ShaderResourceView* (&views)[5]) const {
+    std::fill(std::begin(views), std::end(views), nullptr);
+    // 只给不透明与透明测试层、且受光照的层着色；混合/叠加/调制层与无光照层照旧。
+    if (model >= modelSurfaces_.size() || layer.filterMode > 1 || (layer.flags & WAR3_RENDER_MODEL_UNSHADED)) return;
+    const auto& surface = modelSurfaces_[model];
+    const auto view = [&](std::uint32_t index) -> ID3D11ShaderResourceView* {
+        return index != WAR3_RENDER_MODEL_NO_TEXTURE && index < modelTextures_.size() ? modelTextures_[index].Get() : nullptr;
+    };
+    views[0] = view(surface.normalTexture); views[1] = view(surface.ormTexture);
+    views[2] = view(surface.detailNormalTexture); views[3] = view(surface.detailOrmTexture);
+    views[4] = view(surface.detailAlbedoTexture);
+    if (std::all_of(std::begin(views), std::end(views), [](auto* v) { return v == nullptr; })) return;
+    values.surface = 1; values.hasNormal = views[0] ? 1u : 0u; values.hasOrm = views[1] ? 1u : 0u;
+    values.normalScale = surface.normalScale; values.normalYSign = surface.normalYSign;
+    values.roughness = surface.roughness; values.metallic = surface.metallic;
+    values.occlusion = surface.occlusion; values.specular = surface.specular;
+    std::copy(std::begin(cameraEye_), std::end(cameraEye_), values.eye);
+    values.hasDetailNormal = views[2] ? 1u : 0u; values.hasDetailOrm = views[3] ? 1u : 0u;
+    values.detailRepeat = 1.0f / surface.detailScale; values.detailStrength = surface.detailStrength;
+    values.detailMean[0] = surface.detailOrmMean[0]; values.detailMean[1] = surface.detailOrmMean[1];
+    values.hasDetailAlbedo = views[4] ? 1u : 0u; values.detailAlbedoMean = surface.detailAlbedoMean;
+}
 void D3D11Scene::DrawModels(int pass) {
     auto* instanceBuffer = skinned_ ? skinBuffers_[activeSkinBuffer_].instances.Get() : modelInstances_.Get();
     if (!instanceBuffer) return;
@@ -203,6 +233,7 @@ void D3D11Scene::DrawModels(int pass) {
     auto* constants = modelConstants_.Get();
     context_->VSSetConstantBuffers(2, 1, &constants); context_->PSSetConstantBuffers(2, 1, &constants);
     auto* sampler = modelSampler_.Get(); context_->PSSetSamplers(1, 1, &sampler);
+    context_->PSSetSamplers(3, 1, &sampler); // 表面材质细节图：重复寻址、各向异性 8，不随层的 TEXS 寻址变化
     if (skinned_) {
         auto* meshConstants = skinMeshConstants_.Get(); context_->VSSetConstantBuffers(4, 1, &meshConstants);
         ID3D11ShaderResourceView* views[]{skinBuffers_[activeSkinBuffer_].groupView.Get(), skinBuffers_[activeSkinBuffer_].alphaView.Get(), skinBuffers_[activeSkinBuffer_].colorView.Get(), skinBuffers_[activeSkinBuffer_].layerAlphaView.Get(), skinBuffers_[activeSkinBuffer_].materialStateView.Get()};
@@ -246,7 +277,10 @@ void D3D11Scene::DrawModels(int pass) {
                 auto* raster = (layer.flags & WAR3_RENDER_MODEL_CULL_BACK) && culled ? culled : incoming.Get();
                 if (raster != activeRaster) { context_->RSSetState(raster); activeRaster = raster; }
                 const bool textured = layer.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE;
-                const ModelLayerConstants values{layer.alpha, layer.filterMode, layer.flags, textured ? 1u : 0u};
+                ModelLayerConstants values{layer.alpha, layer.filterMode, layer.flags, textured ? 1u : 0u};
+                ID3D11ShaderResourceView* surfaceViews[5]{};
+                ApplyModelSurface(model, layer, values, surfaceViews);
+                context_->PSSetShaderResources(12, 5, surfaceViews);
                 context_->UpdateSubresource(modelConstants_.Get(), 0, nullptr, &values, 0, 0);
                 auto* resource = textured ? modelTextures_[layer.textureIndex].Get() : nullptr;
                 context_->PSSetShaderResources(0, 1, &resource);
@@ -265,7 +299,7 @@ void D3D11Scene::DrawModels(int pass) {
                         // 只合并已可见的连续实例；透明层绝不按纹理全局重排。
                         while (next < end && stateAt(next).textureIndex == state.textureIndex && stateAt(next).samplerFlags == state.samplerFlags) ++next;
                         const bool hasTexture = state.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE;
-                        const ModelLayerConstants dynamicValues{layer.alpha, layer.filterMode, layer.flags, hasTexture ? 1u : 0u};
+                        auto dynamicValues = values; dynamicValues.textured = hasTexture ? 1u : 0u;
                         context_->UpdateSubresource(modelConstants_.Get(), 0, nullptr, &dynamicValues, 0, 0);
                         auto* textureView = hasTexture ? modelTextures_[state.textureIndex].Get() : nullptr;
                         auto* stateSampler = materialStateSamplers_[state.samplerFlags].Get();
@@ -283,6 +317,7 @@ void D3D11Scene::DrawModels(int pass) {
     if (activeRaster != incoming.Get()) context_->RSSetState(incoming.Get());
     context_->OMSetBlendState(nullptr, nullptr, 0xffffffff); context_->OMSetDepthStencilState(nullptr, 0);
     ID3D11ShaderResourceView* empty = nullptr; context_->PSSetShaderResources(0, 1, &empty);
+    ID3D11ShaderResourceView* emptySurface[5]{}; context_->PSSetShaderResources(12, 5, emptySurface);
     ID3D11ShaderResourceView* emptySkin[]{nullptr, nullptr, nullptr, nullptr, nullptr}; context_->VSSetShaderResources(2, 5, emptySkin);
 }
 }

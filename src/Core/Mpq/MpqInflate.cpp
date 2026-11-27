@@ -1,6 +1,8 @@
 #include "MpqDecompress.h"
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 
 namespace War3Map::Mpq {
@@ -140,7 +142,8 @@ bool InflateBlock(
     BitReader& br,
     const Huffman& litLen,
     const Huffman& dist,
-    std::vector<std::byte>& out) {
+    std::vector<std::byte>& out,
+    std::size_t limit) {
     while (true) {
         const int symbol = litLen.Decode(br);
         if (symbol < 0) {
@@ -150,6 +153,9 @@ bool InflateBlock(
             return true; // 块结束
         }
         if (symbol < 256) {
+            if (out.size() >= limit) {
+                return false;
+            }
             out.push_back(static_cast<std::byte>(symbol));
             continue;
         }
@@ -165,7 +171,8 @@ bool InflateBlock(
         }
         const int distance = kDistBase[distSym] + br.GetBits(kDistExtra[distSym]);
         if (br.error || distance <= 0 ||
-            static_cast<std::size_t>(distance) > out.size()) {
+            static_cast<std::size_t>(distance) > out.size() ||
+            static_cast<std::size_t>(length) > limit - out.size()) {
             return false;
         }
         const std::size_t start = out.size() - static_cast<std::size_t>(distance);
@@ -239,8 +246,9 @@ bool BuildDynamicTables(BitReader& br, Huffman& litLen, Huffman& dist) {
 
 } // namespace
 
-Result<std::vector<std::byte>> Inflate(
-    std::span<const std::byte> input, std::uint32_t expectedSize) {
+// limit：输出字节上限，超过即失败（单个 DEFLATE 块本身没有长度上限）。
+static Result<std::vector<std::byte>> InflateStream(
+    std::span<const std::byte> input, std::size_t expectedSize, std::size_t limit) {
     // 识别并跳过 zlib 头（RFC 1950）：CMF/FLG，method==8 且 (CMF<<8|FLG)%31==0。
     std::size_t start = 0;
     if (input.size() >= 2) {
@@ -263,7 +271,7 @@ Result<std::vector<std::byte>> Inflate(
     br.in = input.subspan(start);
 
     std::vector<std::byte> out;
-    out.reserve(expectedSize);
+    out.reserve(std::min<std::size_t>(expectedSize, 64u * 1024u * 1024u));
 
     bool lastBlock = false;
     while (!lastBlock) {
@@ -286,6 +294,10 @@ Result<std::vector<std::byte>> Inflate(
                 return Result<std::vector<std::byte>>::Failure(
                     "Mpq", "INFLATE_TRUNCATED", "stored block data truncated");
             }
+            if (static_cast<std::size_t>(len) > limit - out.size()) {
+                return Result<std::vector<std::byte>>::Failure(
+                    "Mpq", "INFLATE_OUTPUT_LIMIT", "inflated data exceeds the allowed size");
+            }
             for (int i = 0; i < len; ++i) {
                 out.push_back(br.in[br.pos + static_cast<std::size_t>(i)]);
             }
@@ -297,7 +309,7 @@ Result<std::vector<std::byte>> Inflate(
                 FixedTables() { BuildFixedTables(litLen, dist); }
             };
             static const FixedTables tables;
-            if (!InflateBlock(br, tables.litLen, tables.dist, out)) {
+            if (!InflateBlock(br, tables.litLen, tables.dist, out, limit)) {
                 return Result<std::vector<std::byte>>::Failure(
                     "Mpq", "INFLATE_FAILED", "fixed Huffman block decode failed");
             }
@@ -305,7 +317,7 @@ Result<std::vector<std::byte>> Inflate(
             Huffman litLen;
             Huffman dist;
             if (!BuildDynamicTables(br, litLen, dist) ||
-                !InflateBlock(br, litLen, dist, out)) {
+                !InflateBlock(br, litLen, dist, out, limit)) {
                 return Result<std::vector<std::byte>>::Failure(
                     "Mpq", "INFLATE_FAILED", "dynamic Huffman block decode failed");
             }
@@ -318,6 +330,17 @@ Result<std::vector<std::byte>> Inflate(
         }
     }
     return Result<std::vector<std::byte>>::Success(std::move(out));
+}
+
+Result<std::vector<std::byte>> Inflate(
+    std::span<const std::byte> input, std::uint32_t expectedSize) {
+    return InflateStream(input, expectedSize, SIZE_MAX);
+}
+
+Result<std::vector<std::byte>> InflateLimited(
+    std::span<const std::byte> input, std::size_t maxOutput) {
+    // 解完全部块；任何一刻超过上限都失败，不截断。
+    return InflateStream(input, maxOutput, maxOutput);
 }
 
 } // namespace War3Map::Mpq

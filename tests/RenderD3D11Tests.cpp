@@ -1514,6 +1514,7 @@ void TestEnvironment(const RendererOwner& renderer) {
 #include "RenderInstanceRosterTests.h"
 #include "RenderD3D11AssetAppendTests.h"
 #include "RenderD3D11MaterialStateTests.h"
+#include "RenderD3D11SurfaceMaterialTests.h"
 #include "RenderD3D11StaticSamplerTests.h"
 #include "RenderD3D11ObliqueSamplerTests.h"
 #include "RenderD3D11TerrainObliqueTests.h"
@@ -2396,6 +2397,7 @@ int wmain(int argc, wchar_t** argv) {
         TestAtomicCapture(api, info);
         TestDeferredCapture(api, info);
         TestSkinnedModels(api, info);
+        TestSurfaceMaterials(api, info);
         TestMaterialLayerAlphas(api, info);
         TestMaterialStates(api, info);
         TestUnfoggedMaterials(api, info);

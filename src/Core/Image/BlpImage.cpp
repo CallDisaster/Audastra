@@ -18,12 +18,6 @@ std::uint32_t ReadU32(const std::uint8_t* p) {
     return v;
 }
 
-std::uint8_t Clamp8(double v) {
-    if (v < 0.0) return 0;
-    if (v > 255.0) return 255;
-    return static_cast<std::uint8_t>(std::lround(v));
-}
-
 // 将 JPEG 解码结果按 BLP 约定映射为 RGBA。
 Result<DecodedImage> JpegToRgba(
     const detail::JpegDecoded& jpeg, std::uint32_t alphaBits) {
@@ -44,13 +38,8 @@ Result<DecodedImage> JpegToRgba(
             r = src[i * 4 + 2];
             a = (alphaBits >= 8) ? src[i * 4 + 3] : 255;
         } else if (nc == 3) {
-            // 标准 YCbCr → RGB。
-            const double y = src[i * 3 + 0];
-            const double cb = src[i * 3 + 1] - 128.0;
-            const double cr = src[i * 3 + 2] - 128.0;
-            r = Clamp8(y + 1.402 * cr);
-            g = Clamp8(y - 0.344136 * cb - 0.714136 * cr);
-            b = Clamp8(y + 1.772 * cb);
+            const auto rgb = detail::YCbCrToRgb(src[i * 3 + 0], src[i * 3 + 1], src[i * 3 + 2]);
+            r = rgb[0]; g = rgb[1]; b = rgb[2];
         } else if (nc == 1) {
             r = g = b = src[i];
         } else {

@@ -397,6 +397,7 @@ void D3D11Scene::PublishInstanceRoster(PreparedInstanceRoster& candidate) noexce
         modelTextures_.swap(assets.textures); particleTextures_.swap(assets.particleTextures);
         modelLayers_.swap(assets.layers); modelMeshes_.swap(assets.meshes); modelRanges_.swap(assets.models);
         skinMeshGroups_.swap(assets.meshGroups); skinMeshColors_.swap(assets.meshColors);
+        modelSurfaces_.swap(assets.modelSurfaces);
         skinModelLayerCounts_.swap(assets.modelLayerCounts);
         modelVertexCount_ = assets.vertexCount; modelIndexCount_ = assets.indexCount;
         skinDynamicColors_ = assets.dynamicColors;

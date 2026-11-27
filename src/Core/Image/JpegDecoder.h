@@ -2,6 +2,9 @@
 
 #include "War3MapCore/Types.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -30,6 +33,13 @@ struct JpegDecodeOptions {
 };
 
 inline constexpr std::size_t kMaxJpegInputBytes = 64u * 1024u * 1024u;
+
+// 标准 JFIF YCbCr → RGB（BLP 内嵌 JPEG 与独立 .jpg 共用同一换算与取整）。
+inline std::array<std::uint8_t, 3> YCbCrToRgb(std::uint8_t luma, std::uint8_t blue, std::uint8_t red) noexcept {
+    const double y = luma, cb = blue - 128.0, cr = red - 128.0;
+    const auto channel = [](double v) { return static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L)); };
+    return {channel(y + 1.402 * cr), channel(y - 0.344136 * cb - 0.714136 * cr), channel(y + 1.772 * cb)};
+}
 
 // 解码顺序（SOF0/SOF1）与渐进式（SOF2）Huffman JPEG。支持 1/3/4 组件、色度子采样、
 // 重启间隔、非交错扫描与逐次逼近精化；不支持无损、算术编码与 12 位精度。

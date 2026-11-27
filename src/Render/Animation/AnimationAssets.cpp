@@ -102,6 +102,7 @@ template<class Target, class Source> void CopyStaticGeometry(Target& target, con
     g.vertexGroups = a.vertexGroups; g.meshGeosets = a.meshGeosets;
     g.modelPaths = a.modelPaths; g.modelAssetKeys = a.modelAssetKeys;
     g.modelTextureBindings = a.modelTextureBindings;
+    g.modelSurfaces = a.modelSurfaces;
     g.untexturedLayers = a.untexturedLayers; g.rigidStaticPreviewAssets = a.rigidStaticPreviewAssets;
     g.warnings = a.warnings;
     target.vertices = source.vertices; target.meshes = source.meshes; target.models = source.models;
@@ -262,6 +263,17 @@ Status AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedM
     }
     for (auto mesh:a.meshes) {
         mesh.baseVertex+=vertexBase; mesh.firstIndex+=indexBase; mesh.firstLayer+=layerBase; g.meshes.push_back(mesh);
+    }
+    // 表面材质与模型同序；任一方有材质时补齐另一方为无材质，并把新增模型的纹理号映射到合并后的纹理表。
+    if (!g.modelSurfaces.empty() || !a.modelSurfaces.empty()) {
+        if (g.modelSurfaces.empty()) g.modelSurfaces.resize(g.models.size(), kNoModelSurface);
+        for (std::size_t m=0;m<a.models.size();++m) {
+            auto surface=a.modelSurfaces.empty() ? kNoModelSurface : std::as_const(a.modelSurfaces)[m];
+            for (auto* index:{&surface.normalTexture,&surface.ormTexture,&surface.detailNormalTexture,&surface.detailOrmTexture,
+                    &surface.detailAlbedoTexture})
+                if (*index!=WAR3_RENDER_MODEL_NO_TEXTURE) *index=textureMap.at(*index);
+            g.modelSurfaces.push_back(surface);
+        }
     }
     for (auto model:a.models) { model.firstMesh+=meshBase; g.models.push_back(model); }
     Append(target.vertices,added.vertices); Append(target.meshColors,added.meshColors);
@@ -886,6 +898,7 @@ Result<std::shared_ptr<const AnimationPreparedAssets>> ModelAnimationService::Pr
     result->baseSceneVersion_ = base.sceneVersion; result->baseDocumentRevision_ = base.documentRevision;
     result->generation_ = base.generation; result->sourceIdentity_ = base.sourceIdentity;
     result->assetKey_ = ModelAssetKey(request); result->replacementKey_ = AnimationPathKey(request.replaceableTexture);
+    result->surfaceKey_ = ModelSurfaceVariantKey(request);
     result->teamColor_ = request.teamColor; result->assetIndex_ = prepared.requestAssets.at(0);
     result->newAsset_ = result->assetIndex_ == state_->assets.size();
     result->asset_ = prepared.assets.at(result->assetIndex_); result->asset_.evaluatorIndex = UINT32_MAX;

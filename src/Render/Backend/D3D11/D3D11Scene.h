@@ -206,6 +206,7 @@ private:
         std::vector<War3RenderModelV2> models;
         std::vector<std::pair<std::uint32_t, std::uint32_t>> meshGroups;
         std::vector<War3RenderMeshColorV2> meshColors;
+        std::vector<War3RenderModelSurfaceV2> modelSurfaces;
         UINT vertexCount = 0, indexCount = 0;
         std::vector<std::uint32_t> modelLayerCounts;
         bool modelUpload = false, particleTextureUpload = false, dynamicColors = false, dynamicMaterialAlphas = false;
@@ -337,6 +338,8 @@ private:
     std::array<SkinGpuBuffers, 2> skinBuffers_;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> skinMeshGroups_;
     std::vector<War3RenderMeshColorV2> skinMeshColors_;
+    std::vector<War3RenderModelSurfaceV2> modelSurfaces_; // 空=没有表面材质，否则与模型同序
+    float cameraEye_[3]{}; // 本帧相机位置（世界坐标），表面材质的视线方向用
     std::vector<std::uint32_t> skinModelLayerCounts_;
     std::vector<std::uint32_t> skinChanges_; // 本次按变化记录上传的实例，复用容量
     struct SkinMeshConstants {
@@ -361,10 +364,20 @@ private:
     Ptr<ID3D11Buffer> overlay_;
     Ptr<ID3D11DepthStencilState> overlayDepth_;
     UINT overlayCount_ = 0;
+    // 与 Scene.hlsl 的 ModelLayer 常量布局一致；后半是表面材质，surface=0 时着色器走旧路径。
     struct ModelLayerConstants {
         float alpha; UINT filterMode, flags, textured;
+        UINT surface = 0, hasNormal = 0, hasOrm = 0; float normalScale = 1;
+        float normalYSign = -1, roughness = 1, metallic = 0, occlusion = 1;
+        float specular = 1, eye[3]{};
+        UINT hasDetailNormal = 0, hasDetailOrm = 0; float detailRepeat = 0, detailStrength = 0;
+        float detailMean[2]{1, 1};
+        UINT hasDetailAlbedo = 0; float detailAlbedoMean = 1;
     };
-    static_assert(sizeof(ModelLayerConstants) == 16);
+    static_assert(sizeof(ModelLayerConstants) == 96);
+    // 该层是否按模型的表面材质着色；是则填常量与四张图（法线、ORM、细节法线、细节 ORM）的视图。
+    void ApplyModelSurface(std::size_t model, const War3RenderModelLayerV2& layer, ModelLayerConstants& values,
+        ID3D11ShaderResourceView* (&views)[5]) const;
     // 场景环境：与 Scene.hlsl 的 Environment 常量布局一致。
     struct EnvironmentConstants {
         float towardLight[3], fogMode;

@@ -793,6 +793,7 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
         XMMatrixPerspectiveFovRH(XM_PIDIV4, static_cast<float>(width_) / static_cast<float>(height_), 1.0f, 1000000.0f));
     context_->UpdateSubresource(constants_.Get(), 0, nullptr, &matrix, 0, 0);
     std::memcpy(viewProjection, &matrix, sizeof(matrix));
+    cameraEye_[0] = XMVectorGetX(eye); cameraEye_[1] = XMVectorGetY(eye); cameraEye_[2] = XMVectorGetZ(eye);
     constexpr float background[]{0.045f, 0.060f, 0.075f, 1};
     context_->ClearRenderTargetView(targetView_.Get(), background);
     context_->ClearDepthStencilView(depthView_.Get(), D3D11_CLEAR_DEPTH, 1, 0);

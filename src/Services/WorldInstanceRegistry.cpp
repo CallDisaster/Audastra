@@ -68,7 +68,8 @@ std::string HostKey(const MapData::PlacementId& row) {
 }
 bool SameAsset(const Render::ModelInstanceRequest& a, const Render::ModelInstanceRequest& b) {
     return a.modelPath == b.modelPath && a.replaceableTexture == b.replaceableTexture && a.teamColor == b.teamColor &&
-        a.previewGhost == b.previewGhost && a.animationProperties == b.animationProperties;
+        a.previewGhost == b.previewGhost && a.animationProperties == b.animationProperties &&
+        Render::ModelSurfaceVariantKey(a) == Render::ModelSurfaceVariantKey(b);
 }
 }
 

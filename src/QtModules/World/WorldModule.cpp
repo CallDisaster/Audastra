@@ -25,6 +25,8 @@
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
 #include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
+#include "War3MapCore/Render/SurfaceMaterialTable.h"
+#include "War3MapCore/ProductFeatures.h"
 
 #include "Icons/SvgIcons.h"
 #include "Widgets/ElidedLabel.h"
@@ -557,7 +559,7 @@ void WorldModule::Refresh() {
         pendingCamera_ = viewport_->SaveCamera(); pendingCameraMap_ = shownMap_;
     }
     shownMap_.clear();
-    terrain_.reset(); waterSurfaceOffset_.reset(); deepWaterLevel_.reset();
+    terrain_.reset(); waterSurfaceOffset_.reset(); deepWaterLevel_.reset(); surfaceMaterials_.reset();
     terrainHeightRules_.reset();
     rawTerrain_.reset();
     terrainCache_.reset();
@@ -611,6 +613,15 @@ void WorldModule::Refresh() {
     WorldShadowInput shadow;
     shadow.context = ShadowContextFor(project_, sourceRaw.get(), shadowRelationMemo_);
     shadow.read.emplace(project_.ReadMapMember("war3map.shd"));
+    if (WarVKFeaturesShown()) {
+        // 没有材质表是常态，读不到不报错；表内的坏行写进运行日志。
+        if (auto table = project_.ReadMapMember(std::string(Render::kSurfaceMaterialTablePath)); table.Succeeded()) {
+            auto parsed = std::make_shared<Render::SurfaceMaterialTable>(Render::ParseSurfaceMaterialTable(
+                std::string_view(reinterpret_cast<const char*>(table.value->data()), table.value->size())));
+            if (!parsed->warnings.empty()) RecordTerrainLoad("surface-material-table", parsed->warnings);
+            if (!parsed->byRawcode.empty()) surfaceMaterials_ = std::move(parsed);
+        }
+    }
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     auto cache = std::make_shared<std::shared_ptr<WorldTerrainCache>>();
     // 先加载函数表并实际查询（renderer可为null）；不能等首次height mesh提交后才发现新能力。

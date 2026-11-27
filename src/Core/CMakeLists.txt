@@ -122,6 +122,7 @@ add_library(War3MapCore STATIC
     Image/BlpEncode.cpp
     Image/TextureImage.cpp
     Image/JpegDecoder.cpp
+    Image/PngDecoder.cpp
     MapInfo.cpp
     Types.cpp
     Workspace.cpp

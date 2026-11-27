@@ -120,6 +120,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/TerrainMinimapAssets.cpp
     Scene/ViewRay.cpp
     Scene/WorldModelScene.cpp
+    Scene/SurfaceMaterialTable.cpp
     Scene/OwnedStaticModels.cpp
     Scene/BuildingSplatPreview.cpp
     Scene/BuildingSplatProjection.cpp

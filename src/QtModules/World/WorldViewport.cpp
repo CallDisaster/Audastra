@@ -496,8 +496,13 @@ bool WorldViewport::SubmitModels(const Render::WorldModelScene* models) {
     const auto descriptor = Render::DescribeModelScene(models ? *models : empty);
     const auto* input = descriptor.StaticScene();
     if (!input) return false;
+    // 静态显示路径没有表面材质尾部：照旧着色，并说明材质未显示。
+    const auto noteSurfaces = [&] {
+        if (models && !models->modelSurfaces.empty()) SetStatus(tr("静态模型显示不含地图表面材质，法线/ORM 未显示"));
+        return true;
+    };
     if (HasEditorVisibilitySupport()) {
-        if (SubmitStaticVisibility(models, *input)) return true;
+        if (SubmitStaticVisibility(models, *input)) return noteSurfaces();
         SetStatus(tr("渲染器拒绝了模型与显隐组合场景，未替换当前视图"));
         return false;
     }
@@ -512,7 +517,7 @@ bool WorldViewport::SubmitModels(const Render::WorldModelScene* models) {
     const auto result = api_->submitModelScene(renderer_, input);
     if (result == 0) {
         editorPresentationTarget_.reset(); editorVisibilityDirty_ = false;
-        return true;
+        return noteSurfaces();
     }
     ReportPluginFailure("submitModelScene", result);
     SetStatus(tr("渲染器拒绝了模型场景，未替换当前视图"));

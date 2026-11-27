@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapData/PlacementEditing.h"
+#include "War3MapCore/Render/SurfaceMaterialTable.h"
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Services/BuildingSplatService.h"
 #include "War3MapCore/Services/PlacementPresentationService.h"
@@ -28,6 +29,8 @@ struct WorldPlacementGround {
     const MapData::TerrainGridSnapshot* terrain = nullptr;
     std::optional<float> waterSurfaceOffset; // Water.slk 当前地形集 height × 128；缺时不判断水面
     std::optional<float> deepWaterLevel;     // UI/MiscData.txt [Water] DeepLevelPathing；缺时两栖单位不上浮
+    // 地图的物体类型表面材质（WarVK\materials.ini）；空=不附加。只给装饰物与可破坏物，拖放预览不带。
+    std::shared_ptr<const Render::SurfaceMaterialTable> surfaceMaterials;
 };
 // 与游戏相同：取离 (x, y) 最近的地形顶点，有水标记且水面高于该点地面时返回水面高度。
 // deepOnly 另要求水深不小于 DeepLevelPathing（两栖单位只在深水里浮在水面）。

@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.1.24",
+  "version": "0.1.25",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "1e729e480106658c20a7231cab3332380404984a",
+  "commit": "a9ed2983211139ed4441d72f1a75e3eb8b010f3a",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "25afb425ffc9c3373690aa5a57728eb37f79630b2b090dbc23f75ae0b5c0289d"
+      "sha256": "d86a485319f495854fd50b804cec8dd137637122581967dbc12b3f2aa3e72cf8"
     },
     {
       "path": "COPYRIGHT.md",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "fc83a9b8b16fe9ef4d429ec78184ad4266df6ec5d0600e951d6128f6521ba617"
+      "sha256": "14cb4058140be131d6dde279fb19cb0047240e821c6b198ea92da6635e241f07"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -133,6 +133,10 @@
       "sha256": "51eca720328b826f611e0e1140a3faa90e4c989fac60e54c14db54aa4cb62ca2"
     },
     {
+      "path": "include/War3MapCore/RenderPluginSurfaceMaterial.h",
+      "sha256": "62180124dc3472c3b72820e23d730e23da3d9e7ffe9e32bed532ed94dd6f8dca"
+    },
+    {
       "path": "include/War3MapCore/RenderPluginTerrainBlight.h",
       "sha256": "91209b58ea63ddc12d674083818d56faabfda623e9ed38b376e055da404833c0"
     },
@@ -215,6 +219,10 @@
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginStaticSamplers.h",
       "sha256": "59763c99a04c0e9bfb5ac940d0405321fe7d4f8586d90d642c4e281c4a9d570b"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginSurfaceMaterial.h",
+      "sha256": "749ce13ef2f2906b0023bc0cf7b1acb9dc10e062c149a073301b0b5342fcd834"
     },
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginTerrainBlight.h",
@@ -330,11 +338,11 @@
     },
     {
       "path": "src/Render/Scene/ModelSceneData.h",
-      "sha256": "3f5ec84b4507d3e754b566eed6f459bfbcab713e4e7e1c71b023f56d8061562b"
+      "sha256": "18377816b2f53fb106c3d782b69d1e76e8e98813dc59dbeeb9d4ff97de9d4a5b"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.cpp",
-      "sha256": "5493882805f816177b25e0a88a9a0ff2e7cb2cc16f1ec35544f514bedf62a89c"
+      "sha256": "966ff0a9bdef518cc5826594d7f35e2a9ea027cffb169f4e61b1205341aa1866"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.h",
@@ -558,7 +566,7 @@
     },
     {
       "path": "tests/RenderSkinAssetAppendTests.cpp",
-      "sha256": "84b46873ef6eeac7a6304d7a39461f5990e67ae5f90651fd533ff08ad1e89c5e"
+      "sha256": "dbfbf0ddb130dfc9f096155fb4c78ab480cc4ec6dabb30042388323fed09369a"
     },
     {
       "path": "tests/RenderSkinFixture.h",
@@ -566,7 +574,7 @@
     },
     {
       "path": "tests/RenderSkinInputTests.cpp",
-      "sha256": "b353d4b958b50fe2aa43a9df3f0d47ffa0cbbdf12947cf4b53831205fac8fe87"
+      "sha256": "7ae4e919123a9c45de8d387431795062946f9a99ec3381a76bcad377aea93d0a"
     },
     {
       "path": "tests/RenderSkinRosterTests.cpp",
