@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.25",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "a9ed2983211139ed4441d72f1a75e3eb8b010f3a",
+  "commit": "493967972827e2007e555dfbc3ba8c441e54cee6",
   "files": [
     {
       "path": ".gitattributes",
@@ -134,7 +134,7 @@
     },
     {
       "path": "include/War3MapCore/RenderPluginSurfaceMaterial.h",
-      "sha256": "62180124dc3472c3b72820e23d730e23da3d9e7ffe9e32bed532ed94dd6f8dca"
+      "sha256": "a38298444d63b669d2fdb70c5fe7b88481e48204e10a23b0bbda24b8e00b3bc1"
     },
     {
       "path": "include/War3MapCore/RenderPluginTerrainBlight.h",

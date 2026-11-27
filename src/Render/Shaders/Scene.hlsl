@@ -276,7 +276,7 @@ SamplerState surfaceDetailSampler : register(s3);             // 重复寻址、
 // 按 LICENSE-AUDASTRA 授权）：屏幕导数构造切线框架；漫反射是游戏的光照和逐像素求值并照样夹到 1；
 // 直射高光 GGX + 高度相关 Smith + Schlick；环境项是 split-sum 解析近似。平法线、粗糙度 1、无金属时
 // 漫反射就是游戏的 Gouraud 光照改为逐像素。细节层按世界坐标三平面投影，whiteout 叠在本类型法线之后；
-// 细节颜色只取亮度（Rec.709）相对均值缩放基础色。环境光随最终法线比几何法线更朝天（或朝地）的程度增减。
+// 细节颜色只取亮度（Rec.709）相对均值缩放基础色，亮侧压缩。环境光随最终法线比几何法线更朝天（或朝地）的程度增减。
 float3 SurfaceUnpackNormal(float4 texel) {
     float2 xy = texel.xy * 2.0 - 1.0;
     return float3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
@@ -347,7 +347,10 @@ float3 SurfaceShade(ModelOutput input, float3 albedo, float3 dpx, float3 dpy, fl
             float b = dot(surfaceDetailAlbedoTexture.SampleGrad(surfaceDetailSampler, uvX, dpxd.zy, dpyd.zy).rgb, rec709) * w.x
                 + dot(surfaceDetailAlbedoTexture.SampleGrad(surfaceDetailSampler, uvY, dpxd.xz, dpyd.xz).rgb, rec709) * w.y
                 + dot(surfaceDetailAlbedoTexture.SampleGrad(surfaceDetailSampler, uvZ, dpxd.xy, dpyd.xy).rgb, rec709) * w.z;
-            albedo *= lerp(1.0, clamp(b / surfaceDetailAlbedoMean, 0.0, 2.0), saturate(strength));
+            // 比均值亮的部分逐渐压缩（两倍均值得 1.5，始终低于 2），免得照片碎石图的亮点把颜色冲白；暗侧保持线性。
+            float r = b / surfaceDetailAlbedoMean;
+            if (r > 1.0) r = 1.0 + (r - 1.0) / r;
+            albedo *= lerp(1.0, r, saturate(strength));
         }
     }
     // 天在上、地在下：环境光跟随最终法线比几何法线多（或少）朝天的程度；平法线时不变。

@@ -3,7 +3,7 @@
 #include "RenderSkinFixture.h"
 
 // 地图表面材质（WarVK\materials.ini）由 GPU 实画：平法线等于旧光照；本类型法线、细节法线向光倾斜按公式变亮，
-// 环境光随法线偏离朝天方向减弱；ORM 遮蔽压暗环境光；细节颜色按 Rec.709 亮度相对均值缩放；无光照层不受影响；
+// 环境光随法线偏离朝天方向减弱；ORM 遮蔽压暗环境光；细节颜色按 Rec.709 亮度相对均值缩放、亮侧压缩；无光照层不受影响；
 // 坏尾部整份拒绝且画面不变。复用 RenderD3D11Tests 的 Require 等。
 void TestSurfaceMaterials(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info) {
     RendererOwner renderer{api, api->createRenderer(&info)};
@@ -99,6 +99,9 @@ void TestSurfaceMaterials(const War3RenderPluginApiV2* api, const War3RenderCrea
     expect(render(&surface), 149, "detail albedo strength");
     surface = neutral; surface.detailAlbedoTexture = 5; surface.detailAlbedoMean = 0.2126f;
     expect(render(&surface), 199, "detail albedo uses Rec.709 brightness");
+    // 亮侧压缩：灰色是均值的 1.25 倍 → 1 + 0.25/1.25 = 1.2，颜色 0.78 × 1.2 = 0.936（不压缩会是 0.975）。
+    surface = neutral; surface.detailAlbedoTexture = 4; surface.detailAlbedoMean = (128.0f / 255.0f) / 1.25f;
+    expect(render(&surface), 239, "detail albedo bright side rolls off");
     // 无光照层不受材质影响。
     fixture.layer.flags = 1;
     surface = neutral; surface.normalTexture = 1;
@@ -113,5 +116,5 @@ void TestSurfaceMaterials(const War3RenderPluginApiV2* api, const War3RenderCrea
     bad = surface; bad.detailAlbedoMean = 0;
     Require(submit(&bad) != 0, "zero detail albedo mean accepted");
     Require(capture() == accepted, "rejected surface changed pixels");
-    std::cout << "surface material WARP: flat/tilted/detail normals, hemisphere ambient, ORM occlusion, detail albedo, unshaded and rejection passed\n";
+    std::cout << "surface material WARP: flat/tilted/detail normals, hemisphere ambient, ORM occlusion, detail albedo with roll-off, unshaded and rejection passed\n";
 }
