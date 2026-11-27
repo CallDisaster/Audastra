@@ -345,6 +345,7 @@ void WorldModule::QueuePlacementInstances() {
         // completed回调只在同次Draw/Present票据通过后到达，不能以CPU目标移除占位。
         placementCompletedScene_ = animation_->Scene(); placementCompletedFrame_ = animation_->Frame();
         requests_ = *renderRequests; placementIds_ = *renderIds;
+        SyncScatterScene();
         pathingHelperRequests_.assign(requests_.size(), 0);
         pathingHelperPresentation_.reset();
         if (*preparedHelpers) {

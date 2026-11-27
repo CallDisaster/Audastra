@@ -89,6 +89,9 @@ struct UnitPlacement : PlacementTransform {
     std::int32_t creationId = 0;
 };
 
+// 装饰物 flags 的 0x04：游戏沿用记录里的 Z（固定高度），未设置时放回地面。
+inline constexpr std::uint8_t kDoodadFlagFixedZ = 0x04;
+
 struct DoodadPlacement : PlacementTransform {
     std::uint8_t flags = 0;
     std::uint8_t lifePercent = 100;

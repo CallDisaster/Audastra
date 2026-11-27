@@ -1,7 +1,8 @@
 qt_add_library(War3MapQtModuleWorld STATIC WorldModule.cpp WorldModule.h WorldModuleEditing.cpp WorldViewport.cpp WorldViewport.h WorldViewportCameraFrame.cpp WorldViewportPicking.cpp WorldViewportInternals.h RenderPluginFailure.h
     WorldMinimapPreview.cpp WorldMinimapPreview.h
     WorldMinimapMarkerDialog.cpp WorldMinimapMarkerDialog.h
-    WorldTerrainAssets.cpp WorldTerrainAssets.h WorldTerrainBuild.cpp WorldTerrainBuild.h WorldEnvironment.h WorldPlacementModels.cpp WorldPlacementModels.h
+    WorldTerrainAssets.cpp WorldTerrainAssets.h WorldTerrainBuild.cpp WorldTerrainBuild.h WorldEnvironment.h WorldPlacementModels.cpp
+    WorldScatterBrush.cpp WorldScatterBrush.h WorldPlacementModels.h
     WorldNavigation.cpp WorldNavigationBookmark.h
     WorldAuxiliaryEditing.cpp WorldAuxiliaryDialog.cpp WorldAuxiliaryDialog.h
     WorldStartLocations.cpp WorldStartLocations.h

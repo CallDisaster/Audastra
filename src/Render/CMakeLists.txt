@@ -129,6 +129,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/SceneEnvironment.cpp
     Scene/ModelPicking.cpp
     Scene/ModelPickingPrecise.cpp
+    Scene/ModelSurfaceIndex.cpp
     Scene/EditorOverlay.cpp)
 add_library(War3MapEditor::RenderSupport ALIAS War3MapRenderSupport)
 target_link_libraries(War3MapRenderSupport PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3RenderCore::CPU)

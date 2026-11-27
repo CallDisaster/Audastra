@@ -208,6 +208,10 @@ public:
     [[nodiscard]] bool Placing() const noexcept { return placing_; }
     void SetBrushMode(bool enabled);
     [[nodiscard]] bool BrushMode() const noexcept { return brushMode_; }
+    // 笔刷改为落在调用方给的表面上（模型表面、地形或两者）；空函数时照旧只落在地形上。
+    // 射线来自完成帧的视线；返回落点世界坐标，未命中返回空。笔画信号照常是 TerrainStroke*。
+    using SurfacePicker = std::function<std::optional<std::array<double, 3>>(const Render::TerrainRay& ray, double maxDistance)>;
+    void SetSurfacePicker(SurfacePicker picker);
     [[nodiscard]] bool StrokeActive() const noexcept { return strokeActive_; }
     void SetTerrainBlockSelection(bool enabled);
     [[nodiscard]] bool TerrainBlockSelection() const noexcept { return terrainBlockSelection_; }
@@ -277,6 +281,9 @@ signals:
     void TerrainStrokeFinished();
     void TerrainStrokeCancelled();
     void TerrainBrushExitRequested();
+    // 表面笔刷（SetSurfacePicker）的悬停落点。
+    void SurfaceHovered(double x, double y, double z);
+    void SurfaceHoverLost();
     // 拖动选中对象：开始时给出按下处地面点，之后给出光标下地面点（调用方按差值移动）；结束或取消各发一次。
     void MoveStarted(double x, double y);
     void MoveDragged(double x, double y);
@@ -361,6 +368,7 @@ private:
     // cameraOnly：只核对镜头与画布未变（地面拾取用 CPU 地形，不依赖模型姿势）。
     [[nodiscard]] Result<Render::TerrainPickResult> PickAt(QPointF point, const Render::ViewProjectionFrame& frame,
         const MapData::TerrainGridSnapshot* fixedTerrain = nullptr, bool cameraOnly = false) const;
+    [[nodiscard]] std::optional<std::array<double, 3>> PickSurfaceAt(QPointF point, const Render::ViewProjectionFrame& frame) const;
     void ScheduleHover();
     void UpdateHover();
     void ClearCoordinates(QString reason, bool clearSelection = false, bool preservePlacementPreview = false);
@@ -526,6 +534,7 @@ private:
     bool terrainBlockSelection_ = false;
     bool placementHoverActive_ = false;
     bool brushMode_ = false;
+    SurfacePicker surfacePicker_;
     bool strokeActive_ = false;
     QPointF strokeLastPickPixel_;
     std::array<double, 2> pressGround_{};

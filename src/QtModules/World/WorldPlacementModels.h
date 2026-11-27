@@ -113,6 +113,9 @@ struct WorldBuildingSplatCapture {
     const QtProject::EditorProject& project, ObjectData::ObjectType type,
     const MapData::PlacementTransform& placement, std::int32_t owner,
     WorldPlacementPresentationCandidate* presentation = nullptr, const WorldPlacementGround& ground = {});
+// 装饰物/可破坏物类型的变体数（物编 numVar，同一父链）；类型不存在时为 1，最多 64。
+[[nodiscard]] std::uint32_t PlacementVariationCount(const QtProject::EditorProject& project, ObjectData::ObjectType type,
+    const std::string& rawcode);
 // 已有/新放置/拖动预览共享：rawPosition属于地图事务，返回值只用于渲染。
 // 单位和物品（groundAnchor 不是 Stored）在有地形且该点有地面时按地面高度显示，不看 rawPosition 的 Z：
 // 游戏只按 (x, y) 创建它们，摆放文件里的 Z 常为 0，照它画会把单位埋到地面以下。

@@ -876,6 +876,7 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
         scene_.reset(); if (animation_) animation_->Clear();
         requests_ = std::move(capture.requests); placementIds_ = std::move(capture.ids);
         unresolvedPlacements_ = std::move(capture.unresolvedRows);
+        SyncScatterScene();
         FinishEmptyModelCapture();
         UpdateOverlay();
         return;
@@ -955,6 +956,7 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
                 "静态模型没有被渲染插件接受；没有授予当前场景完成资格。").diagnostics); return;
         }
         scene_ = scene; requests_ = std::move(placed->requests); placementIds_ = std::move(placed->ids);
+        SyncScatterScene();
         unresolvedPlacements_ = std::move(placed->unresolvedRows);
         RecordModelLoad("prepared-static");
         // 用量和未显示原因写进运行日志：作者反馈“某些模型不显示”时可以直接从日志判断是哪一项上限或哪些模型。
@@ -1154,6 +1156,7 @@ void WorldModule::RefreshPlacements() {
         return;
     }
     requests_ = std::move(capture.requests); placementIds_ = std::move(capture.ids);
+    SyncScatterScene();
     const bool sameLayout = models.size() == scene_->instances.size() && std::equal(models.begin(), models.end(),
         scene_->instances.begin(), [](std::uint32_t model, const auto& instance) { return model == instance.model; });
     // 数量与模型次序不变（移动、旋转）只更新实例；否则重交场景（几何不重新读取）。
@@ -1182,7 +1185,7 @@ void WorldModule::RefreshMapEdits() {
         strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
         resumeBrushAfterRender_ = terrainToggle_ && terrainToggle_->isChecked();
         if (resumeBrushAfterRender_) terrainToggle_->setChecked(false);
-        else if (viewport_->StrokeActive()) viewport_->SetBrushMode(false);
+        else if (viewport_->StrokeActive() && CurrentTool() != Tool::Scatter) viewport_->SetBrushMode(false);
         if (terrainToggle_) terrainToggle_->setEnabled(false);
         if (page_->isVisible()) QueueTerrainRender(source, false);
         else needsRefresh_ = true;
@@ -1211,7 +1214,7 @@ void WorldModule::InvalidateWaterBrushCapture() {
     waterCapturePending_ = false;
     waterCapture_.reset(); waterCaptureRequest_.reset();
     if (terrainWaterBrushStatus_) terrainWaterBrushStatus_->setProperty("ready", false);
-    if (viewport_ && NeedsStructuralBrushRules()) viewport_->SetBrushMode(false);
+    if (viewport_ && NeedsStructuralBrushRules() && CurrentTool() != Tool::Scatter) viewport_->SetBrushMode(false);
 }
 
 void WorldModule::QueueWaterBrushCapture() {

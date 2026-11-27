@@ -641,6 +641,14 @@ std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(const QtProj
     return request;
 }
 
+std::uint32_t PlacementVariationCount(const QtProject::EditorProject& project, ObjectType type, const std::string& rawcode) {
+    ObjectFields fields(project);
+    if (!fields.Find(type, rawcode)) return 1;
+    const auto count = type == ObjectType::Doodad ? fields.Value({"numvar", "dvar"}, 1)
+        : type == ObjectType::Destructable ? fields.Value({"numvar", "bvar"}, 1) : 1;
+    return static_cast<std::uint32_t>(std::clamp(count, 1.0, 64.0));
+}
+
 std::variant<MapData::UnitPlacement, MapData::DoodadPlacement> MakeNewPlacement(
     ObjectData::ObjectType type, const std::string& rawcode, std::int32_t owner, const std::array<float, 3>& position) {
     return Services::MakeDefaultPlacement(type, rawcode, owner, position);

@@ -28,6 +28,7 @@ add_library(War3MapServices STATIC
     PlacementPresentationService.cpp
     PlacementCreation.cpp
     PlacementImport.cpp
+    DoodadScatter.cpp
     ObjectCommandSources.cpp
     ProjectReferenceIndex.cpp
     AuxiliaryEditing.cpp

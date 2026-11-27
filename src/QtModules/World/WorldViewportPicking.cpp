@@ -124,6 +124,14 @@ Result<Render::TerrainPickResult> WorldViewport::PickAt(QPointF point, const Ren
     return picked;
 }
 
+std::optional<std::array<double, 3>> WorldViewport::PickSurfaceAt(QPointF point, const Render::ViewProjectionFrame& frame) const {
+    if (!surfacePicker_) return std::nullopt;
+    const auto ray = Render::MakeViewRayFromLogical(frame,
+        {static_cast<std::uint32_t>(width()), static_cast<std::uint32_t>(height()), devicePixelRatioF()}, {point.x(), point.y()});
+    if (!ray.Succeeded()) return std::nullopt;
+    return surfacePicker_(ray.value->ray, ray.value->maxDistance);
+}
+
 bool WorldViewport::IsInstanceSelectable(std::uint32_t instance) const {
     if (!models_ || instance >= models_->instances.size() || instance >= models_->instanceRequests.size()) return false;
     const auto request = models_->instanceRequests[instance];
@@ -547,6 +555,10 @@ void WorldViewport::UpdateHover() {
         ClearCoordinates(PickDiagnostic(frame.diagnostics), !pending, pending); return;
     }
     if (hoverView_ && SameView(*hoverView_, frame.value->identity) && sampledPosition_ == hoverPosition_) return;
+    if (brushMode_ && surfacePicker_) {
+        if (const auto surface = PickSurfaceAt(hoverPosition_, *frame.value)) emit SurfaceHovered((*surface)[0], (*surface)[1], (*surface)[2]);
+        else emit SurfaceHoverLost();
+    }
     const auto picked = PickAt(hoverPosition_, *frame.value, nullptr, placing_);
     if (!picked.Succeeded()) {
         ClearCoordinates(PickDiagnostic(picked.diagnostics), true); return;

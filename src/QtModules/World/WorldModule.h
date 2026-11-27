@@ -74,6 +74,7 @@ class WorldCliffLayerPresenter;
 class WorldSkyLayer;
 class WorldOutlinerModel;
 class WorldAssetBrowser;
+class WorldScatterBrush;
 struct WorldTerrainCache;
 struct WorldTerrainLoaded;
 class WorldTerrainHeightRules;
@@ -199,7 +200,7 @@ private:
     [[nodiscard]] bool RefreshEnvironment(); // 已改为完整重新读取时返回 true
     void CaptureAuxiliary(const MapDocument& document);
     // 界面框架（WorldPanels.cpp）：顶栏工具、左侧工具面板（场景目录 / 摆放 / 地形笔刷）、状态栏。
-    enum class Tool { Select, Place, Terrain };
+    enum class Tool { Select, Place, Terrain, Scatter }; // 序号即工具页序号
     void BuildToolbar(QVBoxLayout* layout);
     void UpdateToolbarLayout();
     [[nodiscard]] QWidget* BuildToolPanel();
@@ -332,6 +333,10 @@ private:
         const QtProject::AuxiliaryEditBinding& binding, const QString& label);
     void UpdateAuxiliaryActions();
     void ChoosePlacement(const QtApp::ObjectViewEntry& entry);
+    // 散布工具（WorldScatterBrush）：目录点击加入调色板；摆放请求更新时同步落点表面。
+    void AddScatterType(const QtApp::ObjectViewEntry& entry);
+    void SetScatterActive(bool active);
+    void SyncScatterScene();
     void ActivatePlacementTool();
     void PlaceAt(double x, double y, bool snap);
     void StopPlacing();
@@ -370,6 +375,8 @@ private:
     QPushButton* selectTool_ = nullptr;
     QPushButton* placeToggle_ = nullptr;
     QPushButton* terrainToggle_ = nullptr;
+    QPushButton* scatterToggle_ = nullptr;
+    WorldScatterBrush* scatter_ = nullptr;
     UiKit::SlidingHighlight* toolIndicator_ = nullptr;
     QPushButton* showRegions_ = nullptr;
     QPushButton* showCameras_ = nullptr;

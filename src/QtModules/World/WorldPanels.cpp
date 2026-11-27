@@ -4,6 +4,7 @@
 #include "WorldMinimapPreview.h"
 #include "WorldPanelWidgets.h"
 #include "WorldViewport.h"
+#include "WorldScatterBrush.h"
 #include "WorldAnimationPlayer.h"
 #include "WorldOutlinerModel.h"
 #include "WorldAssetBrowser.h"
@@ -238,7 +239,9 @@ void WorldModule::BuildToolbar(QVBoxLayout* layout) {
         tr("从物体目录选择后单击地面放置；再次点击回到选择"));
     terrainToggle_ = ToolButton(segment, "worldTerrainToggle", "lucide/mountain", tr("地形"),
         tr("地形笔刷：贴图、荒芜、升降、高原、平滑、悬崖；再次点击回到选择"));
-    for (auto* button : {selectTool_, placeToggle_, terrainToggle_}) tools->addWidget(button);
+    scatterToggle_ = ToolButton(segment, "worldScatterToggle", "lucide/trees", tr("散布"),
+        tr("散布笔刷：按调色板在地形或模型表面上成片摆放、擦除装饰物；再次点击回到选择"));
+    for (auto* button : {selectTool_, placeToggle_, terrainToggle_, scatterToggle_}) tools->addWidget(button);
     row->addWidget(segment);
     auto* divider = new QFrame(toolbar);
     divider->setObjectName(QStringLiteral("worldToolbarDivider"));
@@ -329,6 +332,8 @@ QWidget* WorldModule::BuildToolPanel() {
     toolStack_->addWidget(BuildSelectPage());
     toolStack_->addWidget(BuildPlacePage());
     toolStack_->addWidget(BuildTerrainPage());
+    scatter_ = new WorldScatterBrush(project_, this);
+    toolStack_->addWidget(scatter_->BuildPage(panel));
     column->addWidget(toolStack_, 1);
     column->addWidget(new WorldMinimapPreview(project_, panel, viewport_));
     return panel;
@@ -555,6 +560,7 @@ void WorldModule::ConnectEditing() {
         StopTerrainBlockTool();
         StopPlacing();
         terrainToggle_->setChecked(false);
+        scatterToggle_->setChecked(false);
         // 松手核验期间按钮已暂时取消勾选，不能只依赖toggled(false)取消事务。
         CancelTerrainStroke();
         resumeBrushAfterRender_ = false;
@@ -564,6 +570,7 @@ void WorldModule::ConnectEditing() {
         if (shown) {
             StopTerrainBlockTool();
             if (terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
+            if (scatterToggle_->isChecked()) scatterToggle_->setChecked(false);
             CancelTerrainStroke();
             resumeBrushAfterRender_ = false;
         } else StopPlacing();
@@ -573,6 +580,7 @@ void WorldModule::ConnectEditing() {
     connect(terrainToggle_, &QPushButton::toggled, this, [this](bool shown) {
         if (shown && (terrainBlockSelecting_ || terrainBlockPasting_)) StopTerrainBlockTool();
         if (shown && placeToggle_->isChecked()) placeToggle_->setChecked(false);
+        if (shown && scatterToggle_->isChecked()) scatterToggle_->setChecked(false);
         viewport_->SetBrushMode(shown && (!NeedsStructuralBrushRules() || WaterBrushCaptureCurrent()));
         if (shown) { StopPlacing(); ClearSelection(); RefreshTerrainPalette(); UpdateOverlay(); }
         else CancelTerrainStroke();
@@ -581,6 +589,23 @@ void WorldModule::ConnectEditing() {
         UpdateWaterFrameControl();
         if (shown && NeedsStructuralBrushRules()) QueueWaterBrushCapture();
     });
+    connect(scatterToggle_, &QPushButton::toggled, this, [this](bool shown) {
+        if (shown) {
+            StopTerrainBlockTool();
+            if (placeToggle_->isChecked()) placeToggle_->setChecked(false);
+            if (terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
+            CancelTerrainStroke();
+            resumeBrushAfterRender_ = false;
+            StopPlacing(); ClearSelection();
+        }
+        SetScatterActive(shown);
+        UpdateToolState();
+        UpdateSelectionText();
+        UpdateOverlay();
+        if (shown) { RefreshAssetBrowser(); if (assetDock_) { assetDock_->show(); assetDock_->raise(); } }
+    });
+    connect(scatter_, &WorldScatterBrush::OverlayChanged, this, &WorldModule::UpdateOverlay);
+    connect(scatter_, &WorldScatterBrush::StatusText, this, [this](const QString& text) { if (selectionStatus_) selectionStatus_->setText(text); });
     connect(terrainKinds_, &QButtonGroup::idToggled, this, [this](int, bool on) {
         if (!on) return;
         StopTerrainBlockTool();
@@ -591,7 +616,9 @@ void WorldModule::ConnectEditing() {
         viewport_->SetBrushMode(terrainToggle_->isChecked() && (!NeedsStructuralBrushRules() || WaterBrushCaptureCurrent()));
     });
     connect(assetBrowser_, &WorldAssetBrowser::PlacementRequested, this, [this](const QtApp::ObjectViewEntry& entry, const WorldAssetBinding& binding) {
-        if (binding == WorldAssetBinding{MapKey(), generation_, project_.mapEdits_ ? project_.mapEdits_->Revision() : 0}) ChoosePlacement(entry);
+        if (binding != WorldAssetBinding{MapKey(), generation_, project_.mapEdits_ ? project_.mapEdits_->Revision() : 0}) return;
+        if (CurrentTool() == Tool::Scatter) AddScatterType(entry);
+        else ChoosePlacement(entry);
     });
     connect(assetBrowser_, &WorldAssetBrowser::DefinitionRequested, this, [this](ObjectData::ObjectType type, const QString& rawcode, const WorldAssetBinding& binding) {
         if (host_ && binding == WorldAssetBinding{MapKey(), generation_, project_.mapEdits_ ? project_.mapEdits_->Revision() : 0})
@@ -669,17 +696,32 @@ void WorldModule::ConnectEditing() {
         return !helperHidden && (request >= placementIds_.size() || worldSelection_.Flags(Services::WorldObjectId{placementIds_[request]}).visible);
     });
     connect(viewport_, &WorldViewport::TerrainStrokeStarted, this, [this](double x, double y) {
+        if (CurrentTool() == Tool::Scatter) { scatter_->Begin(x, y); return; }
         brushCursor_ = std::array{x, y};
         StartTerrainStroke(x, y);
     });
     connect(viewport_, &WorldViewport::TerrainStrokeMoved, this, [this](double x, double y) {
+        if (CurrentTool() == Tool::Scatter) { scatter_->Extend(x, y); return; }
         brushCursor_ = std::array{x, y};
         ExtendTerrainStroke(x, y);
         UpdateOverlay();
     });
-    connect(viewport_, &WorldViewport::TerrainStrokeFinished, this, &WorldModule::FinishTerrainStroke);
-    connect(viewport_, &WorldViewport::TerrainStrokeCancelled, this, &WorldModule::CancelTerrainStroke);
+    connect(viewport_, &WorldViewport::TerrainStrokeFinished, this, [this] {
+        if (CurrentTool() == Tool::Scatter) scatter_->Finish();
+        else FinishTerrainStroke();
+    });
+    connect(viewport_, &WorldViewport::TerrainStrokeCancelled, this, [this] {
+        if (scatter_->StrokeActive()) scatter_->Cancel();
+        else CancelTerrainStroke();
+    });
+    connect(viewport_, &WorldViewport::SurfaceHovered, this, [this](double x, double y, double z) {
+        if (CurrentTool() == Tool::Scatter) scatter_->Hover(std::array{x, y, z});
+    });
+    connect(viewport_, &WorldViewport::SurfaceHoverLost, this, [this] {
+        if (CurrentTool() == Tool::Scatter) scatter_->Hover(std::nullopt);
+    });
     connect(viewport_, &WorldViewport::TerrainBrushExitRequested, this, [this] {
+        if (CurrentTool() == Tool::Scatter) { scatterToggle_->setChecked(false); return; }
         resumeBrushAfterRender_ = false;
         terrainToggle_->setChecked(false);
         UpdateToolState();
@@ -705,6 +747,7 @@ void WorldModule::ConnectEditing() {
         shortcut->setContext(Qt::WidgetWithChildrenShortcut);
         connect(shortcut, &QShortcut::activated, this, [this, step] {
             if (CurrentTool() == Tool::Terrain) terrainRadius_->setValue(terrainRadius_->value() + step);
+            else if (CurrentTool() == Tool::Scatter) scatter_->AdjustRadius(step);
         });
     }
     UpdateTerrainBrushControls();
@@ -718,6 +761,7 @@ void WorldModule::ActivatePlacementTool() {
     StopTerrainBlockTool();
     resumeBrushAfterRender_ = false;
     if (terrainToggle_ && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
+    if (scatterToggle_ && scatterToggle_->isChecked()) scatterToggle_->setChecked(false);
     if (viewport_) {
         viewport_->SetBrushMode(false);
         viewport_->SetPlacing(true);
@@ -731,6 +775,7 @@ void WorldModule::ActivatePlacementTool() {
 }
 
 WorldModule::Tool WorldModule::CurrentTool() const {
+    if (scatterToggle_ && scatterToggle_->isChecked()) return Tool::Scatter;
     if (placeToggle_ && placeToggle_->isChecked()) return Tool::Place;
     if (terrainBlockSelecting_ || terrainBlockPasting_ || (terrainToggle_ && (terrainToggle_->isChecked() || resumeBrushAfterRender_))) return Tool::Terrain;
     return Tool::Select;
@@ -744,7 +789,7 @@ void WorldModule::UpdateToolState() {
         selectTool_->setChecked(tool == Tool::Select);
     }
     const std::array buttons{std::pair{selectTool_, Tool::Select}, std::pair{placeToggle_, Tool::Place},
-        std::pair{terrainToggle_, Tool::Terrain}};
+        std::pair{terrainToggle_, Tool::Terrain}, std::pair{scatterToggle_, Tool::Scatter}};
     QPushButton* current = selectTool_;
     for (const auto& [button, which] : buttons) {
         const bool on = which == tool;
@@ -757,7 +802,8 @@ void WorldModule::UpdateToolState() {
         toolStack_->setCurrentIndex(page);
         UiKit::FadeIn(toolStack_->currentWidget(), 170, 0.15);
     }
-    toolTitle_->setText(tool == Tool::Terrain ? tr("地形笔刷") : tool == Tool::Place ? tr("摆放") : tr("场景目录"));
+    toolTitle_->setText(tool == Tool::Terrain ? tr("地形笔刷") : tool == Tool::Place ? tr("摆放")
+        : tool == Tool::Scatter ? tr("散布") : tr("场景目录"));
     if (tool != Tool::Terrain && brushCursor_) { brushCursor_.reset(); UpdateOverlay(); }
     shownTool_ = tool;
     UpdateToolHint();
@@ -785,6 +831,10 @@ void WorldModule::UpdateToolHint() {
             : corner ? tr("一级拐角坡道 · 单点九顶点范围") : ramp ? tr("一级干地直坡 · 三点范围")
             : tr("%1 · 尺寸 %2").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
         selectionStatus_->setText(strokeBase_ ? tr("涂刷中") : QString{});
+        return;
+    }
+    if (tool == Tool::Scatter) {
+        toolSubtitle_->setText(tr("在物体目录里单击装饰物加入调色板"));
         return;
     }
     if (tool == Tool::Place) {

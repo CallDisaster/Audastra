@@ -891,6 +891,13 @@ void WorldViewport::SetBrushMode(bool enabled) {
     if (enabled) { placing_ = false; terrainBlockSelection_ = false; selectedInstance_.reset(); }
 }
 
+void WorldViewport::SetSurfacePicker(SurfacePicker picker) {
+    CancelTerrainStroke();
+    surfacePicker_ = std::move(picker);
+    hoverView_.reset();
+    ScheduleHover();
+}
+
 void WorldViewport::SetTerrainBlockSelection(bool enabled) {
     if (terrainBlockSelection_ == enabled && !placing_) return;
     CancelTerrainStroke(); CancelMove();
@@ -1156,7 +1163,14 @@ void WorldViewport::mousePressEvent(QMouseEvent* event) {
                     if (!policy.Succeeded()) { ClearCoordinates(PickDiagnostic(policy.diagnostics)); event->accept(); return; }
                     pressModelPolicy_ = *policy.value;
                 }
-                if (dragButton_ == Qt::LeftButton && brushMode_) {
+                if (dragButton_ == Qt::LeftButton && brushMode_ && surfacePicker_) {
+                    if (const auto surface = PickSurfaceAt(pressPosition_, *frame.value)) {
+                        strokeActive_ = true;
+                        strokeLastPickPixel_ = pressPosition_;
+                        dragging_ = true;
+                        emit TerrainStrokeStarted((*surface)[0], (*surface)[1]);
+                    } else ClearCoordinates(tr("鼠标处没有可落点的表面"));
+                } else if (dragButton_ == Qt::LeftButton && brushMode_) {
                     const auto picked = PickAt(pressPosition_, *frame.value);
                     if (picked.Succeeded() && picked.value->hit) {
                         strokeActive_ = true;
@@ -1194,7 +1208,12 @@ void WorldViewport::mouseMoveEvent(QMouseEvent* event) {
     if (strokeActive_) {
         mousePosition_ = event->position();
         const auto frame = ReadPickingFrame();
-        if (frame.Succeeded()) {
+        if (frame.Succeeded() && surfacePicker_) {
+            if (const auto surface = PickSurfaceAt(event->position(), *frame.value)) {
+                strokeLastPickPixel_ = event->position();
+                emit TerrainStrokeMoved((*surface)[0], (*surface)[1]);
+            }
+        } else if (frame.Succeeded()) {
             const auto picked = PickAt(event->position(), *frame.value, strokeTerrain_.get());
             if (picked.Succeeded() && picked.value->hit) {
                 strokeLastPickPixel_ = event->position();
@@ -1270,7 +1289,10 @@ void WorldViewport::mouseReleaseEvent(QMouseEvent* event) {
         if (strokeActive_) {
             if (event->position() != strokeLastPickPixel_) {
                 const auto frame = ReadPickingFrame();
-                if (frame.Succeeded()) {
+                if (frame.Succeeded() && surfacePicker_) {
+                    if (const auto surface = PickSurfaceAt(event->position(), *frame.value))
+                        emit TerrainStrokeMoved((*surface)[0], (*surface)[1]);
+                } else if (frame.Succeeded()) {
                     const auto picked = PickAt(event->position(), *frame.value, strokeTerrain_.get());
                     if (picked.Succeeded() && picked.value->hit)
                         emit TerrainStrokeMoved(picked.value->hit->position[0], picked.value->hit->position[1]);

@@ -9,6 +9,7 @@
 #include "WorldPathingHelperPresenter.h"
 #include "WorldSelectionProperties.h"
 #include "WorldViewport.h"
+#include "WorldScatterBrush.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
 #include "ObjectContextProvider.h"
@@ -508,6 +509,31 @@ void WorldModule::RefreshPalette() {
     catalog_->SetEntries(entries);
     catalog_->SetKindFilter(QString::fromUtf8(ObjectData::ToString(ObjectData::ObjectType::Unit)));
     catalog_->SetCatalogStatus(project_.standardCatalog_ ? QString{} : tr("原版目录未加载，只列出地图自定义物体"));
+}
+
+void WorldModule::AddScatterType(const QtApp::ObjectViewEntry& entry) {
+    if (const auto type = PlaceableType(entry.kind)) scatter_->AddType(*type, entry.id, entry.name.isEmpty() ? entry.id : entry.name);
+}
+
+void WorldModule::SetScatterActive(bool active) {
+    if (!scatter_ || !viewport_) return;
+    if (active) {
+        scatter_->SetMapKey(MapKey());
+        SyncScatterScene();
+        viewport_->SetBrushMode(true);
+        viewport_->SetSurfacePicker([this](const Render::TerrainRay& ray, double maxDistance) { return scatter_->Pick(ray, maxDistance); });
+    } else {
+        viewport_->SetSurfacePicker({});
+        if (CurrentTool() != Tool::Terrain) viewport_->SetBrushMode(false);
+    }
+    scatter_->SetActive(active);
+}
+
+void WorldModule::SyncScatterScene() {
+    if (!scatter_ || !scatterToggle_ || !scatterToggle_->isChecked()) return;
+    scatter_->SceneChanged({requests_, placementIds_, [this](std::uint32_t request) {
+        return request < placementIds_.size() && worldSelection_.Flags(Services::WorldObjectId{placementIds_[request]}).visible;
+    }});
 }
 
 void WorldModule::ChoosePlacement(const QtApp::ObjectViewEntry& entry) {
@@ -1524,6 +1550,7 @@ void WorldModule::UpdateOverlay() {
     if (const auto binding = CurrentPlacementBinding())
         pendingPlacements_.AppendLines(lines, *binding, placementCompletedScene_.get(), placementCompletedFrame_.get(),
             [this](const auto& row) { return worldSelection_.Flags(row).visible; });
+    if (scatter_ && CurrentTool() == Tool::Scatter) scatter_->AppendOverlay(lines);
     startLocationOverlaySubmitted_ = viewport_->SetOverlayLines(std::move(lines)) && StartLocationsCurrent();
     UpdateSelectionCircles();
 }

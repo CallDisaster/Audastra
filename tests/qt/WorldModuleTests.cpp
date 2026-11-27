@@ -18,6 +18,7 @@
 #include "WorldSelectionPresenter.h"
 #include "WorldPlacementPreview.h"
 #include "WorldPlacementModels.h"
+#include "WorldScatterBrush.h"
 #include "WorldAuxiliaryDialog.h"
 #include "WorldStartLocations.h"
 #include "ProjectAuxiliaryEdits.h"
@@ -843,6 +844,7 @@ private slots:
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo_data();
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo();
     void TerrainWaterBrushRejectsChangedInputs();
+    void ScatterBrushPaintsErasesAndUndoesPerStroke();
     void TerrainWaterBrushRejectsChangedGameResources_data();
     void TerrainWaterBrushRejectsChangedGameResources();
     void TerrainWaterBrushDropsCancelledCommit_data();
@@ -3780,6 +3782,58 @@ void WorldModuleTests::TerrainWaterBrushRejectsChangedInputs() {
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), changed);
     QCOMPARE(project.mapDataUndoStack_->count(), 0);
     QVERIFY(!status->property("ready").toBool());
+}
+
+// 散布笔刷：空调色板不提交；一笔按每笔个数落在地形上、固定高度；擦除只删调色板类型；每笔一步撤销。
+void WorldModuleTests::ScatterBrushPaintsErasesAndUndoesPerStroke() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    auto members = Tests::TerrainWaterMembers();
+    members.push_back({"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()});
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false, members);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* toggle = page->findChild<QPushButton*>("worldScatterToggle");
+    auto* scatter = module.findChild<WorldScatterBrush*>();
+    auto* density = page->findChild<QComboBox*>("worldScatterDensityMode");
+    auto* perDab = page->findChild<QSpinBox*>("worldScatterPerDab");
+    auto* radius = page->findChild<QDoubleSpinBox*>("worldScatterRadius");
+    auto* spacing = page->findChild<QDoubleSpinBox*>("worldScatterSpacing");
+    auto* erase = page->findChild<QAbstractButton*>("worldScatterMode1");
+    QVERIFY(toggle && scatter && density && perDab && radius && spacing && erase);
+    toggle->click();
+    QVERIFY(viewport->BrushMode());
+    viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+
+    scatter->AddType(ObjectData::ObjectType::Doodad, QStringLiteral("STr0"), QStringLiteral("Synthetic tree"));
+    density->setCurrentIndex(1); perDab->setValue(6); radius->setValue(128); spacing->setValue(0);
+    // 按下一笔，拖到 512：沿路径每半径一半补一笔，共三笔。
+    viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeMoved(512, 384); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto painted = project.mapEdits_->Snapshot().Doodads()->doodads;
+    QCOMPARE(painted.size(), std::size_t{18});
+    for (const auto& doodad : painted) {
+        QCOMPARE(doodad.rawcode, std::string("STr0"));
+        QVERIFY(doodad.flags & MapData::kDoodadFlagFixedZ);
+        const double along = std::clamp<double>(doodad.position[0], 384, 512);
+        QVERIFY(std::hypot(doodad.position[0] - along, doodad.position[1] - 384) <= 129);
+        const auto ground = Render::SampleTerrainHeight(*project.mapEdits_->Terrain(), doodad.position[0], doodad.position[1]);
+        QVERIFY(ground && std::abs(*ground - doodad.position[2]) < 0.5f);
+    }
+
+    erase->click();
+    viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeMoved(512, 384); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{0});
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), painted.size());
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{0});
+    toggle->click();
+    QVERIFY(!viewport->BrushMode());
 }
 
 void WorldModuleTests::TerrainWaterBrushRejectsChangedGameResources_data() {

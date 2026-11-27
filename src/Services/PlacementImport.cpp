@@ -95,7 +95,7 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
             auto record = std::get<MapData::DoodadPlacement>(MakeDefaultPlacement(ObjectType::Doodad, rawcodes[instance.type], 0, instance.position));
             record.rotation = Radians(instance.facingDegrees); record.scale = instance.scale; record.variation = instance.variation;
             // 游戏只用 0x04 判断是否沿用存储的 Z；未设置时放回地面。
-            if (!type.followGround) { record.flags = std::uint8_t(record.flags | 0x04); ++plan.report.fixedHeightDoodads; }
+            if (!type.followGround) { record.flags = std::uint8_t(record.flags | MapData::kDoodadFlagFixedZ); ++plan.report.fixedHeightDoodads; }
             plan.doodads.push_back(std::move(record));
         } else {
             // 中立被动（玩家 16，记录中为 15）。单位的 Z 与三轴缩放游戏不采用，照样保存供编辑器参考。

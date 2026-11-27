@@ -41,6 +41,13 @@ target_compile_options(audastra-placement-import-tests PRIVATE /W4 /permissive- 
 add_test(NAME services-placement-import COMMAND audastra-placement-import-tests)
 set_tests_properties(services-placement-import PROPERTIES TIMEOUT 60)
 
+add_executable(audastra-doodad-scatter-tests DoodadScatterTests.cpp)
+target_link_libraries(audastra-doodad-scatter-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-doodad-scatter-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-doodad-scatter-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-doodad-scatter COMMAND audastra-doodad-scatter-tests)
+set_tests_properties(services-doodad-scatter PROPERTIES TIMEOUT 60)
+
 add_executable(audastra-object-catalog-sources-tests ObjectCatalogSourcesTests.cpp)
 target_link_libraries(audastra-object-catalog-sources-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-object-catalog-sources-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
