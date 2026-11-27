@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/NativeEditorProfileInputs.h"
+#include "War3MapCore/MapData/TerrainWorkBudget.h"
 #include "War3MapCore/ObjectData/NativeTerrainDependencies.h"
 
 #include <algorithm>
@@ -293,12 +294,10 @@ bool MayNameFootprint(std::string_view key, std::span<const ArchiveExactMember> 
 }
 struct Probe { bool changed = false; std::size_t used = 0; };
 // 只读相关性探测是独立的短暂峰值：大图的摆放表（数 MB）按 32 倍、对象表按 64 倍估算解析工作，
-// 64 MiB 的保存计划帽装不下。探测额度取计划额度的 16 倍（默认 1 GiB），随调用方收紧同比收紧；
-// 正式 G0/G1 捕获仍用调用方的计划额度。
-constexpr std::size_t kProbeScale = 16;
+// 64 MiB 的保存计划帽装不下。额度与 DOO/Units 往返核对共用 TerrainParsePeakBytes（默认 1 GiB，
+// 随调用方收紧同比收紧）；正式 G0/G1 捕获仍用调用方的计划额度。
 std::size_t ProbeBudget(const MapData::TerrainSavePlanLimits& limits) {
-    return limits.maximumBytes > std::numeric_limits<std::size_t>::max() / kProbeScale
-        ? std::numeric_limits<std::size_t>::max() : limits.maximumBytes * kProbeScale;
+    return MapData::TerrainParsePeakBytes(limits.maximumBytes);
 }
 
 Probe ProbeFinal(const Reader& sourceReader, const std::filesystem::path& gameRoot,

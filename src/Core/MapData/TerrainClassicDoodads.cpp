@@ -1,10 +1,12 @@
 #include "War3MapCore/MapData/TerrainClassicDoodads.h"
+#include "War3MapCore/MapData/TerrainWorkBudget.h"
 
 #include <algorithm>
 
 namespace War3Map::MapData {
 namespace {
 constexpr auto kSubsystem = "Terrain.DoodadsCodec";
+// 旧/新成员原始字节合计的输入上限；工作额度另按解析峰值上限封顶（TerrainWorkBudget.h）。
 constexpr std::size_t kMaximumBytes = 64u * 1024u * 1024u;
 constexpr std::size_t Ceil(std::size_t count, std::size_t size) { return count / size + (count % size != 0); }
 // ROC普通记录最短42字节，嵌套集合/物品最少4/8，特殊记录16。
@@ -19,7 +21,7 @@ constexpr auto kFixedBytes = 4 * sizeof(DoodadPlacements) + 4096;
 
 Result<std::size_t> TerrainClassicDoodadsWorkingBytes(
     std::size_t beforeBytes, std::size_t afterBytes, std::size_t maximumBytes) {
-    if (maximumBytes > kMaximumBytes || beforeBytes > kMaximumBytes || afterBytes > kMaximumBytes - beforeBytes
+    if (maximumBytes > kTerrainParsePeakMaximumBytes || beforeBytes > kMaximumBytes || afterBytes > kMaximumBytes - beforeBytes
         || maximumBytes < kFixedBytes || beforeBytes + afterBytes > (maximumBytes - kFixedBytes) / kFactor)
         return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_BUDGET",
             "剩余地形预算不足以完整解析并逐字往返旧/新DOO。");

@@ -1,10 +1,12 @@
 #include "War3MapCore/MapData/TerrainClassicUnits.h"
+#include "War3MapCore/MapData/TerrainWorkBudget.h"
 
 #include <algorithm>
 
 namespace War3Map::MapData {
 namespace {
 constexpr auto kSubsystem = "Terrain.NativeUnits";
+// 旧/新成员原始字节合计的输入上限；工作额度另按解析峰值上限封顶（TerrainWorkBudget.h）。
 constexpr std::size_t kMaximumBytes = 64u * 1024u * 1024u;
 constexpr std::size_t Ceil(std::size_t value, std::size_t divisor) {
     return value / divisor + (value % divisor != 0);
@@ -20,7 +22,7 @@ constexpr auto kFixedWorkingBytes = 4 * sizeof(UnitPlacements) + 4096;
 
 Result<std::size_t> TerrainClassicUnitsWorkingBytes(
     std::size_t beforeBytes, std::size_t afterBytes, std::size_t maximumBytes) {
-    if (maximumBytes > kMaximumBytes || beforeBytes > kMaximumBytes || afterBytes > kMaximumBytes - beforeBytes
+    if (maximumBytes > kTerrainParsePeakMaximumBytes || beforeBytes > kMaximumBytes || afterBytes > kMaximumBytes - beforeBytes
         || maximumBytes < kFixedWorkingBytes
         || beforeBytes + afterBytes > (maximumBytes - kFixedWorkingBytes) / kWorkingFactor)
         return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_UNITS_BUDGET",

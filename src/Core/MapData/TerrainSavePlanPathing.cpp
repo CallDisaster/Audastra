@@ -5,6 +5,7 @@
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainNativeUnitsProof.h"
 #include "War3MapCore/MapData/TerrainNativeDoodadsProof.h"
+#include "War3MapCore/MapData/TerrainWorkBudget.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
@@ -71,15 +72,19 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     using Output = Result<std::vector<std::byte>>;
     std::optional<TerrainNativeUnitsProof> unitsProof;
     std::optional<TerrainNativeDoodadsProof> doodadsProof;
+    // DOO/Units 完整往返核对是计划之外单独记账的短暂解析峰值（TerrainWorkBudget.h）：两份证明
+    // 同时存活，共用一份峰值额度；不占计划额度，计划额度仍是各成员的读取上限。
+    const auto parsePeakBudget = TerrainParsePeakBytes(limits.maximumBytes);
+    std::size_t parsePeak = 0;
     const auto& sourceDoodads = edits.original_[MapDataEditSession::Index(MapDataKind::Doodads)];
     const auto& currentDoodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
     if (sourceDoodads != currentDoodads && sourceDoodads && currentDoodads) {
         if (total > limits.maximumBytes)
             return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "地形计划没有剩余普通DOO核对预算。");
         const auto required = TerrainNativeDoodadsProof::RequiredWorkingBytes(
-            sourceDoodads->size(), currentDoodads->size(), limits.maximumBytes - total);
+            sourceDoodads->size(), currentDoodads->size(), parsePeakBudget - parsePeak);
         if (!required.Succeeded() || !required.value) return {{}, required.diagnostics};
-        total += *required.value;
+        parsePeak += *required.value;
         auto proof = TerrainNativeDoodadsProof::Prepare(edits, sourceSha256_, *required.value);
         if (!proof.Succeeded() || !proof.value) return {{}, std::move(proof.diagnostics)};
         doodadsProof = std::move(*proof.value);
@@ -92,9 +97,9 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
         if (total > limits.maximumBytes)
             return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "地形计划没有剩余Units核对预算。");
         auto required = TerrainNativeUnitsProof::RequiredWorkingBytes(
-            sourceUnits->size(), currentUnits->size(), limits.maximumBytes - total);
+            sourceUnits->size(), currentUnits->size(), parsePeakBudget - parsePeak);
         if (!required.Succeeded() || !required.value) return {{}, std::move(required.diagnostics)};
-        total += *required.value; // 在parser、writer及其歧义试读分配前预收。
+        parsePeak += *required.value; // 在parser、writer及其歧义试读分配前预收。
         auto proof = TerrainNativeUnitsProof::Prepare(*sourceUnits, *currentUnits, sourceSha256_,
             edits.SessionIdentity(), edits.Revision(), edits.TerrainSourceRevision(), *required.value);
         if (!proof.Succeeded() || !proof.value) return {{}, std::move(proof.diagnostics)};
