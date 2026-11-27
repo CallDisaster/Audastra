@@ -23,7 +23,8 @@ void TestSurfaceMaterials(const War3RenderPluginApiV2* api, const War3RenderCrea
     Require(api->setEnvironment(renderer.handle, &environment) == 0, "surface environment rejected");
 
     RenderSkinFixture fixture;
-    const auto pose = fixture.Update();
+    auto pose = fixture.Update();
+    std::uint64_t sceneVersion = 0; // 每次提交新场景，场景版本须递增
     fixture.layer = {0, 0, 0, 1}; // 贴图 0、不透明、有光照
     const auto solid = [](std::uint8_t r, std::uint8_t g, std::uint8_t b) {
         std::array<std::uint8_t, 16> p{};
@@ -51,6 +52,7 @@ void TestSurfaceMaterials(const War3RenderPluginApiV2* api, const War3RenderCrea
         return pixels;
     };
     const auto submit = [&](const War3RenderModelSurfaceV2* surface, std::uint32_t count = 1) {
+        pose.sceneVersion = ++sceneVersion;
         auto scene = fixture.Scene(pose);
         scene.textureCount = static_cast<std::uint32_t>(textures.size()); scene.textures = textures.data();
         War3RenderSurfaceSkinnedSceneV2 tail{{scene, WAR3_RENDER_STATIC_MESH_RGB_V1, 1, white.data()},
