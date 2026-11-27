@@ -95,7 +95,9 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
                 || (palette.algorithm == 2 && palette.table == TerrainTextureTable::Ground
                     && palette.slot > 0 && palette.expectedRawcode.empty())
                 || (palette.algorithm == 3 && palette.table == TerrainTextureTable::Cliff
-                    && palette.slot > 0 && palette.expectedRawcode.empty()));
+                    && palette.slot > 0 && palette.expectedRawcode.empty())
+                || (palette.algorithm == 4 && palette.table == TerrainTextureTable::Ground && Rawcode(palette.expectedRawcode)
+                    && palette.expectedRawcode != palette.replacementRawcode));
     }
     if (intent.points.empty() || intent.points.size() > 4096 - points || brush.anchor) return false;
     points += intent.points.size();

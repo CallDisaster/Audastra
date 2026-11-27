@@ -5,9 +5,9 @@ namespace War3Map::Mcp {
 std::optional<Services::TerrainTextureSlotCommand> ParseTerrainTextureSlotCommand(
     const QJsonObject& object, QJsonObject& error) {
     const auto kind = object.value("kind").toString();
-    const bool append = kind == "texture_slot_append";
-    if (!append && kind != "texture_slot_replace") {
-        error = Failure("MCP_TEXTURE_SLOT_KIND", "贴图槽命令仅接受texture_slot_replace或texture_slot_append。");
+    const bool append = kind == "texture_slot_append", remap = kind == "texture_slot_remap";
+    if (!append && !remap && kind != "texture_slot_replace") {
+        error = Failure("MCP_TEXTURE_SLOT_KIND", "贴图槽命令仅接受texture_slot_replace、texture_slot_append或texture_slot_remap。");
         return {};
     }
     const QString index = append ? "expected_count" : "slot";
@@ -28,7 +28,8 @@ std::optional<Services::TerrainTextureSlotCommand> ParseTerrainTextureSlotComman
     if (*parsed.value < 0) { error = Failure("TERRAIN_TILESET_SLOT", "槽号与期望表长不能为负。"); return {}; }
     const auto table = Services::ParseTerrainTextureTable(object.value("table").toString().toStdString());
     if (!table.Succeeded()) { error = Failure(table); return {}; }
-    Services::TerrainTextureSlotCommand command{append ? Services::TerrainTextureSlotOperation::Append : Services::TerrainTextureSlotOperation::Replace,
+    Services::TerrainTextureSlotCommand command{append ? Services::TerrainTextureSlotOperation::Append
+            : remap ? Services::TerrainTextureSlotOperation::Remap : Services::TerrainTextureSlotOperation::Replace,
         *table.value, static_cast<std::uint32_t>(*parsed.value), object.value("expected_rawcode").toString().toStdString(),
         object.value("rawcode").toString().toStdString()};
     const auto valid = Services::NormalizeTerrainTextureSlotCommand(command);
@@ -49,6 +50,14 @@ QJsonArray TerrainTextureSlotCommandSchemas() {
         schemas.append(QJsonObject{{"type", "object"}, {"properties", properties}, {"required", required}, {"additionalProperties", false},
             {"description", "槽号从0起；地面最多16槽、悬崖最多15槽。执行到本条时核对旧rawcode或当前表长；失败时整批不保存。资源与重复值仍由共用保存门校验。"}});
     }
+    const QJsonObject rawcode{{"type", "string"}, {"pattern", "^[ -~]{4}$"}};
+    schemas.append(QJsonObject{{"type", "object"}, {"additionalProperties", false},
+        {"properties", QJsonObject{{"kind", QJsonObject{{"const", "texture_slot_remap"}, {"type", "string"}}},
+            {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"ground"}}}},
+            {"slot", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 15}}},
+            {"expected_rawcode", rawcode}, {"rawcode", rawcode}}},
+        {"required", QJsonArray{"kind", "table", "slot", "expected_rawcode", "rawcode"}},
+        {"description", "地面表slot槽（旧值expected_rawcode）上的全部顶点改用表里已有的rawcode；变体与荒芜等标志不变，表本身不变。目标不在表里时用texture_slot_replace。"}});
     return schemas;
 }
 } // namespace War3Map::Mcp

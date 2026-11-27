@@ -361,6 +361,9 @@ public:
     // 与笔刷共用同一密封候选；worker可用冻结会话准备，前台只按原修订提交。
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainTextureSlot(TerrainTextureTable table,
         std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources = nullptr) const;
+    // 地面贴图重映射：slot 槽的全部顶点改指表里已有的 rawcode，按改动顶点区块进撤销；记录为贴图表 algorithm4。
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainTextureRemap(std::uint32_t slot, const std::string& rawcode,
+        const TerrainPathingResources* resources = nullptr) const;
     // 正式地图保存门：干地高度按原版六模式查询不变条件保留WPM；荒芜位与
     // WPM bit5逐格同步。涉水高度、材质通行属性与其它派生数据未知时仍拒绝。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
@@ -519,6 +522,9 @@ private:
         std::vector<PlacementRowLineage> lineage,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     [[nodiscard]] bool TerrainMatches(const Command& command, bool forward) const;
+    // 贴图槽替换/追加与地面重映射共用：remap 时改顶点、按区块进撤销，否则只改表头。
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainPaletteEdit(TerrainTextureTable table, std::uint32_t slot,
+        const std::string& rawcode, const TerrainPathingResources* resources, bool remap) const;
     [[nodiscard]] bool TerrainDirty() const noexcept;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEditInternal(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate,

@@ -62,6 +62,58 @@ void TerrainTextureSlotCliActuallySaves() {
     }
 }
 
+void TerrainReplaceTileCliChoosesReplaceOrRemap() {
+    namespace P = AudastraTest::TextureSlot;
+    namespace M = War3Map::MapData;
+    P::Fixture fixture;
+    const auto run = [&](const std::filesystem::path& source, const wchar_t* from, const wchar_t* to,
+        std::optional<std::filesystem::path> out) {
+        std::vector<std::wstring> args{L"war3-map-cli", L"terrain-replace-tile", source.wstring(), from, to,
+            L"--game-root", fixture.inputs.game.wstring(), L"--tool-root", fixture.inputs.tool.wstring()};
+        if (out) { args.push_back(L"--out"); args.push_back(out->wstring()); }
+        return Invoke(args, RunTerrainReplaceTile);
+    };
+    const auto terrain = [](const std::filesystem::path& map) {
+        auto archive = P::Take(War3Map::MapArchiveSession::Open(map));
+        return P::Take(M::ParseMapTerrain(P::Take(archive.ReadMember("war3map.w3e"))));
+    };
+    // 目标不在表里：直接换槽。
+    const auto replaced = fixture.root / "tile-replace.w3x";
+    const auto first = run(fixture.source.path, L"Tg01", L"Tg03", replaced);
+    if (first.exitCode != 0) throw std::runtime_error(first.error);
+    Require(first.output.find("operation=replace") != std::string::npos
+        && terrain(replaced).Snapshot()->header.groundTilesets == std::vector<std::string>{"Tg03"}, "absent target replaces the slot");
+    // 目标已在表里：重映射全部顶点；不给 --out 时写到源文件旁，已存在则不覆盖。
+    auto request = fixture.Request("tile-two");
+    request.terrainStrokes = {P::Command(true, M::TerrainTextureTable::Ground, 1, "", "Tg02")};
+    const auto two = P::Take(War3Map::Services::SaveMapEditCandidate(request)).candidate;
+    const auto second = run(two, L"Tg01", L"Tg02", std::nullopt);
+    if (second.exitCode != 0) throw std::runtime_error(second.error);
+    const auto remapped = terrain(two.parent_path() / (two.stem().wstring() + L".tiles.w3x"));
+    Require(second.output.find("operation=remap") != std::string::npos
+        && remapped.Snapshot()->header.groundTilesets == std::vector<std::string>{"Tg01", "Tg02"}
+        && std::all_of(remapped.Snapshot()->vertices.begin(), remapped.Snapshot()->vertices.end(),
+            [](const auto& vertex) { return vertex.GroundTextureIndex() == 1; }), "present target remaps every vertex and keeps the table");
+    const auto again = run(two, L"Tg01", L"Tg02", std::nullopt);
+    Require(again.exitCode == 1 && again.error.find("TERRAIN_TILE_OUT_EXISTS") != std::string::npos, "existing output is never overwritten");
+    const auto missing = run(fixture.source.path, L"Miss", L"Tg02", fixture.root / "tile-miss.w3x");
+    Require(missing.exitCode == 1 && missing.error.find("TERRAIN_TILE_FROM_MISSING") != std::string::npos
+        && !std::filesystem::exists(fixture.root / "tile-miss.w3x"), "unknown source tile saves nothing");
+    Rejected(run(fixture.source.path, L"Tg01", L"Tg01", fixture.root / "tile-same.w3x"), "same");
+    Rejected(run(fixture.source.path, L"Tg01", L"bad", fixture.root / "tile-bad.w3x"), "rawcode");
+    Rejected(Invoke({L"war3-map-cli", L"terrain-replace-tile", L"x.w3x", L"Tg01", L"Tg02"}, RunTerrainReplaceTile), "required");
+    Rejected(Invoke({L"war3-map-cli", L"terrain-replace-tile", L"x.w3x", L"Tg01", L"Tg02", L"--bogus", L"v"}, RunTerrainReplaceTile),
+        "unknown terrain-replace-tile option");
+    Require(P::Take(War3Map::Sha256File(fixture.source.path)) == fixture.source.sha256, "tile CLI source unchanged");
+    // map-edit-save 的重映射参数：只收地面表。
+    auto args = Arguments();
+    args.insert(args.end(), {L"--terrain-tile-remap", L"ground", L"0", L"Old1", L"New1"});
+    Require(Invoke(args).error.find("SOURCE_LEASE_FAILED") != std::string::npos, "remap reaches the shared source-bound save gate");
+    args = Arguments();
+    args.insert(args.end(), {L"--terrain-tile-remap", L"cliff", L"0", L"Old1", L"New1"});
+    Rejected(Invoke(args), "地面表");
+}
+
 void TerrainTextureSlotsUseSharedOrderedSave() {
     for (const auto table : {L"ground", L"cliff"}) for (const bool append : {false, true}) {
         auto args = Arguments();
@@ -86,4 +138,5 @@ void TerrainTextureSlotsUseSharedOrderedSave() {
         L"--terrain-slot-append", L"ground", L"1", L"New1"});
     Rejected(Invoke(args), "only terrain command");
     TerrainTextureSlotCliActuallySaves();
+    TerrainReplaceTileCliChoosesReplaceOrRemap();
 }

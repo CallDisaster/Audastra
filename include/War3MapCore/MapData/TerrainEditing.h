@@ -139,4 +139,9 @@ enum class TerrainTextureTable { Ground, Cliff };
 [[nodiscard]] Result<TerrainStrokeResult> ReplaceTerrainTextureSlot(TerrainGridSnapshot& terrain,
     TerrainTextureTable table, std::uint32_t slot, const std::string& rawcode);
 
+// 把地面表 fromSlot 槽上的全部顶点改指已在表里的另一种贴图；变体与荒芜/边界等标志不动，
+// 贴图表本身不变（原槽留着，可再替换）。只支持经典 W3E v11；返回实际改动的顶点范围。
+[[nodiscard]] Result<TerrainStrokeResult> RemapTerrainGroundTexture(TerrainGridSnapshot& terrain,
+    std::uint32_t fromSlot, const std::string& toRawcode);
+
 } // namespace War3Map::MapData

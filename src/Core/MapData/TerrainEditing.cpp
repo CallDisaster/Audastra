@@ -606,4 +606,31 @@ Result<TerrainStrokeResult> ReplaceTerrainTextureSlot(TerrainGridSnapshot& terra
     return Result<TerrainStrokeResult>::Success({0, 0, terrain.header.width, terrain.header.height, true});
 }
 
+Result<TerrainStrokeResult> RemapTerrainGroundTexture(TerrainGridSnapshot& terrain,
+    std::uint32_t fromSlot, const std::string& toRawcode) {
+    const auto fail = [](const char* code, const char* message) {
+        return Result<TerrainStrokeResult>::Failure("MapTerrain.Edit", code, message);
+    };
+    if (!Consistent(terrain)) return fail("TERRAIN_EDIT_INCONSISTENT", "地形宽高与顶点数量不一致");
+    if (!ClassicLayout(terrain)) return fail("TERRAIN_BRUSH_READ_ONLY", "贴图重映射只支持经典 W3E v11");
+    const auto& list = terrain.header.groundTilesets;
+    if (fromSlot >= list.size()) return fail("TERRAIN_TILESET_SLOT", "原贴图槽位不存在");
+    const auto target = std::find(list.begin(), list.end(), toRawcode);
+    if (target == list.end()) return fail("TERRAIN_TILESET_REMAP_TARGET_MISSING", "目标贴图不在地面贴图表里；不在表里时应直接替换槽位");
+    const auto toSlot = static_cast<std::uint8_t>(target - list.begin());
+    if (toSlot == fromSlot) return fail("TERRAIN_TILESET_REMAP_SAME", "原贴图和目标贴图是同一个槽位");
+    const auto width = terrain.header.width;
+    std::uint32_t x0 = width, y0 = terrain.header.height, x1 = 0, y1 = 0;
+    for (std::size_t index = 0; index < terrain.vertices.size(); ++index) {
+        auto& vertex = terrain.vertices[index];
+        if (vertex.GroundTextureIndex() != fromSlot) continue;
+        vertex.textureAndFlagsRaw = static_cast<std::uint8_t>((vertex.textureAndFlagsRaw & 0xf0) | toSlot);
+        const auto x = static_cast<std::uint32_t>(index % width), y = static_cast<std::uint32_t>(index / width);
+        x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x + 1); y1 = std::max(y1, y + 1);
+    }
+    if (x0 >= x1) return Result<TerrainStrokeResult>::Success({});
+    RefreshTerrainDerived(terrain, x0, y0, x1, y1);
+    return Result<TerrainStrokeResult>::Success({x0, y0, x1, y1, false});
+}
+
 } // namespace War3Map::MapData

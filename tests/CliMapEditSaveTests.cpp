@@ -1,4 +1,5 @@
 #include "MapEditSaveCommand.h"
+#include "TerrainReplaceTileCommand.h"
 #include "MapCustomSettingsCommand.h"
 #include "../src/Services/MapEditSaveValidation.h"
 #include "support/TerrainResizeFixture.h"
@@ -8,6 +9,7 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 
 #include <filesystem>
+#include <optional>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>

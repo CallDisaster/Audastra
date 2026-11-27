@@ -559,15 +559,16 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!operation) return Invalid(error);
             request.fieldEdits.push_back(std::move(*operation));
             index += 8;
-        } else if (flag == L"--terrain-slot-replace" || flag == L"--terrain-slot-append") {
-            const bool append = flag == L"--terrain-slot-append";
+        } else if (flag == L"--terrain-slot-replace" || flag == L"--terrain-slot-append" || flag == L"--terrain-tile-remap") {
+            const bool append = flag == L"--terrain-slot-append", remap = flag == L"--terrain-tile-remap";
             const int count = append ? 3 : 4;
             if (index + count >= argc) return Invalid("terrain slot command requires table, zero-based slot/expected-count, and rawcode(s)");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain commands are allowed");
             const auto table = Services::ParseTerrainTextureTable(Utf8Argument(argv[index + 1]));
             const auto slot = ParseNumber<std::uint32_t>(argv[index + 2]);
             if (!table.Succeeded() || !table.value || !slot) return Invalid("terrain slot needs ground|cliff and an unsigned integer slot/expected-count");
-            Services::TerrainTextureSlotCommand command{append ? Services::TerrainTextureSlotOperation::Append : Services::TerrainTextureSlotOperation::Replace,
+            Services::TerrainTextureSlotCommand command{append ? Services::TerrainTextureSlotOperation::Append
+                    : remap ? Services::TerrainTextureSlotOperation::Remap : Services::TerrainTextureSlotOperation::Replace,
                 *table.value, *slot, append ? std::string{} : Utf8Argument(argv[index + 3]), Utf8Argument(argv[index + count])};
             const auto normalized = Services::NormalizeTerrainTextureSlotCommand(command);
             if (!normalized.Succeeded()) return Invalid(normalized.diagnostics.front().message);

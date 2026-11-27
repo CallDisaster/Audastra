@@ -125,7 +125,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_INVALID", "地形笔刷 kind 必须是已支持的字符串。");
         return std::nullopt;
     }
-    if (kind.toString() == "texture_slot_replace" || kind.toString() == "texture_slot_append") {
+    if (kind.toString() == "texture_slot_replace" || kind.toString() == "texture_slot_append" || kind.toString() == "texture_slot_remap") {
         const auto command = ParseTerrainTextureSlotCommand(object, error);
         if (!command) return {};
         Services::MapEditTerrainStroke result; result.textureSlot = *command;

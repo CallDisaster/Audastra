@@ -87,7 +87,8 @@ bool Neutral(const MapData::TerrainBrush& brush) {
 }
 
 TerrainTextureSlotCommand TextureSlotCommand(const MapData::TerrainPaletteEditIntent& intent) {
-    return {intent.algorithm == 1 ? TerrainTextureSlotOperation::Replace : TerrainTextureSlotOperation::Append,
+    return {intent.algorithm == 1 ? TerrainTextureSlotOperation::Replace
+            : intent.algorithm == 4 ? TerrainTextureSlotOperation::Remap : TerrainTextureSlotOperation::Append,
         intent.table, intent.slot, intent.expectedRawcode, intent.replacementRawcode};
 }
 
@@ -450,7 +451,9 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             if (!remaining || *wire.value > remaining)
                 return fail("TERRAIN_REPLAY_BUDGET", "贴图表实际资源捕获额度不足。");
             auto prospective = *candidate.Terrain();
-            const auto replaced = MapData::ReplaceTerrainTextureSlot(prospective, intent.table, intent.slot, intent.replacementRawcode);
+            const bool remap = intent.algorithm == 4;
+            const auto replaced = remap ? MapData::RemapTerrainGroundTexture(prospective, intent.slot, intent.replacementRawcode)
+                                        : MapData::ReplaceTerrainTextureSlot(prospective, intent.table, intent.slot, intent.replacementRawcode);
             if (!replaced.Succeeded() || !replaced.value) return {{}, replaced.diagnostics};
             const auto currentCapture = captureCurrent(remaining);
             if (!currentCapture.Succeeded()) return {{}, currentCapture.diagnostics};
@@ -475,7 +478,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
             if (journal && *digest.value != journal->strokes[strokeIndex].rulesSha256)
                 return fail("TERRAIN_JOURNAL_RESOURCE_DRIFT", "贴图表实际来源、规则winner或缺失项已变化，未安装任何前缀。");
-            auto plan = candidate.PrepareTerrainTextureSlot(intent.table, intent.slot, intent.replacementRawcode, &*resources.value);
+            auto plan = remap ? candidate.PrepareTerrainTextureRemap(intent.slot, intent.replacementRawcode, &*resources.value)
+                              : candidate.PrepareTerrainTextureSlot(intent.table, intent.slot, intent.replacementRawcode, &*resources.value);
             if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
             // 头部历史按真实保留容量收费，不将整张prospective复制进Undo，也不触碰special私有谱系。
             if (!reserve(historyBytes, limits.maximumCandidateBytes, plan.value->RetainedCommandBytes()))

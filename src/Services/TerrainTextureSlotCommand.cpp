@@ -17,8 +17,13 @@ Result<MapData::TerrainPaletteEditIntent> NormalizeTerrainTextureSlotCommand(
     const auto rawcode = [](std::string_view value) { return value.size() == 4
         && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 32 && c <= 126; }); };
     const bool append = command.operation == TerrainTextureSlotOperation::Append;
-    if (command.operation != TerrainTextureSlotOperation::Replace && !append)
-        return fail("TERRAIN_TEXTURE_SLOT_OPERATION", "贴图槽仅接受替换或表尾追加。");
+    const bool remap = command.operation == TerrainTextureSlotOperation::Remap;
+    if (command.operation != TerrainTextureSlotOperation::Replace && !append && !remap)
+        return fail("TERRAIN_TEXTURE_SLOT_OPERATION", "贴图槽仅接受替换、表尾追加或地面重映射。");
+    if (remap && command.table != MapData::TerrainTextureTable::Ground)
+        return fail("TERRAIN_TEXTURE_REMAP_TABLE", "贴图重映射只用于地面表。");
+    if (remap && command.expectedRawcode == command.rawcode)
+        return fail("TERRAIN_TILESET_REMAP_SAME", "原贴图和目标贴图相同。");
     const auto maximum = command.table == MapData::TerrainTextureTable::Ground ? 16u : 15u;
     if (command.slot >= maximum || (append && command.slot == 0))
         return fail("TERRAIN_TILESET_SLOT", "槽号从0起；地面最多16槽、悬崖最多15槽，追加须绑定非空表的当前长度。");
@@ -30,8 +35,10 @@ Result<MapData::TerrainPaletteEditIntent> NormalizeTerrainTextureSlotCommand(
             return fail("TERRAIN_TILESET_SLOT", "当前贴图表不在受支持的非空经典表范围内。");
         if (append ? command.slot != table.size() : command.slot >= table.size() || table[command.slot] != command.expectedRawcode)
             return fail("TERRAIN_JOURNAL_PALETTE_DRIFT", "执行到本条时的旧rawcode或表长与期望不符，未发布任何前缀。");
+        if (remap && std::find(table.begin(), table.end(), command.rawcode) == table.end())
+            return fail("TERRAIN_TILESET_REMAP_TARGET_MISSING", "目标贴图不在地面贴图表里；不在表里时应直接替换槽位。");
     }
     return Output::Success({command.table, command.slot, command.expectedRawcode, command.rawcode,
-        std::uint8_t(append ? (command.table == MapData::TerrainTextureTable::Ground ? 2 : 3) : 1)});
+        std::uint8_t(remap ? 4 : append ? (command.table == MapData::TerrainTextureTable::Ground ? 2 : 3) : 1)});
 }
 } // namespace War3Map::Services

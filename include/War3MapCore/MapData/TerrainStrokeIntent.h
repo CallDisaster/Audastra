@@ -9,7 +9,8 @@
 
 namespace War3Map::MapData {
 
-// algorithm1替换既有槽；algorithm2追加Ground表尾；algorithm3追加Cliff表尾。
+// algorithm1替换既有槽；algorithm2追加Ground表尾；algorithm3追加Cliff表尾；
+// algorithm4把Ground表slot槽（旧值expected）上的全部顶点改指表里已有的replacement，表本身不变。
 // 追加时旧rawcode为空且slot等于旧表长；不描述删除、重排或主tileset改变，保持FTJ6布局。
 struct TerrainPaletteEditIntent {
     TerrainTextureTable table = TerrainTextureTable::Ground;

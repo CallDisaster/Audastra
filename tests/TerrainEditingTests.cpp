@@ -419,6 +419,38 @@ void TextureSlotsAreUndoable() {
     Require(!ReplaceTerrainTextureSlot(*full, TerrainTextureTable::Ground, 16, "Lrok").Succeeded(), "slot encoding remains capped at sixteen");
 }
 
+void TextureRemapKeepsVariationsFlagsAndTable() {
+    auto grid = Grid();
+    grid->vertices[40].textureAndFlagsRaw = 0x21; // 中心已是第 1 槽且带荒芜：不属于原槽，原样保留
+    const auto palette = grid->header.groundTilesets;
+    const auto before = *grid;
+    const auto remapped = RemapTerrainGroundTexture(*grid, 0, "TxAb");
+    Require(remapped.Succeeded() && remapped.value && !remapped.value->headerChanged && remapped.value->x0 == 0
+        && remapped.value->y0 == 0 && remapped.value->x1 == 9 && remapped.value->y1 == 9, "remap reports the changed vertex range");
+    Require(grid->header.groundTilesets == palette, "remap keeps the table");
+    for (std::size_t i = 0; i < grid->vertices.size(); ++i) {
+        const auto& a = grid->vertices[i]; const auto& b = before.vertices[i];
+        Require(a.GroundTextureIndex() == 1 && (a.textureAndFlagsRaw & 0xf0) == (b.textureAndFlagsRaw & 0xf0)
+            && a.variationRaw == b.variationRaw && a.groundHeightRaw == b.groundHeightRaw && a.cliffAndLayerRaw == b.cliffAndLayerRaw,
+            "remap changes only the ground index; variations and flags stay");
+    }
+    Require(!RemapTerrainGroundTexture(*grid, 0, "Lrok").Succeeded(), "remap target outside the table rejects");
+    Require(!RemapTerrainGroundTexture(*grid, 1, "TxAb").Succeeded(), "remap onto the same slot rejects");
+    Require(!RemapTerrainGroundTexture(*grid, 2, "TxAb").Succeeded(), "remap from a missing slot rejects");
+    const auto unused = RemapTerrainGroundTexture(*grid, 0, "TxAb");
+    Require(unused.Succeeded() && unused.value && unused.value->Empty(), "remap of an unused slot is a no-op");
+    const auto document = MapDocument::FromMembers({});
+    MapDataEditSession edits(document);
+    Require(edits.AttachTerrain(Terrain()).Succeeded(), "remap session source attaches");
+    const auto original = *SerializeMapTerrain(*edits.Terrain()).value;
+    const auto plan = edits.PrepareTerrainTextureRemap(0, "TxAb");
+    Require(plan.Succeeded() && plan.value && edits.ApplyPreparedTerrainEdit(*plan.value).Succeeded(), "remap applies through the session");
+    Require(edits.Terrain()->vertices[40].GroundTextureIndex() == 1 && edits.Terrain()->header.groundTilesets == palette,
+        "session terrain remapped with its table unchanged");
+    Require(edits.Undo() && *SerializeMapTerrain(*edits.Terrain()).value == original && edits.Redo()
+        && edits.Terrain()->vertices[40].GroundTextureIndex() == 1, "remap undo/redo restores exact raw fields");
+}
+
 void BoundaryDraftPreservesRawFieldsAndRestores() {
     auto grid = Grid();
     auto& center = grid->vertices[40];
@@ -525,6 +557,7 @@ int main() {
         WaterAndCliffPreserveOtherFields();
         RemoveWaterPreservesRawFieldsAndPlacements();
         TextureSlotsAreUndoable();
+        TextureRemapKeepsVariationsFlagsAndTable();
         BoundaryDraftPreservesRawFieldsAndRestores();
         SessionUnitsFollowAndStandability();
         AudastraTest::TerrainResizeCases::TestTerrainResizeGeometryCases();

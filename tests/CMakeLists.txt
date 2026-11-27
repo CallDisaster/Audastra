@@ -52,7 +52,7 @@ add_test(NAME cli-terrain-query COMMAND war3-map-cli-terrain-query-tests)
 set_tests_properties(cli-terrain-query PROPERTIES TIMEOUT 60)
 
 add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h CliTerrainBlockCases.h CliTerrainPathingCases.h CliTerrainResizeCases.h CliTerrainTextureSlotCases.h support/TerrainTextureSlotSaveFixture.h
-    "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
+    "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp" "${PROJECT_SOURCE_DIR}/src/Cli/TerrainReplaceTileCommand.cpp")
 target_include_directories(war3-map-cli-map-edit-save-tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Cli" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(war3-map-cli-map-edit-save-tests PRIVATE War3MapEditor::Services audastra-json)

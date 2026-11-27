@@ -5,11 +5,12 @@
 
 namespace War3Map::Services {
 
-enum class TerrainTextureSlotOperation { Replace, Append };
+// Remap：把地面表 slot 槽（旧值 expectedRawcode）上的全部顶点改指表里已有的 rawcode，表本身不变。
+enum class TerrainTextureSlotOperation { Replace, Append, Remap };
 struct TerrainTextureSlotCommand {
     TerrainTextureSlotOperation operation = TerrainTextureSlotOperation::Replace;
     MapData::TerrainTextureTable table = MapData::TerrainTextureTable::Ground;
-    // Replace的零基槽号；Append执行到本条时的期望表长，也即新槽号。
+    // Replace/Remap的零基槽号；Append执行到本条时的期望表长，也即新槽号。
     std::uint32_t slot = 0;
     std::string expectedRawcode;
     std::string rawcode;

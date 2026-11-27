@@ -20,6 +20,7 @@
 #include "MapCustomSettingsCommand.h"
 #include "TerrainQueryCommand.h"
 #include "TerrainBlightSaveCommand.h"
+#include "TerrainReplaceTileCommand.h"
 #include "MapEditSaveCommand.h"
 #include "LuaFolderCommand.h"
 #include "HLuaCommand.h"
@@ -152,6 +153,9 @@ void PrintUsage() {
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --copy-source <units|doodads> <row> <row-key> <member-sha256> [--copy-source ...] --copy-offset <dx> <dy> <dz> [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --rotate <units|doodads> <row> <row-key> <member-sha256> <degrees> [--layer <id> ...]\n"
         << "  map-edit-save --terrain-slot-replace <ground|cliff> <slot> <expected-old> <new>; --terrain-slot-append <ground|cliff> <expected-count> <new>. Slots are zero-based, ground <=16, cliff <=15. Compare old rawcode/count at each ordered command; any failure saves no batch.\n"
+        << "  map-edit-save --terrain-tile-remap ground <slot> <expected-old> <existing>: every vertex on that ground slot uses another tile already in the table; variations, flags and the table stay.\n"
+        << "war3-map-cli terrain-replace-tile <source-map> <from-rawcode> <to-rawcode> --game-root <war3-root> --tool-root <ydwe-root> [--out <new-candidate.w3x>]\n"
+        << "  Replaces the ground slot when <to> is not in the table, otherwise remaps its vertices to <to>; same save as map-edit-save. Default output: <name>.tiles<ext> beside the source.\n"
         << "war3-map-cli map-field-catalog\n"
         << "war3-map-cli map-trigger-remove-audit <map> <source-sha> <ui-root> <trigger|variable> <id|list|inventory> [--match <exact-name>] [--tool-root <tool-root>] [--game-root <game-root>] [--confirm-file <json>] (read-only; inventory is statistics only; confirmation previews only)\n"
         << "war3-map-cli map-trigger-text <source-map> <source-sha256> <ui-root> <global|trigger> <trigger-id-or-0> <utf8-offset> <limit-4..65536> [--catalog-sha256 <sha>] [--layer <id> ...]\n"
@@ -571,6 +575,7 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"terrain-snapshot" && argc == 3) {
         return RunTerrainSnapshot(argv[2]);
     }
+    if (command == L"terrain-replace-tile") return RunTerrainReplaceTile(argc, argv);
     if (command == L"terrain-block" && argc == 9) {
         return RunTerrainBlock(argv[2], Utf8Argument(argv[3]), Utf8Argument(argv[4]),
             Utf8Argument(argv[5]), Utf8Argument(argv[6]), Utf8Argument(argv[7]), Utf8Argument(argv[8]));

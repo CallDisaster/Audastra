@@ -941,24 +941,39 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
 
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainTextureSlot(TerrainTextureTable table,
     std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources) const {
+    return PrepareTerrainPaletteEdit(table, slot, rawcode, resources, false);
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainTextureRemap(std::uint32_t slot,
+    const std::string& rawcode, const TerrainPathingResources* resources) const {
+    return PrepareTerrainPaletteEdit(TerrainTextureTable::Ground, slot, rawcode, resources, true);
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainPaletteEdit(TerrainTextureTable table,
+    std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources, bool remap) const {
     using Output = Result<PreparedTerrainEdit>;
     if (!terrain_) return Output::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
     auto next = std::make_shared<TerrainGridSnapshot>(*terrain_);
-    auto result = ReplaceTerrainTextureSlot(*next, table, slot, rawcode);
+    auto result = remap ? RemapTerrainGroundTexture(*next, slot, rawcode) : ReplaceTerrainTextureSlot(*next, table, slot, rawcode);
     if (!result.Succeeded() || !result.value) return {{}, result.diagnostics};
     PreparedTerrainEdit plan;
     plan.before_ = terrain_; plan.after_ = next; plan.sessionIdentity_ = sessionIdentity_;
     plan.revision_ = revision_; plan.sourceRevision_ = terrainSourceRevision_; plan.changed_ = *result.value;
     Command command;
-    if (!result.value->headerChanged) {
+    if (remap ? result.value->Empty() : !result.value->headerChanged) {
         plan.command_ = std::make_shared<const Command>(std::move(command));
         return Output::Success(std::move(plan));
     }
-    command.headerBefore = terrain_->header;
-    command.headerAfter = next->header;
+    if (remap) {
+        const auto& changed = *result.value;
+        command.terrain = DiffChunks<TerrainChunk>(*terrain_, *next, changed.x0, changed.y0, changed.x1, changed.y1);
+    } else {
+        command.headerBefore = terrain_->header;
+        command.headerAfter = next->header;
+    }
     if (resources) {
         const auto& palette = table == TerrainTextureTable::Ground ? terrain_->header.groundTilesets : terrain_->header.cliffTilesets;
-        const bool append = slot == palette.size() && slot < (table == TerrainTextureTable::Ground ? 16u : 15u);
+        const bool append = !remap && slot == palette.size() && slot < (table == TerrainTextureTable::Ground ? 16u : 15u);
         if (!terrainOriginal_ || (!append && slot >= palette.size())
             || terrain_->header.groundTilesets.empty() || terrain_->header.groundTilesets.size() > 16
             || terrain_->header.cliffTilesets.empty() || terrain_->header.cliffTilesets.size() > 15)
@@ -986,7 +1001,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
         TerrainJournalStroke stroke;
         stroke.intent.palette = TerrainPaletteEditIntent{table, slot, append ? std::string{} : palette[slot], rawcode,
-            static_cast<std::uint8_t>(append ? (table == TerrainTextureTable::Ground ? 2 : 3) : 1)};
+            static_cast<std::uint8_t>(remap ? 4 : append ? (table == TerrainTextureTable::Ground ? 2 : 3) : 1)};
         stroke.rulesSha256 = *digest.value;
         command.terrainStroke = std::move(stroke);
     }

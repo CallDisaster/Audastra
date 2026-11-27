@@ -16,7 +16,9 @@ Result<std::shared_ptr<const MapData::TerrainGridSnapshot>> PreviewTerrainTextur
         return Output::Failure("Terrain.TextureSlot", "TERRAIN_PALETTE_BUDGET", "贴图候选超过512MiB预算。");
     try {
         auto after = std::make_shared<MapData::TerrainGridSnapshot>(*terrain);
-        const auto replaced = MapData::ReplaceTerrainTextureSlot(*after, command.table, command.slot, command.rawcode);
+        const auto replaced = command.operation == TerrainTextureSlotOperation::Remap
+            ? MapData::RemapTerrainGroundTexture(*after, command.slot, command.rawcode)
+            : MapData::ReplaceTerrainTextureSlot(*after, command.table, command.slot, command.rawcode);
         if (!replaced.Succeeded()) return {{}, replaced.diagnostics};
         return Output::Success(std::move(after));
     } catch (const std::bad_alloc&) {
@@ -32,7 +34,9 @@ Result<PreparedTerrainEdit> PrepareTerrainTextureSlotEdit(const MapData::MapData
     if (!session.Terrain()) return Result<PreparedTerrainEdit>::Failure("Terrain.TextureSlot", "TERRAIN_EDIT_UNAVAILABLE", "当前会话没有完整地形。");
     const auto valid = NormalizeTerrainTextureSlotCommand(command, &session.Terrain()->header);
     if (!valid.Succeeded()) return {{}, valid.diagnostics};
-    auto plan = session.PrepareTerrainTextureSlot(command.table, command.slot, command.rawcode, &resources);
+    auto plan = command.operation == TerrainTextureSlotOperation::Remap
+        ? session.PrepareTerrainTextureRemap(command.slot, command.rawcode, &resources)
+        : session.PrepareTerrainTextureSlot(command.table, command.slot, command.rawcode, &resources);
     if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }
