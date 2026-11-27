@@ -104,12 +104,12 @@ void EmptyOriginalParentsStillRejectAnyRealParentField() {
         auto document = Empty(ObjectType::Doodad);
         Check(document.AddOriginalObject("D001")); Check(document.AddCustomObject("C001", "D001"));
         Modification(document, "D001", field == 0 ? "Dt00" : field == 1 ? "Nm00" : "ZZZ0",
-            NativeValueType::String, field == 0 ? std::string("_") : std::string("parent"));
+            NativeValueType::String, field == 0 ? std::string("PathTextures\\parent.tga") : std::string("parent"));
         fixture.SetNative(document);
-        if (field == 1) Require(Take(fixture.Inspect({"C001"})).footprints.empty(),
-            "完整验证的父名称字段不改变标准禁用占地");
-        else Rejected(fixture.Inspect({"C001"}), field == 0 ? "TERRAIN_NATIVE_OBJECT_INHERITANCE" : "TERRAIN_NATIVE_OBJECT_METADATA",
-            "父相同占地值和未知字段仍拒绝，不能借当前等价值放行");
+        // 装饰物 Custom 不继承地图对标准父的修改（与游戏一致）：父改了 pathTex 或名称，仍取标准禁用占地。
+        if (field < 2) Require(Take(fixture.Inspect({"C001"})).footprints.empty(),
+            "Custom不继承标准父的地图修改：父改了pathTex或名称，仍取标准禁用占地");
+        else Rejected(fixture.Inspect({"C001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "父的未知字段仍拒绝");
     }
     for (const unsigned field : {0u, 1u, 2u, 3u}) {
         auto fixture = BridgeOriginalFixture(); auto document = CustomBridge();

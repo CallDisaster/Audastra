@@ -3225,7 +3225,9 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite() 
         auto custom = NativeObjectDocument::CreateEmpty(ObjectType::Destructable); QVERIFY(custom.Succeeded() && custom.value);
         QVERIFY(custom.value->AddCustomObject("Zb01", "Br01").Succeeded());
         const auto* original = native->FindObject(bridge); QVERIFY(original);
+        // 子对象不带 walkable：父的 walkable 覆盖没被遮住，才是“不能解释继承”的情形（被遮住时放行）。
         for (const auto& modification : original->modifications) {
+            if (modification.key.fieldId == "bwal") continue;
             const auto type = native->ModificationValueType(bridge, modification.key); QVERIFY(type);
             QVERIFY(custom.value->AddModification({ObjectType::Destructable, "Zb01"}, modification.key, *type, modification.value).Succeeded());
         }

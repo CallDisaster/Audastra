@@ -263,6 +263,22 @@ void StandardAndSingleParentContext() {
     Modification(overridden, "C001", "X001", NativeValueType::Int32, std::int32_t{0});
     explicitChild.SetNative(overridden);
     Accepted(explicitChild.Validate({"C001"}), "单层Custom可显式覆盖标准父true为typed0");
+
+    // 标准父在地图里改了非展示字段：Custom 自己在同一地址也有覆盖时，父覆盖不影响结论；
+    // 另一个 Custom 没有覆盖时仍拒绝，不能因前一个子对象通过就按父缓存放行。
+    for (const bool secondUnshadowed : {false, true}) {
+        Fixture shadowedParent;
+        auto parentDocument = Empty();
+        Check(parentDocument.AddOriginalObject("S001"));
+        Modification(parentDocument, "S001", "X001", NativeValueType::Int32, std::int32_t{0});
+        Check(parentDocument.AddCustomObject("C001", "S001"));
+        Modification(parentDocument, "C001", "X001", NativeValueType::Int32, std::int32_t{0});
+        if (secondUnshadowed) Check(parentDocument.AddCustomObject("C002", "S001"));
+        shadowedParent.SetNative(parentDocument);
+        if (!secondUnshadowed) Accepted(shadowedParent.Validate({"C001"}), "父的字段覆盖被Custom同一地址覆盖遮住时不影响结论");
+        else Rejected(shadowedParent.Validate({"C001", "C002"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE",
+            "同一标准父的另一个Custom没有遮住父覆盖时仍拒绝");
+    }
 }
 
 void WalkableValuesAndWireTypes() {
@@ -1061,8 +1077,27 @@ void NativeDoodadRotationUsesExactValuesAndSources() {
                     && emptyParent.footprints[0].fixedRotationDegrees
                     && std::bit_cast<std::uint32_t>(*emptyParent.footprints[0].fixedRotationDegrees) == std::bit_cast<std::uint32_t>(value),
                     "a zero-field Original parent preserves the exact Custom footprint and rotation");
-                Modification(document, "D001", "Rot0", type, 180.0f); f.SetNative(document);
-                Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "numeric getter does not authorize a native-overridden parent");
+                // 与游戏一致：Custom 从未经地图修改的标准数据开始，父的地图修改不继承。
+                // 父改了 fixedRot，Custom 自己也有：取 Custom 的值。
+                Modification(document, "D001", "Rot0", type, 90.0f); f.SetNative(document);
+                const auto own = Take(f.Inspect({id}));
+                Require(own.footprints.size() == 1 && own.footprints[0].rawcode == id
+                    && own.footprints[0].pathTexture == parsed.footprints[0].pathTexture
+                    && own.footprints[0].fixedRotationDegrees
+                    && std::bit_cast<std::uint32_t>(*own.footprints[0].fixedRotationDegrees) == std::bit_cast<std::uint32_t>(value),
+                    "a Custom's own pathing fields win over its standard parent's map overrides");
+                // Custom 自己没有：取标准值（pattern.tga、180），不取父的地图修改（parent.tga、90）。
+                auto standardOnly = Empty(ObjectType::Doodad);
+                Check(standardOnly.AddCustomObject(id, "D001"));
+                Check(standardOnly.AddOriginalObject("D001"));
+                Modification(standardOnly, "D001", "Rot0", type, 90.0f);
+                Modification(standardOnly, "D001", "Dt00", NativeValueType::String, std::string("PathTextures\\parent.tga"));
+                f.SetNative(standardOnly);
+                const auto inherited = Take(f.Inspect({id}));
+                Require(inherited.footprints.size() == 1 && inherited.footprints[0].rawcode == id
+                    && inherited.footprints[0].pathTexture == "PathTextures\\pattern.tga"
+                    && inherited.footprints[0].fixedRotationDegrees && *inherited.footprints[0].fixedRotationDegrees == 180.0f,
+                    "a Custom without its own pathing fields uses the unmodified standard values, not the parent's map overrides");
             }
         }
     }

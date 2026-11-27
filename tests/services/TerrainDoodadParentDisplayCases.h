@@ -43,23 +43,30 @@ void DoodadParentDisplayFieldsRemainTypedAndBounded() {
             "父验证缓存不绕过预算少一字节的拒绝");
         Require(fixture.sources[kW3d].bytes == source, "父子所有原生字段逐字保留");
 
-        for (const auto* field : {"Dt00", "ZZZ0"}) {
-            auto bad = document;
-            Modification(bad, "D001", field, NativeValueType::String,
-                std::string(emptyPath ? "_" : "PathTextures\\display-parent.tga"));
-            fixture.SetNative(bad);
-            Rejected(fixture.Inspect({"C001"}), std::string_view(field) == "Dt00"
-                ? "TERRAIN_NATIVE_OBJECT_INHERITANCE" : "TERRAIN_NATIVE_OBJECT_METADATA",
-                "已知显示字段不能遮住后续同值占地覆盖或未知字段");
-        }
+        // 与游戏一致：Custom 不继承地图对标准父的修改。父改了 pathTex、类别或旋转，Custom 仍取标准值；
+        // 父的未知字段仍拒绝。
+        const auto standardFootprint = [&](const NativeObjectDocument& changed, const char* label) {
+            fixture.SetNative(changed);
+            const auto inspected = Take(fixture.Inspect({"C001"}));
+            Require(inspected.footprints.size() == (emptyPath ? 0u : 1u), label);
+            for (const auto& type : inspected.footprints)
+                Require(type.pathTexture == "PathTextures\\display-parent.tga" && type.fixedRotationDegrees == 90.f
+                    && type.gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells, label);
+        };
+        auto parentPath = document;
+        Modification(parentPath, "D001", "Dt00", NativeValueType::String,
+            std::string(emptyPath ? "PathTextures\\parent-override.tga" : "_"));
+        standardFootprint(parentPath, "父的pathTex地图修改不继承：Custom仍取标准占地");
+        auto unknown = document;
+        Modification(unknown, "D001", "ZZZ0", NativeValueType::String, std::string("parent"));
+        fixture.SetNative(unknown);
+        Rejected(fixture.Inspect({"C001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "父的未知字段仍拒绝");
         for (const bool rotation : {false, true}) {
-            auto bad = document;
-            Modification(bad, "D001", rotation ? "Rt00" : "Ca00",
+            auto changed = document;
+            Modification(changed, "D001", rotation ? "Rt00" : "Ca00",
                 rotation ? NativeValueType::Unreal : NativeValueType::String,
-                rotation ? Value{90.f} : Value{std::string("E")});
-            fixture.SetNative(bad);
-            Rejected(fixture.Inspect({"C001"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE",
-                "父类别和旋转即使同值也不借展示字段资格放行");
+                rotation ? Value{45.f} : Value{std::string("C")});
+            standardFootprint(changed, "父的类别和旋转地图修改不继承：Custom仍取标准类别与旋转");
         }
         auto wrongType = document;
         const auto* parent = wrongType.FindObject({ObjectType::Doodad, "D001"});

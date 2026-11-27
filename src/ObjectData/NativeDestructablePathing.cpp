@@ -4,12 +4,21 @@
 namespace War3Map::ObjectData {
 using namespace NativeTerrainObjectDetail;
 namespace {
-void ValidateDisplayOnlyParent(const ObjectRecord& parent, const NativeObjectDocument& document,
+// child 为要摆放的自定义子对象（核验标准对象自身时为空）。返回是否用到了“被子对象遮住”的放行：
+// 用到时结论只对这个子对象成立，调用方不能按父缓存。
+bool ValidateDisplayOnlyParent(const ObjectRecord& parent, const ObjectRecord* child, const NativeObjectDocument& document,
     const StandardObjectEntry& standard, const ObjectFieldSchema& schema, const Text::SlkCells& cells) {
     ObjectFieldContext context;
     context.rawcode = standard.key.rawcode; context.baseCode = standard.Field("code");
     std::set<std::string_view> addresses;
+    bool shadowedAny = false;
     for (const auto& modification : parent.modifications) {
+        // 子对象自己在同一地址也有覆盖：不论父覆盖是否继承，取值都是子对象的，父覆盖不影响结论。
+        if (child && std::any_of(child->modifications.begin(), child->modifications.end(),
+                [&](const auto& own) { return own.key == modification.key; })) {
+            shadowedAny = true;
+            continue;
+        }
         const auto match = schema.MatchNativeField(ObjectType::Destructable, modification.key, context);
         if (!match.definition)
             Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "可破坏物标准父覆盖含未知字段，不能证明其只影响展示：" + modification.key.fieldId);
@@ -38,6 +47,7 @@ void ValidateDisplayOnlyParent(const ObjectRecord& parent, const NativeObjectDoc
                 Fail("TERRAIN_NATIVE_OBJECT_PARENT_TYPE", "标准父顶点颜色覆盖必须是0到255的Int32。");
         }
     }
+    return shadowedAny;
 }
 }
 
@@ -158,16 +168,10 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                     }
                     if (nativeDoodadParent && !nativeDoodadParent->modifications.empty()
                         && !validatedDoodadParents.contains(standardDoodad->key.rawcode)) {
-                        // 只接受可完整解释的展示字段；不将父Original的覆盖合并到Custom。
-                        // 父含通行字段时即使值相同也保留旧拒绝，不能用等值猜继承。
-                        for (const auto& modification : nativeDoodadParent->modifications) {
-                            const auto* definition = doodadSchema->FindNative(ObjectType::Doodad, modification.key.fieldId);
-                            if (definition) {
-                                const auto field = Text::LowerAscii(definition->sourceField);
-                                if (field == "pathtex" || field == "category" || field == "fixedrot")
-                                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "装饰物标准父含通行字段覆盖，尚不能解释其继承：" + std::string(rawcode));
-                            }
-                        }
+                        // 与游戏一致：自定义装饰物从未经地图修改的标准数据开始，地图对标准父的修改（含
+                        // pathTex/category/fixedRot）不继承，本对象只取标准值加自己的覆盖。这里只核实父覆盖
+                        // 的地址与类型，返回值不用。规则若与某张图的实际烘焙不符，重建前逐格重现源通行这一步
+                        // 会对不上并拒绝保存（TERRAIN_PATHING_SOURCE_UNEXPLAINED），不会静默写错。
                         const ObjectModification* parentCategory = nullptr;
                         const ObjectModification* parentRotation = nullptr;
                         EffectiveDoodadPath(*standardDoodad, *nativeDoodadParent, *doodads, *doodadSchema,
@@ -228,8 +232,8 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                         || inputs[4]->bytes.size() > (maximumWorkingBytes - work - cacheBytes) / count / 8)
                         Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "标准父展示字段验证超过剩余工作预算。");
                     work += cacheBytes + inputs[4]->bytes.size() * count * 8;
-                    ValidateDisplayOnlyParent(*originalParent, *destructables, *standard, schema, metadataCells);
-                    validatedDestructableParents.emplace(parent);
+                    if (!ValidateDisplayOnlyParent(*originalParent, native, *destructables, *standard, schema, metadataCells))
+                        validatedDestructableParents.emplace(parent);
                 }
             }
             if (!standard) Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "原生对象没有唯一标准父对象：" + std::string(rawcode));
@@ -382,7 +386,7 @@ Result<std::size_t> ValidateNativeDestructableDisplayOverrides(
             const auto* standard = catalog.Find(ObjectType::Destructable, rawcode);
             if (object->parentRawcode || !standard)
                 Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "展示覆盖仅接受唯一标准对象，不解释自定义继承：" + std::string(rawcode));
-            ValidateDisplayOnlyParent(*object, *document, *standard, schema, cells);
+            ValidateDisplayOnlyParent(*object, nullptr, *document, *standard, schema, cells);
         }
         return Result<std::size_t>::Success(work);
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
