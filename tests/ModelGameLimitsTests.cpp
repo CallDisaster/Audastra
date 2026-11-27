@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/ModelGameLimits.h"
+#include "War3MapCore/ProductFeatures.h"
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Resources/ResourceResolver.h"
 #include "War3MapCore/Services/ObjectResourceQuery.h"
@@ -58,8 +59,11 @@ void TestFindingsAndMessage() {
     Require(warning->origin && warning->origin->source == std::filesystem::path(u8"Doodads\\Big.mdx"), "提醒带模型路径");
     const auto& text = warning->message;
     for (const auto* part : {"模型 Doodads\\Big.mdx：", "第 2 个几何体 16385 顶点、3 索引", "第 3 个几何体 3 顶点、49155 索引",
-             "16384 顶点 / 49152 索引", "整块不画", "旧版 WarVK 里，视野内有它们时同帧阴影可能整帧放弃", "16000 顶点、48000 索引"})
+             "魔兽 1.27a 自身的单几何体上限（16384 顶点 / 49152 索引）", "游戏里这些几何体可能不显示", "16000 顶点、48000 索引"})
         Require(text.find(part) != std::string::npos, std::string("提示缺少：") + part);
+    // 提醒两种构建都给；提到 WarVK 的那句只在显示 WarVK 功能的构建里出现。
+    const bool warvkSentence = text.find("已发布的 WarVK 里它们整块不画，视野内有它们时同帧阴影还可能整帧放弃") != std::string::npos;
+    Require(warvkSentence == War3Map::WarVKFeaturesShown(), "WarVK 那句只随 WarVK 功能开关出现");
     Require(text.find("第 1 个") == std::string::npos && text.find("第 4 个") == std::string::npos, "未超限的几何体不列");
 }
 

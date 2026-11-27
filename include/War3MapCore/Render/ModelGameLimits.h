@@ -12,9 +12,11 @@
 
 namespace War3Map::Render {
 
-// 1.27a + WarVK：单个几何体顶点多于 16384（Game.dll 动态顶点缓冲 0x4000）或三角形索引多于 49152 时，游戏里这块整个不画；
-// 旧版 WarVK 里视野内有它时同帧阴影可能整帧放弃（新版已修复）。恰好等于上限的能画。编辑器预览照常画，作者看不出来。
-// 判定只此一处：场景载入、单模型预览、导入、保存、MCP 与命令行共用。正式版（WarVKFeaturesShown() 为假）不给提醒。
+// 单个几何体顶点多于 16384 或三角形索引多于 49152：这是 Game.dll 自己建动态环形缓冲时的分配上限（0x4000 / 0xC000），
+// 不是 WarVK 定的。超出时游戏仍按完整大小 Lock 更小的缓冲，结果是这块不画或写过缓冲末尾。已发布的 WarVK 里实测整块
+// 不画，视野内有它时同帧阴影还可能整帧放弃；不装 WarVK 的原版尚未实测，提示里用“可能”。恰好等于上限的能画。
+// 编辑器预览照常画，作者看不出来。判定只此一处：场景载入、单模型预览、导入、保存、MCP 与命令行共用。
+// 正式版与预览版都提醒；提到 WarVK 的那句只在 WarVKFeaturesShown() 为真时出现。
 inline constexpr std::size_t kGameGeosetMaxVertices = 16384;
 inline constexpr std::size_t kGameGeosetMaxIndices = 49152;
 // 建议拆到的安全线（留余量），只写进提示，不参与判定。

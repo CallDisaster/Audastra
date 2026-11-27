@@ -86,7 +86,7 @@ struct Checker {
         const auto model = Render::ParseMdx(read.value->bytes);
         if (!model.Succeeded()) { Fail("MODEL_PARSE_" + FirstCode(model.diagnostics), owner + " 模型 " + path + " [" + where + "] " + Reason(model.diagnostics)); return; }
         ++tally["model-ok/" + where];
-        // 只提醒，不计失败：游戏里这些几何体不画。
+        // 只提醒，不计失败：游戏里这些几何体可能不显示。
         if (const auto limit = Render::GeosetGameLimitWarning(*model.value, path)) {
             ++tally["model-geoset-over-game-limit/" + where];
             std::cout << "  提醒 " << owner << " [" << where << "] " << limit->message << '\n';

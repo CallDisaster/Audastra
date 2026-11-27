@@ -25,7 +25,6 @@ std::vector<GeosetGameLimitFinding> FindGeosetsOverGameLimit(const MdxModel& mod
 }
 
 std::optional<Diagnostic> GeosetGameLimitWarning(const MdxModel& model, std::string_view modelPath) {
-    if (!WarVKFeaturesShown()) return std::nullopt; // 正式版不提醒；所有路径都经过这里
     const auto findings = FindGeosetsOverGameLimit(model);
     if (findings.empty()) return std::nullopt;
     std::string message = "模型 " + std::string(modelPath) + "：";
@@ -35,15 +34,18 @@ std::optional<Diagnostic> GeosetGameLimitWarning(const MdxModel& model, std::str
             + std::to_string(finding.vertices) + " 顶点、" + std::to_string(finding.indices) + " 索引";
     }
     if (findings.size() > kListedGeosets) message += "；另有 " + std::to_string(findings.size() - kListedGeosets) + " 个";
-    message += "。超过游戏上限（" + std::to_string(kGameGeosetMaxVertices) + " 顶点 / " + std::to_string(kGameGeosetMaxIndices)
-        + " 索引）：1.27a + WarVK 里这些几何体整块不画；旧版 WarVK 里，视野内有它们时同帧阴影可能整帧放弃。建议拆到每块不超过 "
-        + std::to_string(kGameGeosetSafeVertices) + " 顶点、" + std::to_string(kGameGeosetSafeIndices) + " 索引。";
+    message += "。超过魔兽 1.27a 自身的单几何体上限（" + std::to_string(kGameGeosetMaxVertices) + " 顶点 / "
+        + std::to_string(kGameGeosetMaxIndices) + " 索引），游戏里这些几何体可能不显示。";
+    // WarVK 那句只在显示 WarVK 功能的构建（预览版、开发构建）里出现。
+    if (WarVKFeaturesShown())
+        message += "已发布的 WarVK 里它们整块不画，视野内有它们时同帧阴影还可能整帧放弃。";
+    message += "请拆到每块不超过 " + std::to_string(kGameGeosetSafeVertices) + " 顶点、"
+        + std::to_string(kGameGeosetSafeIndices) + " 索引。";
     return Diagnostic{DiagnosticSeverity::Warning, "Render.Model", std::string(kGeosetOverGameLimitCode), std::move(message),
         OriginSpan{std::filesystem::path(std::u8string(modelPath.begin(), modelPath.end())), 0, 0, {}}};
 }
 
 std::optional<Diagnostic> GeosetGameLimitWarning(std::span<const std::byte> mdx, std::string_view modelPath) {
-    if (!WarVKFeaturesShown()) return std::nullopt; // 不为不显示的提醒解析模型
     const auto model = ParseMdx(mdx);
     if (!model.Succeeded() || !model.value) return std::nullopt;
     return GeosetGameLimitWarning(*model.value, modelPath);
@@ -51,7 +53,6 @@ std::optional<Diagnostic> GeosetGameLimitWarning(std::span<const std::byte> mdx,
 
 std::optional<Diagnostic> GeosetGameLimitWarningForFile(const std::filesystem::path& file,
     std::string_view modelPath, std::size_t maxBytes) {
-    if (!WarVKFeaturesShown()) return std::nullopt;
     std::error_code error;
     const auto size = std::filesystem::file_size(file, error);
     if (error || size == 0 || size > maxBytes) return std::nullopt;

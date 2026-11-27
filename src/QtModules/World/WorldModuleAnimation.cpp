@@ -811,7 +811,7 @@ std::vector<WorldModelDiagnosticRow> WorldModule::ModelDiagnosticRows() const {
         else if (row.reasonCode == QStringLiteral("WORLD_MODEL_FIELD_EMPTY"))
             row.placeholderState = tr("显式空模型；不生成故障占位");
         else if (row.reasonCode == limitCode)
-            row.placeholderState = tr("编辑器照常显示，游戏里超限的几何体不画；不生成故障占位");
+            row.placeholderState = tr("编辑器照常显示，游戏里超限的几何体可能不显示；不生成故障占位");
         else row.placeholderState = tr("未准备故障占位；不据此判定故障");
     }
     return grouped;

@@ -197,7 +197,7 @@ void WorldModelPreview::Present(const Built& built) {
             else if (d.code=="ANIMATION_ZERO_ROTATION_PREVIEW") omitted<<tr("零长度旋转按不旋转");
             else if (d.code=="ANIMATION_GLOBAL_KEY_ORDER_PREVIEW") omitted<<tr("全局关键帧倒序按原版查找");
             else if (d.code=="PARTICLE_RIBBON_MATERIAL_APPROXIMATE") omitted<<tr("条带材质按首层近似");
-            else if (d.code==Render::kGeosetOverGameLimitCode) omitted<<tr("几何体超出游戏上限，游戏里不画");
+            else if (d.code==Render::kGeosetOverGameLimitCode) omitted<<tr("几何体超出游戏上限，游戏里可能不显示");
         }
         std::size_t skipped=0; QStringList reasons;
         for (const auto& capability:scene.particleCapabilities) if (capability.skippedEmitters) {

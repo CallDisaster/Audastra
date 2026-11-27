@@ -1,6 +1,5 @@
 #include "McpObjectResourceTools.h"
 #include "McpToolInternal.h"
-#include "War3MapCore/ProductFeatures.h"
 #include <QJsonDocument>
 #include <algorithm>
 #include <cmath>
@@ -87,8 +86,8 @@ QJsonObject Info(const ObjectResourceInfo& info) {
     for (const auto& sequence : info.sequences) sequences.append(QJsonObject{{"name", QString::fromStdString(sequence.name)},
         {"start_ms", static_cast<double>(sequence.startMs)}, {"end_ms", static_cast<double>(sequence.endMs)},
         {"loops", sequence.loops}, {"usable", sequence.usable}});
-    QJsonArray geosets; // 正式版不列（与几何体超限提醒一同隐藏）
-    if (WarVKFeaturesShown()) for (const auto& geoset : info.geosets) geosets.append(QJsonObject{{"vertices", static_cast<double>(geoset.vertices)},
+    QJsonArray geosets;
+    for (const auto& geoset : info.geosets) geosets.append(QJsonObject{{"vertices", static_cast<double>(geoset.vertices)},
         {"indices", static_cast<double>(geoset.indices)}, {"over_game_limit", geoset.overGameLimit}});
     return {{"ok", true}, {"geosets", geosets}, {"value", QString::fromStdString(info.requestedValue)}, {"resource_path", QString::fromStdString(info.resourcePath)},
         {"kind", QString::fromUtf8(ObjectResourceKindName(info.kind))}, {"source_id", QString::fromStdString(info.source.sourceId)},

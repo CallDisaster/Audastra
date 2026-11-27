@@ -41,7 +41,7 @@ option(WAR3MAPEDITOR_BUILD_QT "Build the Qt 6 desktop application" ON)
 option(WAR3MAPEDITOR_BUILD_TESTS "Build the test suite" ON)
 # 开发构建可从源码树找 Agent 技能与运行时；发布构建须关闭，避免把本机源码路径编进程序。
 option(AUDASTRA_DEV_SOURCE_FALLBACKS "Let development builds find agent skills and runtime in the source tree" ON)
-# WarVK 专用功能的入口（地图设置 WarVK 分组、物编“远景”、Agent 的 map_warvk_* 工具、几何体超限提醒）。
+# WarVK 专用功能的入口（地图设置 WarVK 分组、物编“远景”、Agent 的 map_warvk_* 工具、几何体超限提醒里的 WarVK 那句）。
 # 预览版与开发构建显示；正式版构建关闭。只藏入口，数据通路不变，见 include/War3MapCore/ProductFeatures.h。
 option(AUDASTRA_WARVK_FEATURES "Show WarVK-only features (preview and development builds)" ON)
 
