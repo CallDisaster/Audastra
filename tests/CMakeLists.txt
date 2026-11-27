@@ -466,7 +466,7 @@ foreach(slk_service IN ITEMS MapSourceSnapshot OrderedCreation)
 endforeach()
 
 add_executable(war3-map-render-d3d11-tests RenderD3D11Tests.cpp RealTerrainPairAudit.cpp RenderD3D11ModelSourceMipTests.h
-    RenderD3D11TerrainTransitionTests.h RenderD3D11SurfaceMaterialTests.h)
+    RenderD3D11TerrainTransitionTests.h RenderD3D11SurfaceMaterialTests.h RenderD3D11SkyLayerTests.h)
 target_include_directories(war3-map-render-d3d11-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(war3-map-render-d3d11-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-render-d3d11-tests PRIVATE /W4 /permissive- /utf-8)

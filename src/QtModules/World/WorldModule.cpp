@@ -11,6 +11,7 @@
 #include "WorldTerrainAssets.h"
 #include "WorldTerrainBuild.h"
 #include "WorldCliffLayer.h"
+#include "WorldSkyLayer.h"
 #include "WorldPlacementModels.h"
 #include "WorldAssetBrowser.h"
 #include "EditorProject.h"
@@ -308,6 +309,7 @@ WorldModule::~WorldModule() {
     delete buildingSplatPresenter_; buildingSplatPresenter_ = nullptr;
     delete premPresenter_; premPresenter_ = nullptr;
     delete cliffLayer_; cliffLayer_ = nullptr;
+    delete skyLayer_; skyLayer_ = nullptr;
     delete animation_;
     animation_ = nullptr;
     // CPU 解码线程只持有自有字节及结果；QObject 断开回调，绝不借用地图/视口指针。
@@ -559,7 +561,8 @@ void WorldModule::Refresh() {
         pendingCamera_ = viewport_->SaveCamera(); pendingCameraMap_ = shownMap_;
     }
     shownMap_.clear();
-    terrain_.reset(); waterSurfaceOffset_.reset(); deepWaterLevel_.reset(); surfaceMaterials_.reset();
+    terrain_.reset(); waterSurfaceOffset_.reset(); deepWaterLevel_.reset(); surfaceMaterials_.reset(); skyModelPath_.clear();
+    if (skyLayer_) skyLayer_->Clear();
     terrainHeightRules_.reset();
     rawTerrain_.reset();
     terrainCache_.reset();
@@ -614,13 +617,20 @@ void WorldModule::Refresh() {
     shadow.context = ShadowContextFor(project_, sourceRaw.get(), shadowRelationMemo_);
     shadow.read.emplace(project_.ReadMapMember("war3map.shd"));
     if (WarVKFeaturesShown()) {
+        // 只写运行日志，不改地形加载阶段（阶段供诊断快照读取）。
+        const auto logWarnings = [](const char* what, const std::vector<Diagnostic>& diagnostics) {
+            for (const auto& item : diagnostics) War3Map::RunLog::Info("世界加载", std::string(what) + "：" + item.code + " " + item.message);
+        };
         // 没有材质表是常态，读不到不报错；表内的坏行写进运行日志。
         if (auto table = project_.ReadMapMember(std::string(Render::kSurfaceMaterialTablePath)); table.Succeeded()) {
             auto parsed = std::make_shared<Render::SurfaceMaterialTable>(Render::ParseSurfaceMaterialTable(
                 std::string_view(reinterpret_cast<const char*>(table.value->data()), table.value->size())));
-            if (!parsed->warnings.empty()) RecordTerrainLoad("surface-material-table", parsed->warnings);
+            logWarnings("表面材质表", parsed->warnings);
             if (!parsed->byRawcode.empty()) surfaceMaterials_ = std::move(parsed);
         }
+        // 天空模型随主模型场景装好后显示；设置读不出时写进运行日志，不显示天空。
+        if (const auto warvk = project_.QueryWarVKMapSettings(); warvk.Succeeded() && warvk.value) skyModelPath_ = warvk.value->skyModel;
+        else logWarnings("WarVK 设置", warvk.diagnostics);
     }
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     auto cache = std::make_shared<std::shared_ptr<WorldTerrainCache>>();

@@ -8,6 +8,16 @@ namespace War3Map::Render {
 namespace {
 Status Failure(const char* code, const char* message) { return Status::Failure("Render.ModelLayer", code, message); }
 }
+bool ModelSceneLayerRenderer::RoleSupported(const War3RenderPluginApiV2* api, War3RendererHandle handle,
+    std::uint32_t role) noexcept {
+    if (role == WAR3_RENDER_MODEL_LAYER_MODEL) return Supported(api);
+    const auto bit = role == WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW ? WAR3_RENDER_MODEL_LAYER_CAP_GROUND_DECAL_PREVIEW
+        : role == WAR3_RENDER_MODEL_LAYER_SKY ? WAR3_RENDER_MODEL_LAYER_CAP_SKY : 0u;
+    std::uint32_t flags = 0;
+    return bit && Supported(api) && handle
+        && api->structSize >= offsetof(War3RenderPluginApiV2, getModelLayerCapabilities) + sizeof(api->getModelLayerCapabilities)
+        && api->getModelLayerCapabilities && api->getModelLayerCapabilities(handle, &flags) == 0 && (flags & bit);
+}
 bool ModelSceneLayerRenderer::Supported(const War3RenderPluginApiV2* api) noexcept {
     return api && api->apiVersion == WAR3_RENDER_PLUGIN_API_V2
         && api->structSize >= offsetof(War3RenderPluginApiV2, captureLayeredFrameRgba) + sizeof(api->captureLayeredFrameRgba)
@@ -17,15 +27,16 @@ bool ModelSceneLayerRenderer::Supported(const War3RenderPluginApiV2* api) noexce
 Status ModelSceneLayerRenderer::Submit(std::shared_ptr<const AnimatedModelScene> scene,
     std::shared_ptr<const AnimationFrame> frame, std::uint32_t role) try {
     if (!Supported(api_) || !handle_ || !id_) return Failure("MODEL_LAYER_UNSUPPORTED", "渲染插件没有附加模型层接口。");
-    if (role != WAR3_RENDER_MODEL_LAYER_MODEL && role != WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW)
+    if (role != WAR3_RENDER_MODEL_LAYER_MODEL && role != WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW
+        && role != WAR3_RENDER_MODEL_LAYER_SKY)
         return Failure("MODEL_LAYER_ROLE_INVALID", "附加模型层角色未知。");
-    if (role == WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW) {
-        std::uint32_t flags = 0;
-        if (api_->structSize < offsetof(War3RenderPluginApiV2, getModelLayerCapabilities) + sizeof(api_->getModelLayerCapabilities)
-            || !api_->getModelLayerCapabilities || api_->getModelLayerCapabilities(handle_, &flags) != 0
-            || !(flags & WAR3_RENDER_MODEL_LAYER_CAP_GROUND_DECAL_PREVIEW))
-            return Failure("MODEL_LAYER_GROUND_DECAL_UNSUPPORTED", "插件没有地面贴画预览角色；未以共面普通层替代。");
+    if (role != WAR3_RENDER_MODEL_LAYER_MODEL && !RoleSupported(api_, handle_, role)) {
+        if (role == WAR3_RENDER_MODEL_LAYER_SKY)
+            return Failure("MODEL_LAYER_SKY_UNSUPPORTED", "插件没有天空层角色；未以普通模型层替代。");
+        return Failure("MODEL_LAYER_GROUND_DECAL_UNSUPPORTED", "插件没有地面贴画预览角色；未以共面普通层替代。");
     }
+    if (role == WAR3_RENDER_MODEL_LAYER_SKY && scene && scene->particlesEnabled && scene->particleInstanceCount)
+        return Failure("MODEL_LAYER_SKY_PARTICLES", "天空层只画模型，不带粒子。");
     if (!scene || !frame || scene->sceneVersion != frame->sceneVersion || scene->documentRevision != frame->documentRevision)
         return Failure("MODEL_LAYER_FRAME_STALE", "附加层场景和姿势身份不符。");
     if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene,*frame); !status.Succeeded()) return status;

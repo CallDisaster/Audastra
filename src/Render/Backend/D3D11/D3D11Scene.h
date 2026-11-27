@@ -238,8 +238,11 @@ private:
     std::atomic<std::uint32_t>* testFault_ = nullptr;
 #endif
     void DrawModels(int pass); // 0 = 不透明/透明测试（写深度），1 = 混合层（只读深度）
-    // groundDecals 为真时只画地面贴花层（紧接地形、在模型之前），否则只画普通附加层。
+    // groundDecals 为真时只画地面贴花层（紧接地形、在模型之前），否则只画普通附加层。天空层不在此画。
     void DrawModelLayers(int pass, bool groundDecals = false);
+    // 天空层：调用方已换上以镜头为原点的矩阵；画完由调用方换回场景矩阵并清深度。
+    [[nodiscard]] bool HasSkyLayer() const noexcept;
+    void DrawSkyLayers();
     struct ModelLayerSlot {
         std::shared_ptr<const ModelSceneLayerData> requested, accepted;
         std::unique_ptr<D3D11Scene> gpu;
@@ -340,6 +343,7 @@ private:
     std::vector<War3RenderMeshColorV2> skinMeshColors_;
     std::vector<War3RenderModelSurfaceV2> modelSurfaces_; // 空=没有表面材质，否则与模型同序
     float cameraEye_[3]{}; // 本帧相机位置（世界坐标），表面材质的视线方向用
+    std::uint32_t forcedLayerFlags_ = 0; // 附加层按角色强加的层标志（天空层：不受雾影响）
     std::vector<std::uint32_t> skinModelLayerCounts_;
     std::vector<std::uint32_t> skinChanges_; // 本次按变化记录上传的实例，复用容量
     struct SkinMeshConstants {

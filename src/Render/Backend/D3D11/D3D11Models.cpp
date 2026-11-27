@@ -277,7 +277,7 @@ void D3D11Scene::DrawModels(int pass) {
                 auto* raster = (layer.flags & WAR3_RENDER_MODEL_CULL_BACK) && culled ? culled : incoming.Get();
                 if (raster != activeRaster) { context_->RSSetState(raster); activeRaster = raster; }
                 const bool textured = layer.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE;
-                ModelLayerConstants values{layer.alpha, layer.filterMode, layer.flags, textured ? 1u : 0u};
+                ModelLayerConstants values{layer.alpha, layer.filterMode, layer.flags | forcedLayerFlags_, textured ? 1u : 0u};
                 ID3D11ShaderResourceView* surfaceViews[5]{};
                 ApplyModelSurface(model, layer, values, surfaceViews);
                 context_->PSSetShaderResources(12, 5, surfaceViews);

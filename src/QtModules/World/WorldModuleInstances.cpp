@@ -5,6 +5,7 @@
 #include "WorldSelectionPresenter.h"
 #include "WorldPathingHelperPresenter.h"
 #include "WorldCliffLayer.h"
+#include "WorldSkyLayer.h"
 #include "EditorProject.h"
 #include "Widgets/ElidedLabel.h"
 #include <QLabel>
@@ -355,6 +356,7 @@ void WorldModule::QueuePlacementInstances() {
         ValidateSelection(); BindInstanceDiagnostics();
         if (selectionPresenter_) selectionPresenter_->RebindParent();
         if (cliffLayer_ && cliffsInLayer_) cliffLayer_->RebindParent();
+        if (skyLayer_) skyLayer_->RebindParent();
         RefreshBuildingSplats(true);
         if (placing_ || pasting_) StartPlacementPreview();
         UpdateOverlay(); UpdateSelectionText();

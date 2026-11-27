@@ -9,6 +9,7 @@
 #include "WorldModelBugPlaceholderPresenter.h"
 #include "WorldPremPresenter.h"
 #include "WorldCliffLayer.h"
+#include "WorldSkyLayer.h"
 #include "WorldPathingHelperPresenter.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
@@ -19,6 +20,7 @@
 #include "War3MapCore/Render/AnimationParticleCoverage.h"
 #include "War3MapCore/Render/FrameCapture.h"
 #include "War3MapCore/Render/ModelGameLimits.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include <QLabel>
 #include <QComboBox>
 #include <QPushButton>
@@ -583,6 +585,11 @@ void WorldModule::SetupAnimationControls() {
     bugPlaceholderPresenter_ = new WorldModelBugPlaceholderPresenter(viewport_, this);
     premPresenter_ = new WorldPremPresenter(viewport_, this);
     cliffLayer_ = new WorldCliffLayerPresenter(viewport_, this);
+    skyLayer_ = new WorldSkyLayer(*viewport_, this);
+    connect(skyLayer_, &WorldSkyLayer::Message, this, [this](const QString& text) {
+        War3Map::RunLog::Info("世界加载", text.toStdString());
+        if (skyLayer_ && !skyLayer_->LastDiagnostics().empty()) project_.AddDiagnostics(skyLayer_->LastDiagnostics());
+    });
     connect(animation_, &WorldAnimationPlayer::InstanceWorkWaitingChanged,
         selectionPresenter_, [this](bool waiting) {
             if (!waiting && !animation_->Ready()) selectionPresenter_->Clear();
@@ -595,6 +602,7 @@ void WorldModule::SetupAnimationControls() {
         }
         if (bugPlaceholderPresenter_ && (!animation_->Ready() || waiting)) bugPlaceholderPresenter_->Clear();
         if (premPresenter_ && (!animation_->Ready() || waiting)) premPresenter_->Clear();
+        if (skyLayer_) skyLayer_->SetSubmissionDeferred(waiting);
         if (!waiting && animation_->Ready() && InstanceDiagnosticsCurrent()) BindInstanceDiagnostics();
         if (!placementPreview_) return;
         if (!waiting && !animation_->Ready()) placementPreview_->Clear();
@@ -1555,6 +1563,11 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         cliffsInLayer_ = cliffLayer && work->cliffLayer;
         if (cliffsInLayer_) { cliffLayer_->Show(*work->cliffLayer); cliffLayer_->RebindParent(); }
         else if (cliffLayer_) cliffLayer_->Clear(); // 主场景已含悬崖，不能再叠一层
+        if (skyLayer_) {
+            if (skyModelPath_.empty()) skyLayer_->Clear();
+            else skyLayer_->Show(skyModelPath_, selectionSources, {work->service->Scene()->generation, revision, selectionSources.archiveSha},
+                [this, generation, mapKey] { return page_ && generation_ == generation && MapKey() == mapKey; });
+        }
         pathingHelperRequests_.assign(requests_.size(), 0);
         pathingHelperPresentation_.reset();
         if (work->helpers) {

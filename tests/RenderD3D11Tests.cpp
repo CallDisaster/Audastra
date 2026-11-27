@@ -1515,6 +1515,7 @@ void TestEnvironment(const RendererOwner& renderer) {
 #include "RenderD3D11AssetAppendTests.h"
 #include "RenderD3D11MaterialStateTests.h"
 #include "RenderD3D11SurfaceMaterialTests.h"
+#include "RenderD3D11SkyLayerTests.h"
 #include "RenderD3D11StaticSamplerTests.h"
 #include "RenderD3D11ObliqueSamplerTests.h"
 #include "RenderD3D11TerrainObliqueTests.h"
@@ -1951,7 +1952,7 @@ void TestBuildingSplatLayer(const War3RenderPluginApiV2* api, const War3RenderCr
         const auto pixels=capture(); RequireWorldColor(pixels,receipt.world.frame.view,0,0,{6,135,9},2); }
     const auto stable=capture(); const auto stableRevision=target.layersRevision;
     AnimatedSceneDescriptor decalDescriptor; decalDescriptor.Refresh(*first.scene,*first.frame);
-    War3RenderModelSceneLayerV2 bad{sizeof(bad),0,502,target.parentModelEpoch,layer.Revision()+1,layer.Revision(),&decalDescriptor.scene,nullptr,2,0};
+    War3RenderModelSceneLayerV2 bad{sizeof(bad),0,502,target.parentModelEpoch,layer.Revision()+1,layer.Revision(),&decalDescriptor.scene,nullptr,3,0};
     Require(api->submitModelSceneLayer(renderer.handle,&bad)!=0, "unknown layer role accepted");
     bad.role=WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW; bad.roleReserved=1;
     Require(api->submitModelSceneLayer(renderer.handle,&bad)!=0, "reserved role bytes accepted");
@@ -2398,6 +2399,7 @@ int wmain(int argc, wchar_t** argv) {
         TestDeferredCapture(api, info);
         TestSkinnedModels(api, info);
         TestSurfaceMaterials(api, info);
+        TestSkyLayer(api, info);
         TestMaterialLayerAlphas(api, info);
         TestMaterialStates(api, info);
         TestUnfoggedMaterials(api, info);

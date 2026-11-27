@@ -1411,8 +1411,9 @@ std::int32_t WAR3_RENDER_CALL SubmitModelSceneLayer(War3RendererHandle handle,
     const auto role = input->structSize == WAR3_RENDER_MODEL_SCENE_LAYER_PREFIX_SIZE
         ? WAR3_RENDER_MODEL_LAYER_MODEL : input->role;
     if (input->structSize != WAR3_RENDER_MODEL_SCENE_LAYER_PREFIX_SIZE && input->roleReserved) return kInvalid;
-    if (role != WAR3_RENDER_MODEL_LAYER_MODEL && role != WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW) return kInvalid;
-    if (role == WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW && input->particles) return kInvalid;
+    if (role != WAR3_RENDER_MODEL_LAYER_MODEL && role != WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW
+        && role != WAR3_RENDER_MODEL_LAYER_SKY) return kInvalid;
+    if (role != WAR3_RENDER_MODEL_LAYER_MODEL && input->particles) return kInvalid;
     try {
         auto layer = std::make_shared<ModelSceneLayerData>();
         layer->id = input->layerId; layer->revision = input->revision; layer->parentModelEpoch = input->parentModelEpoch;
@@ -1511,7 +1512,7 @@ std::int32_t WAR3_RENDER_CALL GetModelLayersTarget(War3RendererHandle handle, Wa
 }
 std::int32_t WAR3_RENDER_CALL GetModelLayerCapabilities(War3RendererHandle handle, std::uint32_t* output) noexcept {
     if (!handle || !output) return kInvalid;
-    *output = WAR3_RENDER_MODEL_LAYER_CAP_GROUND_DECAL_PREVIEW;
+    *output = WAR3_RENDER_MODEL_LAYER_CAP_GROUND_DECAL_PREVIEW | WAR3_RENDER_MODEL_LAYER_CAP_SKY;
     return 0;
 }
 std::int32_t WAR3_RENDER_CALL GetStaticModelSamplerCapabilities(War3RendererHandle handle,

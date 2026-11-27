@@ -71,6 +71,7 @@ class WorldBuildingSplatPresenter;
 class WorldModelBugPlaceholderPresenter;
 class WorldPremPresenter;
 class WorldCliffLayerPresenter;
+class WorldSkyLayer;
 class WorldOutlinerModel;
 class WorldAssetBrowser;
 struct WorldTerrainCache;
@@ -527,6 +528,7 @@ private:
     WorldModelBugPlaceholderPresenter* bugPlaceholderPresenter_ = nullptr;
     WorldPremPresenter* premPresenter_ = nullptr;
     WorldCliffLayerPresenter* cliffLayer_ = nullptr;
+    WorldSkyLayer* skyLayer_ = nullptr;
     bool cliffsInLayer_ = false; // 当前动画主场景不含悬崖，悬崖由独立层显示
     std::shared_ptr<const WorldPathingHelperCache> pathingHelperCache_;
     ModelVariantFallbacks modelVariants_; // 后台按实际来源判定；主线程增量捕获复用，换图/重读时清空。
@@ -550,6 +552,7 @@ private:
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain_;
     std::optional<float> waterSurfaceOffset_, deepWaterLevel_; // 与 terrain_ 同时发布，单位浮水用
     std::shared_ptr<const Render::SurfaceMaterialTable> surfaceMaterials_; // 地图 WarVK 材质表；仅 WarVK 入口显示时读取
+    std::string skyModelPath_; // 地图 WarVK 设置的天空模型；仅 WarVK 入口显示时读取，空为不显示
     std::shared_ptr<const WorldTerrainHeightRules> terrainHeightRules_; // 与最后实际显示地形同时发布的只读owner及来源租约。
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain_; // 对应编辑会话的不可变原始快照
     std::shared_ptr<const Render::TerrainCliffs> cliffs_; // 当前地形已烘焙的悬崖，随模型场景提交

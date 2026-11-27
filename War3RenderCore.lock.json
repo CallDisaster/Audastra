@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.25",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "493967972827e2007e555dfbc3ba8c441e54cee6",
+  "commit": "8f8cdc37373c4404377583d1c1bbf1deaa2cab33",
   "files": [
     {
       "path": ".gitattributes",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "14cb4058140be131d6dde279fb19cb0047240e821c6b198ea92da6635e241f07"
+      "sha256": "bc1eb7ff19998932b1fc144c5249aadf117b5d161682f8c2a6572f846e9a3b8a"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -122,7 +122,7 @@
     },
     {
       "path": "include/War3MapCore/RenderPluginModelLayers.h",
-      "sha256": "8b7716a1f01f29e4447391bf7e86f463e5dfdc5ec911147a0cc548b9baccdd32"
+      "sha256": "67cc1205dc89dca4379246b40aef0c251dc500935c6015071994c47ccca52a3d"
     },
     {
       "path": "include/War3MapCore/RenderPluginParticleMaterial.h",

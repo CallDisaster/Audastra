@@ -9,6 +9,8 @@ public:
     ModelSceneLayerRenderer(const War3RenderPluginApiV2* api, War3RendererHandle handle, std::uint64_t id)
         : api_(api), handle_(handle), id_(id) {}
     [[nodiscard]] static bool Supported(const War3RenderPluginApiV2* api) noexcept;
+    // 普通角色只要求附加层接口；贴画预览与天空角色还要插件报告对应能力位。
+    [[nodiscard]] static bool RoleSupported(const War3RenderPluginApiV2* api, War3RendererHandle handle, std::uint32_t role) noexcept;
     [[nodiscard]] Status Submit(std::shared_ptr<const AnimatedModelScene> scene, std::shared_ptr<const AnimationFrame> frame,
         std::uint32_t role = WAR3_RENDER_MODEL_LAYER_MODEL);
     [[nodiscard]] Status Update(std::shared_ptr<const AnimationFrame> frame);

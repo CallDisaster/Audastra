@@ -46,6 +46,7 @@ void D3D11Scene::SetModelLayers(const ModelSceneLayers& layers) {
                     gpu->particleSampler_ = particleSampler_;
                     gpu->modelConstants_ = modelConstants_; gpu->modelBlend_ = modelBlend_;
                     gpu->terrainDepth_ = terrainDepth_; gpu->modelDepthRead_ = modelDepthRead_;
+                    gpu->forcedLayerFlags_ = input->role == WAR3_RENDER_MODEL_LAYER_SKY ? WAR3_RENDER_MODEL_UNFOGGED : 0u;
 #ifdef WAR3_RENDER_TEST_FAULTS
                     gpu->testFault_ = testFault_;
 #endif
@@ -81,6 +82,7 @@ void D3D11Scene::DrawModelLayers(int pass, bool groundDecals) {
     for (std::size_t i = 0; i < additionalModelCount_; ++i) {
         const auto& slot = additionalModels_[i];
         if (const auto& gpu = slot.gpu) {
+            if (slot.accepted && slot.accepted->role == WAR3_RENDER_MODEL_LAYER_SKY) continue;
             const bool decal = slot.accepted && slot.accepted->role == WAR3_RENDER_MODEL_LAYER_GROUND_DECAL_PREVIEW;
             if (decal != groundDecals) continue;
             if (decal && pass != 1) continue; // typed入口保证只有blend/no-write模型，无粒子。
@@ -89,5 +91,22 @@ void D3D11Scene::DrawModelLayers(int pass, bool groundDecals) {
             if (decal) context_->RSSetState(rasterizer_.Get()); // 后续普通层和编辑overlay恢复原状态。
         }
     }
+}
+
+bool D3D11Scene::HasSkyLayer() const noexcept {
+    for (std::size_t i = 0; i < additionalModelCount_; ++i) {
+        const auto& slot = additionalModels_[i];
+        if (slot.gpu && slot.accepted && slot.accepted->role == WAR3_RENDER_MODEL_LAYER_SKY) return true;
+    }
+    return false;
+}
+
+void D3D11Scene::DrawSkyLayers() {
+    // 天空自身的不透明层写深度、混合层只读深度，彼此按深度遮挡；对场景的遮挡由调用方随后清深度消除。
+    for (int pass = 0; pass < 2; ++pass)
+        for (std::size_t i = 0; i < additionalModelCount_; ++i) {
+            const auto& slot = additionalModels_[i];
+            if (slot.gpu && slot.accepted && slot.accepted->role == WAR3_RENDER_MODEL_LAYER_SKY) slot.gpu->DrawModels(pass);
+        }
 }
 }

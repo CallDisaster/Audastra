@@ -788,10 +788,17 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     const auto target = XMVectorSet(camera.targetX, camera.targetY, camera.targetZ, 1);
     const auto eye = XMVectorAdd(target, XMVectorSet(camera.distance * std::cos(camera.pitchRadians) * std::cos(camera.yawRadians),
         camera.distance * std::cos(camera.pitchRadians) * std::sin(camera.yawRadians), camera.distance * std::sin(camera.pitchRadians), 0));
+    const auto up = XMVectorSet(0, 0, 1, 0);
+    const auto projection = XMMatrixPerspectiveFovRH(XM_PIDIV4, static_cast<float>(width_) / static_cast<float>(height_), 1.0f, 1000000.0f);
     XMFLOAT4X4 matrix;
-    XMStoreFloat4x4(&matrix, XMMatrixLookAtRH(eye, target, XMVectorSet(0, 0, 1, 0)) *
-        XMMatrixPerspectiveFovRH(XM_PIDIV4, static_cast<float>(width_) / static_cast<float>(height_), 1.0f, 1000000.0f));
-    context_->UpdateSubresource(constants_.Get(), 0, nullptr, &matrix, 0, 0);
+    XMStoreFloat4x4(&matrix, XMMatrixLookAtRH(eye, target, up) * projection);
+    const bool sky = HasSkyLayer();
+    if (sky) {
+        // 天空层以镜头为原点：同一朝向和投影，去掉平移。
+        XMFLOAT4X4 skyMatrix;
+        XMStoreFloat4x4(&skyMatrix, XMMatrixLookAtRH(XMVectorZero(), XMVectorSubtract(target, eye), up) * projection);
+        context_->UpdateSubresource(constants_.Get(), 0, nullptr, &skyMatrix, 0, 0);
+    } else context_->UpdateSubresource(constants_.Get(), 0, nullptr, &matrix, 0, 0);
     std::memcpy(viewProjection, &matrix, sizeof(matrix));
     cameraEye_[0] = XMVectorGetX(eye); cameraEye_[1] = XMVectorGetY(eye); cameraEye_[2] = XMVectorGetZ(eye);
     constexpr float background[]{0.045f, 0.060f, 0.075f, 1};
@@ -802,17 +809,24 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(width_), static_cast<float>(height_), 0, 1};
     context_->RSSetViewports(1, &viewport);
     context_->RSSetState(rasterizer_.Get());
-    ClearTerrainFetchState();
-    const bool terrain = terrain_ && (indexCount_ != 0 || terrainGridGpu_.enabled);
-    context_->IASetInputLayout(terrain ? terrainLayout_.Get() : layout_.Get());
-    context_->VSSetShader(terrain ? terrainVertexShader_.Get() : vertexShader_.Get(), nullptr, 0);
-    context_->PSSetShader(pixelShader_.Get(), nullptr, 0);
     auto* constants = constants_.Get();
     context_->VSSetConstantBuffers(0, 1, &constants);
     // 环境常量（模型光照、雾、阴影）供地表与模型两类着色器共用。
     auto* environment = environmentConstants_.Get();
     context_->VSSetConstantBuffers(3, 1, &environment);
     context_->PSSetConstantBuffers(3, 1, &environment);
+    if (sky) {
+        // 天空最先画；换回场景矩阵并清深度，天空因此不遮挡场景里的任何东西。
+        DrawSkyLayers();
+        context_->UpdateSubresource(constants_.Get(), 0, nullptr, &matrix, 0, 0);
+        context_->ClearDepthStencilView(depthView_.Get(), D3D11_CLEAR_DEPTH, 1, 0);
+        context_->RSSetState(rasterizer_.Get());
+    }
+    ClearTerrainFetchState();
+    const bool terrain = terrain_ && (indexCount_ != 0 || terrainGridGpu_.enabled);
+    context_->IASetInputLayout(terrain ? terrainLayout_.Get() : layout_.Get());
+    context_->VSSetShader(terrain ? terrainVertexShader_.Get() : vertexShader_.Get(), nullptr, 0);
+    context_->PSSetShader(pixelShader_.Get(), nullptr, 0);
     auto* shadowSampler = shadowSampler_.Get();
     context_->PSSetSamplers(2, 1, &shadowSampler);
     auto* shadow = shadow_.Get();
