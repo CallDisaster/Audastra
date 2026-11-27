@@ -51,6 +51,7 @@
 | 归档展开与导入成员 | archive_expand、archive_members_add、archive_members_remove | 独立服务，Save 权限。archive_expand 把 .w3x 具名成员写到新目录供 --workspace 使用，data_only 不写导入资源；成员增删写新候选，只改请求成员和 war3map.imp，不重建脚本；删除前按字符串查找路径出现处，找到即拒绝（MEMBER_REFERENCED），allow_referenced=true 才删，查不到不等于无引用 |
 | 地形读写 | get_terrain_edit_state、query_terrain_points、edit_terrain_stroke、edit_terrain_texture_slot、edit_terrain_bounds、edit_terrain_resize、edit_terrain_block | GUI 与独立入口同名同 schema、同一 Core 命令。先 get_terrain_edit_state 取 terrain_binding、贴图表和保存资格；笔划和贴图槽必须显式 dry_run；笔划 kind 含高度、平滑、噪声、贴图、荒芜、悬崖层级/贴图、直坡/转角坡、水面、边界、通行限制，坡道单点坐标与水位规则以工具描述为准。提交沿原 Undo，不自行保存：编辑器端口用 editor_save_map，独立目录用 save_map_edit_candidate |
 | 地形/模型只读 | get_terrain_snapshot、query_terrain_block、capture_model_animation | 独立目录会话读取快照/区块（编辑器端口没有这两个，用 query_terrain_points）；完成帧身份和设备证据另核 |
+| 世界散布 | world_scatter_stroke | 世界页散布笔刷画一笔（散布/擦除），一笔一步撤销；表面为地形和/或按过滤选出的可见装饰物模型（取最上层），模型表面后台读取，未就绪返回 WORLD_SCATTER_SURFACE_BUILDING 后重试；dry_run 只返回落点 |
 | 世界视口 | world_viewport_camera_read/set、world_viewport_capture、world_viewport_capture_result | 只有编辑器端口的活动世界视口可用，独立 stdio 明确不支持；设置相机不改地图镜头对象；截图取实际完成帧，按请求 ID 取回，PNG 默认不带、最多 4MiB |
 | 区域/镜头结构 | auxiliary_create、auxiliary_update、auxiliary_copy、auxiliary_delete | 读取用 entities_query；字段名按 schema，角度为度。create 给完整已知字段，copy 给新名字（区域另给新 creation_number），未提供的原字段逐位保留 |
 | 地图自定义设置 | map_custom_settings_get、map_custom_settings_edit | 升级、科技限制、随机单位/物品表；先 summary 取 settings_binding，逐条 CAS，失败不发布前缀 |

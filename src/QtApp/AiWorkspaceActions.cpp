@@ -456,7 +456,7 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     const QPointer<War3Map::Modules::WorldModule> world(worldModule_);
     auto viewportTools = std::make_shared<War3Map::Modules::WorldViewportToolService>([world]() {
         return world ? world->ViewportForTools() : nullptr;
-    });
+    }, [world]() { return world ? world->ScatterForTools() : nullptr; });
     state->tools->SetWorldViewportHandler([viewportTools](const QString& name, const QJsonObject& arguments) {
         return viewportTools->Invoke(name, arguments);
     });

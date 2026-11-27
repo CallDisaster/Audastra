@@ -403,10 +403,10 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "triggers_batch_delete",
         "undo_campaign", "update.status",
         "variables_batch_delete", "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update",
-        "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
+        "world_scatter_stroke", "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{114});
+    QCOMPARE(expected.size(), qsizetype{115});
     const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
@@ -2874,6 +2874,7 @@ void LiveEditorToolsTests::ViewportToolsUseActualHostAndRejectStaleIdentity() {
     QVERIFY(!f.tools->Invoke("world_viewport_camera_read", invalid).value("ok").toBool()); QCOMPARE(calls, 1);
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("world_viewport_camera_set"));
+    QVERIFY(!Names(f.tools->Tools()).contains("world_scatter_stroke"));
     QVERIFY(Names(f.tools->Tools()).contains("world_viewport_camera_read"));
 }
 

@@ -11,7 +11,7 @@ namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 QString Code(const QJsonObject& result) { return result.value("diagnostics").toArray().first().toObject().value("code").toString(); }
 void Contracts() {
-    const auto tools = WorldViewportToolDefinitions(); Require(tools.size() == 4, "four shared viewport tools");
+    const auto tools = WorldViewportToolDefinitions(); Require(tools.size() == 5, "four viewport tools and the scatter stroke");
     int calls = 0;
     WorldViewportToolHost host{[&](const QString& name, const QJsonObject&) {
         ++calls; return QJsonObject{{"ok", true}, {"name", name}};
@@ -45,6 +45,15 @@ void Contracts() {
     Require(!InvokeWorldViewportTool("world_viewport_capture", invalid, host).value("ok").toBool() && calls == 3, "integral byte budget");
     invalid = args; invalid["max_rgba_bytes"] = 64 * 1024 * 1024 + 1;
     Require(!InvokeWorldViewportTool("world_viewport_capture", invalid, host).value("ok").toBool() && calls == 3, "bounded memory");
+    QJsonObject scatter{{"project_identity", "fixture"}, {"expected_revision", "0"}, {"mode", "paint"},
+        {"palette", QJsonArray{QJsonObject{{"rawcode", "STr0"}}}}, {"path", QJsonArray{QJsonArray{0, 0}}}};
+    Require(!InvokeWorldViewportTool("world_scatter_stroke", scatter, host).value("ok").toBool() && calls == 3,
+        "scatter dry-run choice is explicit");
+    scatter["dry_run"] = true;
+    Require(InvokeWorldViewportTool("world_scatter_stroke", scatter, host).value("ok").toBool() && calls == 4, "scatter forwards");
+    invalid = scatter; invalid["model_path"] = "injected";
+    Require(!InvokeWorldViewportTool("world_scatter_stroke", invalid, host).value("ok").toBool() && calls == 4, "scatter rejects unknown fields");
+    Require(tools[4].name == "world_scatter_stroke" && tools[4].permission == ToolPermission::Edit, "scatter edits the map");
     McpServer server; RegisterWorldViewportTools(server);
     ToolPolicy policy; policy.allowEdit = false; server.SetToolPolicy(policy);
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");

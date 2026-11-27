@@ -18,9 +18,10 @@ QJsonObject CameraSchema() {
 std::vector<ToolDefinition> WorldViewportToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"world_viewport_camera_read", "world_viewport_camera_set",
-        "world_viewport_capture", "world_viewport_capture_result"}) {
+        "world_viewport_capture", "world_viewport_capture_result", "world_scatter_stroke"}) {
         ToolDefinition tool; tool.name = name;
-        tool.permission = tool.name == "world_viewport_camera_set" ? ToolPermission::Edit : ToolPermission::Query;
+        tool.permission = tool.name == "world_viewport_camera_set" || tool.name == "world_scatter_stroke"
+            ? ToolPermission::Edit : ToolPermission::Query;
         QJsonObject properties{{"project_identity", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
             {"expected_revision", IdSchema()}};
         QJsonArray required{"project_identity", "expected_revision"};
@@ -31,6 +32,32 @@ std::vector<ToolDefinition> WorldViewportToolDefinitions() {
             properties.insert("expected_viewport_revision", IdSchema()); required.append("expected_viewport_revision");
             properties.insert("camera", CameraSchema()); required.append("camera");
             properties.insert("dry_run", QJsonObject{{"type", "boolean"}}); required.append("dry_run");
+        } else if (tool.name == "world_scatter_stroke") {
+            tool.description = "用世界页散布笔刷沿路径画一笔（与界面同一规则与撤销：一笔一步）。表面为地形和/或符合过滤的装饰物模型；"
+                "模型表面在后台读取，未就绪时返回 WORLD_SCATTER_SURFACE_BUILDING，稍后重试。dry_run 只返回落点不改地图";
+            const QJsonObject number{{"type", "number"}};
+            const QJsonObject rawcode{{"type", "string"}, {"pattern", "^[ -~]{4}$"}};
+            properties.insert("mode", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"paint", "erase"}}});
+            properties.insert("palette", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 64},
+                {"items", QJsonObject{{"type", "object"}, {"additionalProperties", false},
+                    {"properties", QJsonObject{{"rawcode", rawcode}, {"weight", number},
+                        {"type", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"doodad", "destructable"}}}}}},
+                    {"required", QJsonArray{"rawcode"}}}}});
+            QJsonObject settings;
+            for (const auto* key : {"radius", "density_per_100m2", "units_per_metre", "yaw_min", "yaw_max", "scale_min", "scale_max",
+                    "min_spacing", "slope_min", "slope_max"}) settings.insert(key, number);
+            settings.insert("count_per_dab", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 4096}});
+            settings.insert("random_variation", QJsonObject{{"type", "boolean"}});
+            properties.insert("settings", QJsonObject{{"type", "object"}, {"additionalProperties", false}, {"properties", settings},
+                {"description", "未给出的项沿用界面当前值；给 count_per_dab 时按每笔个数，否则按每 100 平方米密度"}});
+            properties.insert("surface", QJsonObject{{"type", "object"}, {"additionalProperties", false},
+                {"properties", QJsonObject{{"terrain", QJsonObject{{"type", "boolean"}}},
+                    {"filter", QJsonObject{{"type", "string"}, {"maxLength", 512}}}}}});
+            properties.insert("path", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256},
+                {"items", QJsonObject{{"type", "array"}, {"minItems", 2}, {"maxItems", 2}, {"items", number}}}});
+            properties.insert("seed", QJsonObject{{"type", "string"}, {"pattern", "^[0-9]{1,19}$"}});
+            properties.insert("dry_run", QJsonObject{{"type", "boolean"}});
+            for (const auto* key : {"mode", "palette", "path", "dry_run"}) required.append(key);
         } else if (tool.name == "world_viewport_capture") {
             tool.description = "读取实际完成帧并后台编码PNG，返回有界请求ID；不截取桌面或其它窗口";
             properties.insert("expected_viewport_revision", IdSchema()); required.append("expected_viewport_revision");

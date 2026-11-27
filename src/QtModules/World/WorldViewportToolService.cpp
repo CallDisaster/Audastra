@@ -1,5 +1,6 @@
 #include "WorldViewportToolService.h"
 #include "WorldViewport.h"
+#include "WorldScatterBrush.h"
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QThread>
@@ -23,7 +24,8 @@ QJsonObject Camera(const War3RenderCameraV2& camera) {
         {"distance", camera.distance}, {"yaw_radians", camera.yawRadians}, {"pitch_radians", camera.pitchRadians}};
 }
 } // namespace
-WorldViewportToolService::WorldViewportToolService(ViewportProvider provider) : provider_(std::move(provider)) {}
+WorldViewportToolService::WorldViewportToolService(ViewportProvider provider, ScatterProvider scatter)
+    : provider_(std::move(provider)), scatter_(std::move(scatter)) {}
 void WorldViewportToolService::Collect() {
     if (auto result = encoder_.Poll()) result_ = std::move(*result);
 }
@@ -35,6 +37,15 @@ QJsonObject WorldViewportToolService::Invoke(const QString& name, const QJsonObj
     const auto revision = viewport->DocumentRevision();
     QJsonObject binding{{"ok", true}, {"project_identity", args.value("project_identity")},
         {"revision", args.value("expected_revision")}, {"viewport_revision", QString::number(revision)}};
+    if (name == "world_scatter_stroke") {
+        auto* scatter = scatter_ ? scatter_() : nullptr;
+        if (!scatter) return Failure("WORLD_SCATTER_UNAVAILABLE", "世界页散布工具不可用。");
+        auto result = scatter->RunTool(args);
+        if (!result.value("ok").toBool()) return result;
+        for (auto it = binding.begin(); it != binding.end(); ++it) if (!result.contains(it.key())) result.insert(it.key(), it.value());
+        result.insert("viewport_revision", QString::number(viewport->DocumentRevision()));
+        return result;
+    }
     if (name == "world_viewport_camera_read") {
         const auto camera = viewport->ReadCamera(revision);
         if (!camera.Succeeded()) return Failure(camera.diagnostics);

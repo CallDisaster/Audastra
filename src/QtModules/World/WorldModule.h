@@ -117,6 +117,7 @@ public:
     [[nodiscard]] WorldViewport* Viewport() const noexcept { return viewport_; }
     // 切图或重建期间拒绝向工具暴露保留的旧画面。
     [[nodiscard]] WorldViewport* ViewportForTools() const;
+    [[nodiscard]] WorldScatterBrush* ScatterForTools() const noexcept { return scatter_; }
     [[nodiscard]] WorldAnimationPlayer* AnimationPlayer() const noexcept { return animation_; }
     // 探针等待只读轻量终态；每次整图 Refresh 都先清除上一代失败。
     [[nodiscard]] bool TerrainLoadFailed() const noexcept { return terrainLoadFailed_; }

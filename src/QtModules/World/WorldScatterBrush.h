@@ -8,6 +8,7 @@
 #include "War3MapCore/RenderPluginV2.h"
 #include "War3MapCore/Services/DoodadScatter.h"
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 
@@ -67,6 +68,9 @@ public:
     void Cancel();
     [[nodiscard]] bool StrokeActive() const noexcept { return stroke_ != nullptr; }
     void AppendOverlay(std::vector<War3RenderOverlayLineV2>& lines) const;
+    // MCP world_scatter_stroke：设置界面状态后按同一规则画一笔（一笔一步撤销）；模型表面未就绪时返回可重试的失败。
+    [[nodiscard]] QJsonObject RunTool(const QJsonObject& arguments);
+    void SetActivator(std::function<void()> activate) { activator_ = std::move(activate); }
 
 signals:
     void OverlayChanged();
@@ -93,6 +97,7 @@ private:
     void StartRebuild();
     void UpdateBudget();
     void UpdateDensityUnits();
+    [[nodiscard]] std::string SurfaceKey() const;
     void SaveUnitsPerMetre();
 
     QtProject::EditorProject& project_;
@@ -109,6 +114,10 @@ private:
     std::unique_ptr<Stroke> stroke_;
     std::map<std::string, std::uint64_t> mapTypeCounts_;
     std::size_t mapDoodads_ = 0;
+    std::function<void()> activator_;
+    std::optional<std::uint64_t> nextSeed_;
+    std::string builtKey_, buildingKey_;
+    QString surfaceError_; // 最近一次表面读取失败的原因；成功读取后清空
 
     QWidget* page_ = nullptr;
     QButtonGroup* mode_ = nullptr;

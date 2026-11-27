@@ -6,13 +6,15 @@
 
 namespace War3Map::Modules {
 class WorldViewport;
+class WorldScatterBrush;
 
 // UI与MCP共用真实视口，不拥有桌面窗口、不写用户指定路径。
 // 一个在途读回/编码和一个结果；PNG编码在已有worker中执行。
 class WorldViewportToolService final {
 public:
     using ViewportProvider = std::function<WorldViewport*()>;
-    explicit WorldViewportToolService(ViewportProvider provider);
+    using ScatterProvider = std::function<WorldScatterBrush*()>;
+    explicit WorldViewportToolService(ViewportProvider provider, ScatterProvider scatter = {});
     [[nodiscard]] QJsonObject Invoke(const QString& name, const QJsonObject& arguments);
 private:
     struct CaptureRequest {
@@ -22,6 +24,7 @@ private:
     };
     void Collect();
     ViewportProvider provider_;
+    ScatterProvider scatter_;
     WorldScreenshotEncoder encoder_;
     std::optional<CaptureRequest> request_;
     std::optional<WorldScreenshotEncodeResult> result_;

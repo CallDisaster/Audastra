@@ -845,6 +845,7 @@ private slots:
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo();
     void TerrainWaterBrushRejectsChangedInputs();
     void ScatterBrushPaintsErasesAndUndoesPerStroke();
+    void ScatterToolMatchesDryRunAndRefusesMissingSurface();
     void TerrainWaterBrushRejectsChangedGameResources_data();
     void TerrainWaterBrushRejectsChangedGameResources();
     void TerrainWaterBrushDropsCancelledCommit_data();
@@ -3834,6 +3835,55 @@ void WorldModuleTests::ScatterBrushPaintsErasesAndUndoesPerStroke() {
     QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{0});
     toggle->click();
     QVERIFY(!viewport->BrushMode());
+}
+
+// MCP 散布入口：表面未就绪返回可重试失败；同种子预演与提交落点一致；一笔一步撤销；过滤没有模型表面时不退回地形。
+void WorldModuleTests::ScatterToolMatchesDryRunAndRefusesMissingSurface() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    auto members = Tests::TerrainWaterMembers();
+    members.push_back({"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()});
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false, members);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* scatter = module.ScatterForTools();
+    auto* toggle = page->findChild<QPushButton*>("worldScatterToggle");
+    QVERIFY(scatter && toggle);
+    const auto code = [](const QJsonObject& result) {
+        return result.value("diagnostics").toArray().first().toObject().value("code").toString();
+    };
+    QJsonObject args{{"mode", "paint"}, {"palette", QJsonArray{QJsonObject{{"rawcode", "STr0"}}}},
+        {"settings", QJsonObject{{"radius", 128}, {"count_per_dab", 6}, {"min_spacing", 0}}},
+        {"surface", QJsonObject{{"terrain", true}, {"filter", ""}}},
+        {"path", QJsonArray{QJsonArray{384, 384}, QJsonArray{512, 384}}}, {"seed", "42"}, {"dry_run", true}};
+    auto preview = scatter->RunTool(args);
+    QVERIFY(toggle->isChecked());
+    if (!preview.value("ok").toBool()) {
+        QCOMPARE(code(preview), QString("WORLD_SCATTER_SURFACE_BUILDING"));
+        QTRY_VERIFY((preview = scatter->RunTool(args)).value("ok").toBool());
+    }
+    QCOMPARE(preview.value("placed").toInt(), 18);
+    QCOMPARE(preview.value("seed").toString(), QString("42"));
+    QVERIFY(!preview.value("applied").toBool());
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    args["dry_run"] = false;
+    const auto applied = scatter->RunTool(args);
+    QVERIFY(applied.value("ok").toBool() && applied.value("applied").toBool());
+    QCOMPARE(applied.value("candidates"), preview.value("candidates"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{18});
+
+    auto bad = args; bad["path"] = QJsonArray{QJsonArray{384}};
+    QCOMPARE(code(scatter->RunTool(bad)), QString("WORLD_SCATTER_ARGUMENT"));
+    args["surface"] = QJsonObject{{"terrain", true}, {"filter", "NoSuchModel*"}};
+    auto missing = scatter->RunTool(args);
+    QTRY_VERIFY(code(missing = scatter->RunTool(args)) != QString("WORLD_SCATTER_SURFACE_BUILDING"));
+    QCOMPARE(code(missing), QString("WORLD_SCATTER_NO_SURFACE"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads.size(), std::size_t{0});
 }
 
 void WorldModuleTests::TerrainWaterBrushRejectsChangedGameResources_data() {
