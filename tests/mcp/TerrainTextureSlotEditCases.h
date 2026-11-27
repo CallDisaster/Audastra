@@ -63,12 +63,30 @@ void TextureSlotFacadeUsesRealOwnersAndAtomicPublication() {
     Expect(!InvokeTerrainEditTool("edit_terrain_texture_slot", write, host).value("ok").toBool(), "old binding cannot replay");
     Expect(session.Undo() && session.Terrain()->header.groundTilesets == std::vector<std::string>{"Tg01"}, "undo restores old table");
     Expect(session.Redo() && session.Terrain()->header.groundTilesets.size() == 2, "redo restores appended table");
+    // 同一工具把地面 0 槽的顶点改用表里已有的 Tg02：表不变，日志记算法 4，撤销恢复。
+    const QJsonObject remap{{"kind", "texture_slot_remap"}, {"table", "ground"}, {"slot", 0}, {"expected_rawcode", "Tg01"}, {"rawcode", "Tg02"}};
+    const auto onSlot0 = [](const auto& terrain) {
+        return std::count_if(terrain.vertices.begin(), terrain.vertices.end(), [](const auto& vertex) { return vertex.GroundTextureIndex() == 0; });
+    };
+    const auto beforeRemap = onSlot0(*session.Terrain());
+    QJsonObject remapRequest{{"project_identity", "palette-facade"}, {"expected_revision", QString::number(session.Revision())},
+        {"terrain_binding", InvokeTerrainEditTool("get_terrain_edit_state", {}, host).value("terrain_binding")},
+        {"command", remap}, {"dry_run", false}};
+    const auto remapped = InvokeTerrainEditTool("edit_terrain_texture_slot", remapRequest, host);
+    Expect(remapped.value("ok").toBool() && remapped.value("applied").toBool() && beforeRemap > 0 && onSlot0(*session.Terrain()) == 0
+        && session.Terrain()->header.groundTilesets == std::vector<std::string>{"Tg01", "Tg02"}, "active tool remaps onto an existing tile and keeps the table");
+    const auto remapJournal = P::Take(session.ExportTerrainStrokeJournal());
+    Expect(!remapJournal.strokes.empty() && remapJournal.strokes.back().intent.palette
+        && remapJournal.strokes.back().intent.palette->algorithm == 4
+        && remapJournal.strokes.back().intent.palette->expectedRawcode == "Tg01"
+        && remapJournal.strokes.back().intent.palette->replacementRawcode == "Tg02", "remap records palette algorithm 4");
+    Expect(session.Undo() && onSlot0(*session.Terrain()) == beforeRemap, "undo restores the vertices before the remap");
     Expect(P::Take(Sha256File(native.source.path)) == native.source.sha256, "facade never saved source");
     const auto definitions = TerrainEditToolDefinitions();
     const auto definition = std::find_if(definitions.begin(), definitions.end(), [](const auto& value) { return value.name == "edit_terrain_texture_slot"; });
     Expect(definition != definitions.end() && definition->permission == ToolPermission::Edit
         && definition->inputSchema.value("required").toArray().contains("dry_run")
-        && definition->inputSchema.value("properties").toObject().value("command").toObject().value("oneOf").toArray().size() == 2,
+        && definition->inputSchema.value("properties").toObject().value("command").toObject().value("oneOf").toArray().size() == 3,
         "active tool publishes shared command schema and explicit preview/write decision");
 }
 
