@@ -1473,13 +1473,13 @@ private:
             if (!sha.Succeeded()) return Mcp::Failure("LIVE_EDITOR_SAVE_OUTPUT_MISSING", "宿主报告成功，但无法读取输出身份。");
             SyncIdentity();
             emit owner_.Changed();
-            // 保存准备阶段写进问题列表的不拦截提醒（如模型几何体超出游戏上限）一并带回。
+            // 保存准备阶段写进问题列表的不拦截提醒（模型几何体超出游戏上限、官方签名不带入）一并带回。
             QJsonArray warnings;
             if (const auto* model = project_.diagnosticsModel_)
                 for (int row = firstDiagnostic; row < model->rowCount() && warnings.size() < 32; ++row) {
-                    const auto code = model->index(row, 2).data().toString();
-                    if (code.toStdString() != Render::kGeosetOverGameLimitCode) continue;
-                    warnings.append(QJsonObject{{"code", code}, {"message", model->index(row, 3).data().toString().left(4096)}});
+                    const auto code = model->index(row, 2).data().toString().toStdString();
+                    if (code != Render::kGeosetOverGameLimitCode && code != kStrongSignatureDroppedCode) continue;
+                    warnings.append(QJsonObject{{"code", QString::fromStdString(code)}, {"message", model->index(row, 3).data().toString().left(4096)}});
                 }
             const QJsonObject output{{"path", QString::fromStdWString(path.wstring())}, {"sha256", QString::fromStdString(*sha.value)}};
             const QJsonObject item{{"kind", "file"}, {"object_id", ""}, {"title", QString::fromStdWString(path.filename().wstring())},
@@ -2444,7 +2444,8 @@ private:
         save.insert("rebuild_terrain_shadow", QJsonObject{{"type", "boolean"}, {"default", false}});
         save.insert("lua_delete_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}});
         AddTool("editor_save_map", "通过原编辑器地图保存服务写回或另存；只因小地图无法生成而失败（MINIMAP_RISK_SAVE_AVAILABLE）时，"
-            "作者同意后可传 keep_original_minimap=true 保留原小地图继续保存；rebuild_terrain_shadow=true 通过同一保存链重算阴影", Mcp::ToolPermission::Save,
+            "作者同意后可传 keep_original_minimap=true 保留原小地图继续保存；rebuild_terrain_shadow=true 通过同一保存链重算阴影。"
+            "源图是带官方签名的原版地图时，保存结果不带签名，warnings 里有 MAP_SAVE_STRONG_SIGNATURE_DROPPED", Mcp::ToolPermission::Save,
             Schema(save, {"project_identity", "expected_revision"}), [this](const QJsonObject& arguments) { return Save(arguments); });
         auto catalog = IdentityProperties();
         catalog.insert("kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"event", "condition", "action", "call"}}});

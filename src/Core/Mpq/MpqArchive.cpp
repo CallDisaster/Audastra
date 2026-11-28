@@ -20,6 +20,8 @@ namespace {
 
 constexpr std::uint32_t kMpqSignature = 0x1A51504D;     // 'MPQ\x1A'
 constexpr std::uint32_t kMpqUserDataSig = 0x1B51504D;   // 'MPQ\x1B'
+constexpr std::uint32_t kStrongSignatureMagic = 0x5349474E;  // 'NGIS'
+constexpr std::uint64_t kStrongSignatureSize = 4 + 256;
 constexpr std::uint32_t kHashEmpty = 0xFFFFFFFF;
 constexpr std::uint32_t kHashDeleted = 0xFFFFFFFE;
 constexpr std::size_t kHashEntrySize = 16;
@@ -126,6 +128,7 @@ public:
     std::uint64_t archiveBase = 0;
     std::uint64_t archiveSize = 0;
     std::uint64_t physicalSize = 0;
+    std::uint64_t strongSignatureSize = 0;
     std::uint32_t blockTablePos = 0;
     std::uint32_t sectorSize = 0;
     std::vector<HashEntry> hashTable;
@@ -612,6 +615,12 @@ Result<MpqArchive> MpqArchive::OpenParsed(std::unique_ptr<Impl> impl, const MpqO
         impl->archiveSize = archiveSize;
         impl->blockTablePos = blockTablePos;
         impl->sectorSize = 512u << blockSizeShift;
+        // 只认文件尾恰好一个强签名块；签名内容不做密码学校验。
+        if (const auto archiveEnd = headerOffset + archiveSize; fileSize - archiveEnd == kStrongSignatureSize) {
+            std::vector<std::byte> magic;
+            if (impl->ReadAt(archiveEnd, 4, magic) && ReadU32(magic.data()) == kStrongSignatureMagic)
+                impl->strongSignatureSize = kStrongSignatureSize;
+        }
 
         const auto &crypt = MpqCrypt::Instance();
 
@@ -803,6 +812,10 @@ std::uint64_t MpqArchive::DeclaredArchiveSize() const noexcept {
     return impl_->archiveSize;
 }
 
+std::uint64_t MpqArchive::StrongSignatureSize() const noexcept {
+    return impl_->strongSignatureSize;
+}
+
 std::vector<MpqHashEntry> MpqArchive::HashTableEntries() const {
     std::vector<MpqHashEntry> entries;
     entries.reserve(impl_->hashTable.size());
@@ -872,10 +885,10 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
             "Mpq", "LISTFILE_SYNTAX_INVALID",
             "strict (listfile) requires non-empty ASCII CR/LF-delimited names without blank lines");
     }
-    if (impl_->archiveBase + impl_->archiveSize != impl_->physicalSize) {
+    if (impl_->archiveBase + impl_->archiveSize + impl_->strongSignatureSize != impl_->physicalSize) {
         return Result<std::vector<MpqStrictFileInfo>>::Failure(
             "Mpq", "ARCHIVE_TRAILING_BYTES_REJECTED",
-            "strict side-write rejects bytes after the declared MPQ archive");
+            "strict side-write rejects bytes after the declared MPQ archive (other than one strong signature block)");
     }
     const std::size_t existingFileCount = FileCount();
     if (existingFileCount > impl_->strictMemberLimit) {
@@ -1126,10 +1139,12 @@ Status MpqArchive::WriteOpaquePreservingPatchToHandle(
             return true;
         };
         if (!setPosition(0)) return Status::Failure("Mpq", "OPAQUE_OUTPUT_SEEK_FAILED", "无法定位候选输出。");
+        // 只复制到归档声明末尾：文件尾的强签名块不写回，追加块紧接归档。
+        const std::uint64_t sourceEnd = impl_->archiveBase + impl_->archiveSize;
         std::vector<std::byte> chunk;
-        for (std::uint64_t offset = 0; offset < impl_->physicalSize;) {
+        for (std::uint64_t offset = 0; offset < sourceEnd;) {
             const std::size_t length = static_cast<std::size_t>((std::min)(
-                impl_->physicalSize - offset, std::uint64_t{1u << 20}));
+                sourceEnd - offset, std::uint64_t{1u << 20}));
             if (!impl_->ReadAt(offset, length, chunk) || !writeBytes(chunk)) {
                 return Status::Failure("Mpq", "OPAQUE_COPY_FAILED", "无法完整复制源归档原始字节。");
             }
@@ -1258,14 +1273,16 @@ Status MpqArchive::VerifyOpaquePreservingPatch(
             return Status::Failure("Mpq", "OPAQUE_VERIFY_BLOCK_CHANGED", "未替换的块元数据发生变化。");
         }
     }
-    if (candidate.impl_->physicalSize < impl_->physicalSize) {
+    // 源文件尾的强签名块不在候选里，原始字节只核对到归档声明末尾。
+    const std::uint64_t sourceEnd = impl_->archiveBase + impl_->archiveSize;
+    if (candidate.impl_->physicalSize < sourceEnd) {
         return Status::Failure("Mpq", "OPAQUE_VERIFY_TRUNCATED", "候选截断了原始归档。");
     }
     std::vector<std::byte> sourceChunk;
     std::vector<std::byte> candidateChunk;
-    for (std::uint64_t offset = 0; offset < impl_->physicalSize;) {
+    for (std::uint64_t offset = 0; offset < sourceEnd;) {
         const std::size_t length = static_cast<std::size_t>((std::min)(
-            impl_->physicalSize - offset, std::uint64_t{1u << 20}));
+            sourceEnd - offset, std::uint64_t{1u << 20}));
         if (!impl_->ReadAt(offset, length, sourceChunk) ||
             !candidate.impl_->ReadAt(offset, length, candidateChunk)) {
             return Status::Failure("Mpq", "OPAQUE_VERIFY_READ_FAILED", "无法复核原始归档字节。");

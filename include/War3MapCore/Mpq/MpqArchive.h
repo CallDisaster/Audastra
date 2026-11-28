@@ -160,6 +160,11 @@ public:
     [[nodiscard]] std::uint64_t ArchivePrefixSize() const noexcept;
     [[nodiscard]] std::uint64_t DeclaredArchiveSize() const noexcept;
 
+    // 官方地图在归档声明范围之后带强签名块："NGIS" 加 256 字节签名，共 260 字节。
+    // 文件尾恰好是这一块时返回 260，否则为 0。严格清单只接受这一种尾随数据；
+    // 重建与追加保存都不写回它（内容改了签名必然失效），调用方负责提示作者。
+    [[nodiscard]] std::uint64_t StrongSignatureSize() const noexcept;
+
     // Fail-closed 完整枚举：要求存在可读 (listfile)，每个有效 block 恰有一个安全的
     // canonical 名称，locale 与 platform 字节均为 0（reserved 字节不限），且不含 patch 文件。
     // 未列入 (listfile) 但存在的 (attributes) / (signature) 按约定名命名，排在 (listfile) 之后；

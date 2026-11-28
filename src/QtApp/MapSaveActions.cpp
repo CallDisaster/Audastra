@@ -390,6 +390,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     if (!job->modelGameLimitWarnings.empty())
         details << tr("%1 个模型的几何体超出游戏上限，游戏里这些几何体可能不显示，详见问题列表。")
             .arg(static_cast<qulonglong>(job->modelGameLimitWarnings.size()));
+    if (job->strongSignatureDropped) details << tr("原地图带官方签名，签名只对未改动的原图有效，保存的地图不再带签名。");
     if (!saved->backup.empty()) details << (job->inPlaceOptions.keepBackups == 0
         ? tr("原文件备份：%1（不限保留数量）").arg(QString::fromStdWString(saved->backup.wstring()))
         : tr("原文件备份：%1（每张源图保留最近 %2 份）").arg(QString::fromStdWString(saved->backup.wstring()))

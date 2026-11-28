@@ -1325,6 +1325,87 @@ void TestMinimapSnapshotIsBoundedAndCancellable() {
 }
 } // namespace
 
+// 官方地图文件尾的强签名块（"NGIS" + 256 字节，合成字节，只表示结构形态）：会话可编辑，
+// 另存、追加保存与原地保存的结果都不带它；多一个字节的尾巴仍拒绝。
+void AppendTrailer(const std::filesystem::path& path, std::string_view magic, std::size_t extra) {
+    std::ofstream file(path, std::ios::binary | std::ios::app);
+    file.write(magic.data(), static_cast<std::streamsize>(magic.size()));
+    const std::string signature(extra, '\x5a');
+    file.write(signature.data(), static_cast<std::streamsize>(signature.size()));
+    Require(bool(file), "append synthetic trailer");
+}
+
+void RequireNoTrailer(const std::filesystem::path& path, const std::string& context) {
+    auto archive = Mpq::MpqArchive::OpenReadOnly(path);
+    RequireSuccess(archive, context + ": reopen");
+    Require(archive.value->StrongSignatureSize() == 0 && std::filesystem::file_size(path)
+        == archive.value->ArchivePrefixSize() + archive.value->DeclaredArchiveSize(), context + ": no bytes after the archive");
+}
+
+void TestStrongSignatureIsDroppedOnSave() {
+    TempDirectory directory;
+    const auto source = CreateSource(directory);
+    const auto unsignedBytes = ReadBytes(source);
+    AppendTrailer(source, "NGIS", 256);
+    auto opened = MapArchiveSession::Open(source);
+    RequireSuccess(opened, "signed source opens as an editable snapshot");
+    Require(opened.value->SourceHasStrongSignature(), "session reports the strong signature");
+    const std::vector<MemberReplacement> edits{{"war3map.j", Bytes("signed-edit")}};
+    const auto candidatePath = directory.Path() / "signed-candidate.w3x";
+    const auto saved = opened.value->SaveCandidate(candidatePath, edits);
+    RequireSuccess(saved, "save as from a signed source");
+    RequireNoTrailer(candidatePath, "save as");
+    auto reopened = MapArchiveSession::Open(candidatePath);
+    RequireSuccess(reopened, "reopen signed save as");
+    Require(!reopened.value->SourceHasStrongSignature(), "saved map is unsigned");
+    Require(reopened.value->ReadMember("war3map.j").value == std::optional(Bytes("signed-edit")), "edit written");
+    for (const auto& member : Members()) {
+        if (member.name == "war3map.j") continue;
+        Require(reopened.value->ReadMember(member.name).value == std::optional(member.data), "untouched member preserved");
+    }
+    auto rebased = opened.value->AfterSave(*saved.value, edits);
+    RequireSuccess(rebased, "rebase onto the unsigned save");
+    Require(!rebased.value->SourceHasStrongSignature(), "rebased session follows the saved file");
+
+    // 原地保存：备份保留带签名的原字节，写回的地图不带签名。
+    const auto signedBytes = ReadBytes(source);
+    const auto inPlace = opened.value->SaveInPlace(edits);
+    RequireSuccess(inPlace, "save a signed source in place");
+    Require(ReadBytes(inPlace.value->backup) == signedBytes, "backup keeps the signed original");
+    RequireNoTrailer(source, "in place");
+    RequireNoSavingTemporary(directory.Path());
+
+    // 匿名成员的追加保存：只复制到归档末尾，签名不写回；签名前的源字节除两个头字段外不变。
+    const auto opaque = CreateOpaqueSource(directory);
+    const auto opaqueBytes = ReadBytes(opaque);
+    AppendTrailer(opaque, "NGIS", 256);
+    auto opaqueSession = MapArchiveSession::Open(opaque);
+    RequireSuccess(opaqueSession, "signed opaque source opens");
+    Require(opaqueSession.value->HasOpaqueMembers() && opaqueSession.value->SourceHasStrongSignature(), "opaque and signed");
+    const auto opaqueTarget = directory.Path() / "signed-opaque-candidate.w3x";
+    const std::vector<MemberReplacement> opaqueEdits{{"KNOWN.BIN", Bytes("signed-known")}};
+    RequireSuccess(opaqueSession.value->SaveCandidate(opaqueTarget, opaqueEdits), "append save of a signed opaque source");
+    RequireNoTrailer(opaqueTarget, "append save");
+    const auto opaqueCandidate = ReadBytes(opaqueTarget);
+    for (std::size_t i = 0; i < opaqueBytes.size(); ++i) {
+        if ((i >= 8 && i < 12) || (i >= 0x14 && i < 0x18)) continue;
+        Require(opaqueBytes[i] == opaqueCandidate[i], "source bytes before the signature preserved");
+    }
+    auto opaqueArchive = Mpq::MpqArchive::OpenReadOnly(opaqueTarget);
+    RequireSuccess(opaqueArchive, "reopen signed opaque candidate");
+    Require(opaqueArchive.value->ReadFile("opaque.bin").value == std::optional(Bytes("secret-raw-12345")),
+        "anonymous member still readable");
+
+    // 只认恰好一个签名块。
+    const auto longer = directory.Path() / "signed-plus-one.w3x";
+    {
+        std::ofstream file(longer, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(unsignedBytes.data()), static_cast<std::streamsize>(unsignedBytes.size()));
+    }
+    AppendTrailer(longer, "NGIS", 257);
+    Require(!MapArchiveSession::Open(longer).Succeeded(), "a signature block plus one byte is still rejected");
+}
+
 int main() {
     try {
         TestCompleteRoundTripAndIndependentBaseline();
@@ -1335,6 +1416,7 @@ int main() {
         TestReadProofOutlivesItsRequestingThread();
         TestExternalSourceChangeAndReplacement();
         TestIncompleteListAndTrailingData();
+        TestStrongSignatureIsDroppedOnSave();
         TestOpaqueMemberPreservedByAppendOnlyPatch();
         TestExactMemberCaptureDistinguishesOpaqueMissingAndEmpty();
         TestExactCaptureLeaseIsOwnedAndKeepsRealReadback();

@@ -65,6 +65,8 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::optional<Status> terrainReadbackStatus;
     // 准备阶段核对待写入的导入模型：几何体超出游戏上限的提醒（只提醒，不拦截保存）。
     std::vector<Diagnostic> modelGameLimitWarnings;
+    // 源图文件尾带官方签名块，保存结果不带它（只提醒）。
+    bool strongSignatureDropped = false;
     std::string terrainReadbackArchiveSha256;
     // 阶段提示可从工作线程调用，由 UI 调用方排队到界面线程。
     std::function<void(const QString&)> progress;

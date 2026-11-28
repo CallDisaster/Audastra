@@ -2972,9 +2972,9 @@ void WorldModuleTests::ReadOnlyArchiveLoadsTerrainAndRejectsIdenticalReplacement
         {"Terrain/Test/stone.blp", *texture.value}, {"Imported/marker.bin", marker}};
     QVERIFY(WriteVerifiedArchive(path, members).Succeeded());
     {
-        // NGIS只表示此原创尾部的形态；用例不伪造可信签名，也不放宽严格保存检查。
+        // 归档之后的未识别数据（不是恰好一个 NGIS 强签名块）：严格快照拒绝，只能只读查看。
         QFile file(QString::fromStdWString(path.wstring())); QVERIFY(file.open(QIODevice::Append));
-        const auto trailer = QByteArray("NGIS", 4) + QByteArray(256, '\0');
+        const auto trailer = QByteArray("TAIL", 4) + QByteArray(256, '\0');
         QCOMPARE(file.write(trailer), trailer.size());
     }
     const auto digest = Sha256File(path); QVERIFY(digest.Succeeded());

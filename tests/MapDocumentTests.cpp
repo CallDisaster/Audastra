@@ -115,17 +115,17 @@ void TestReadOnlyArchiveBinding() {
         std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
     Require(std::filesystem::create_directories(root), "owned read-only archive directory");
     struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code e; std::filesystem::remove_all(path, e); } } cleanup{root};
-    const auto path = root / "signed-shape.w3x";
+    const auto path = root / "trailer-shape.w3x";
     auto members = Members();
     members.push_back({"Imported/marker.bin", Bytes("original imported asset")});
     Require(WriteVerifiedArchive(path, members).Succeeded(), "write original read-only fixture");
-    // 只合成外部签名的结构形态，不宣称该签名通过密码学验证。
+    // 归档之后的未识别数据（不是恰好一个 NGIS 强签名块）：只能只读查看。
     std::array<char, 260> trailer{};
-    std::copy_n("NGIS", 4, trailer.begin());
+    std::copy_n("TAIL", 4, trailer.begin());
     {
         std::ofstream file(path, std::ios::binary | std::ios::app);
         file.write(trailer.data(), static_cast<std::streamsize>(trailer.size()));
-        Require(bool(file), "append synthetic NGIS and 256 signature bytes");
+        Require(bool(file), "append an unrecognised 260-byte trailer");
     }
     const auto digest = Sha256File(path); Require(digest.Succeeded(), "capture whole source including trailer");
     const auto strict = MapArchiveSession::Open(path);

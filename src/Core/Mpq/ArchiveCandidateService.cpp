@@ -663,6 +663,12 @@ Result<ArchiveCandidateResult> ExportArchiveCandidateImpl(
             "ArchiveCandidate", "ARCHIVE_METADATA_UNSUPPORTED",
             "side-write rejects sources carrying (attributes) or (signature)");
     }
+    // 严格清单接受文件尾的强签名块，但旁路写链不提示作者，仍按原样拒绝。
+    if (archive.StrongSignatureSize() != 0) {
+        return Result<ArchiveCandidateResult>::Failure(
+            "ArchiveCandidate", "ARCHIVE_STRONG_SIGNATURE_UNSUPPORTED",
+            "side-write rejects sources carrying a trailing strong signature");
+    }
     if (archive.ArchivePrefixSize() > kArchiveCandidateMaxPrefixBytes) {
         return Result<ArchiveCandidateResult>::Failure(
             "ArchiveCandidate", "ARCHIVE_PREFIX_BUDGET_EXCEEDED",

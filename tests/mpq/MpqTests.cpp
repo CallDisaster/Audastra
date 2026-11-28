@@ -2260,6 +2260,70 @@ void TestExplicitNamedAppendPreservesOriginalBytes() {
     Require(ReadAll(source) == before, "source remains unchanged");
 }
 
+// 官方地图文件尾的强签名块（"NGIS" + 256 字节）：严格清单只接受恰好这一块，追加保存不写回它。
+// 签名字节是合成的，只表示结构形态，不做也不宣称密码学校验。
+void TestStrongSignatureTrailer() {
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    const auto plain = temp.Path() / "plain.mpq";
+    const std::vector<MpqBuildFile> original{{"war3map.j", {std::byte{'a'}}, true, {}},
+        {"untouched.bin", std::vector<std::byte>(8192, std::byte{0x9c}), true, {}}};
+    Require(WriteMpqArchive(plain, original).Succeeded(), "write signature fixture");
+    const auto archiveBytes = ReadAll(plain);
+    const auto withTrailer = [&](std::string_view name, std::string_view magic, std::size_t signatureBytes) {
+        auto bytes = archiveBytes;
+        for (const char c : magic) bytes.push_back(static_cast<std::byte>(c));
+        bytes.insert(bytes.end(), signatureBytes, std::byte{0x5a});
+        const auto path = temp.Path() / std::string(name);
+        WriteAll(path, bytes);
+        return path;
+    };
+
+    const auto signedPath = withTrailer("signed.mpq", "NGIS", 256);
+    auto signedArchive = MpqArchive::OpenReadOnly(signedPath);
+    Require(signedArchive.Succeeded(), "open signed fixture");
+    Require(signedArchive.value->StrongSignatureSize() == 260, "exact NGIS block is recognised");
+    Require(signedArchive.value->ListFilesStrict().Succeeded(), "strict inventory accepts one strong signature block");
+
+    struct Rejected { const char* name; std::string_view magic; std::size_t bytes; const char* why; };
+    for (const Rejected& rejected : {Rejected{"short.mpq", "NGIS", 255, "a short signature block"},
+             Rejected{"long.mpq", "NGIS", 257, "a signature block followed by one more byte"},
+             Rejected{"magic.mpq", "XGIS", 256, "260 bytes without the NGIS magic"}}) {
+        auto archive = MpqArchive::OpenReadOnly(withTrailer(rejected.name, rejected.magic, rejected.bytes));
+        Require(archive.Succeeded(), std::string("open trailer fixture: ") + rejected.why);
+        Require(archive.value->StrongSignatureSize() == 0, std::string("not a strong signature: ") + rejected.why);
+        const auto strict = archive.value->ListFilesStrict();
+        Require(!strict.Succeeded() && HasDiagnostic(strict.diagnostics, "ARCHIVE_TRAILING_BYTES_REJECTED"),
+            std::string("strict inventory still rejects ") + rejected.why);
+    }
+
+    // 追加保存：只复制到归档声明末尾，追加块紧接归档，候选不带签名块；签名前的原始字节逐字节不变。
+    const auto target = temp.Path() / "signed-patched.mpq";
+    const auto output = CreateFileW(target.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(output != INVALID_HANDLE_VALUE, "create signed append candidate exclusively");
+    const std::vector<MpqBuildFile> edits{{"war3map.j", {std::byte{'b'}}, true, {}}};
+    const auto written = signedArchive.value->WriteOpaquePreservingPatchToHandle(output, edits, true);
+    CloseHandle(output);
+    Require(written.Succeeded(), "append save of a signed source succeeds");
+    auto candidate = MpqArchive::OpenReadOnly(target);
+    Require(candidate.Succeeded(), "open signed append candidate");
+    Require(candidate.value->StrongSignatureSize() == 0 && candidate.value->ListFilesStrict().Succeeded(),
+        "candidate carries no trailer");
+    Require(signedArchive.value->VerifyOpaquePreservingPatch(*candidate.value, edits).Succeeded(),
+        "append verification compares the source up to the declared archive end");
+    const auto after = ReadAll(target);
+    const auto prefix = signedArchive.value->ArchivePrefixSize();
+    for (std::size_t i = 0; i < archiveBytes.size(); ++i) {
+        if ((i >= prefix + 8 && i < prefix + 12) || (i >= prefix + 0x14 && i < prefix + 0x18)) continue;
+        Require(after[i] == archiveBytes[i], "original archive bytes remain at their exact offsets");
+    }
+    const auto script = candidate.value->ReadFile("war3map.j");
+    const auto untouched = candidate.value->ReadFile("untouched.bin");
+    Require(script.Succeeded() && *script.value == edits.front().data, "replacement reads back");
+    Require(untouched.Succeeded() && *untouched.value == original.back().data, "untouched member reads back");
+}
+
 } // namespace
 
 int main() {
@@ -2271,6 +2335,7 @@ int main() {
         TestSyntheticArchiveRoundTrip();
         TestWriterRoundTrip();
         TestExplicitNamedAppendPreservesOriginalBytes();
+        TestStrongSignatureTrailer();
         TestArchiveCandidateSuccess();
         TestArchiveCandidatePreconditions();
         TestArchiveCandidatePublishRaces();

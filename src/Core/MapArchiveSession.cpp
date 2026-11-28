@@ -438,9 +438,10 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
             })) inventory = opened.value->QueryKnownFilesReadOnly(MinimapSnapshotNames());
         if (!inventory.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(inventory.diagnostics));
         LARGE_INTEGER actualSize{};
+        // 文件尾只允许一个官方强签名块：签名只对原内容有效，保存时不写回。
         if (!GetFileSizeEx(source.Get(), &actualSize) || actualSize.QuadPart < 0 ||
-            static_cast<std::uint64_t>(actualSize.QuadPart) !=
-                opened.value->ArchivePrefixSize() + opened.value->DeclaredArchiveSize()) {
+            static_cast<std::uint64_t>(actualSize.QuadPart) != opened.value->ArchivePrefixSize()
+                + opened.value->DeclaredArchiveSize() + opened.value->StrongSignatureSize()) {
             return Result<MapArchiveSession>::Failure("MapArchiveSession", "ARCHIVE_TRAILING_DATA",
                 "归档声明范围外存在未识别数据，不能在重建时丢弃。");
         }
@@ -463,6 +464,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
         session.volumeSerial_ = info.dwVolumeSerialNumber;
         session.fileId_ = FileId(info);
         session.opaqueMembers_ = opaqueMembers;
+        session.strongSignature_ = opened.value->StrongSignatureSize() != 0;
         session.opaqueMemberCount_ = opaqueMembers ? opened.value->FileCount() - inventory.value->size() : 0;
         session.prefix_ = std::move(*prefix.value);
         ArchiveOpenPhase decodeTiming(observer, "open-snapshot-decode-members");

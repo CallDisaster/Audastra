@@ -331,7 +331,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             return fail(tr("RUNTIME_INTERNAL_COPY_REQUIRED"), tr("测试运行或内部验收必须使用独立且不存在的新副本路径，不能写回或覆盖地图。"));
     }
     if (!archiveSession_) {
-        return fail(tr("REPACK_SOURCE_SNAPSHOT_MISSING"), tr("源归档未能完整建立快照，不能保存不完整副本。"));
+        return fail(tr("REPACK_SOURCE_SNAPSHOT_MISSING"), tr("打开地图时源归档未能完整建立快照，地图只能只读查看，不能保存不完整副本。"
+            "原因见打开地图时问题列表里的归档诊断。"));
     }
     std::error_code sourceError;
     if (!std::filesystem::equivalent(sourceArchivePath_, archiveSession_->SourcePath(), sourceError) || sourceError) {
@@ -357,6 +358,12 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     job->runtimeApprovedPackageSha256 = runtimeApprovedPackageSha256_;
     job->target = target;
     job->inPlace = inPlace;
+    // 官方地图文件尾的签名只对未改动的原图有效，保存结果都不带它；正常保存时提醒一次。
+    if (!contentOnly && purpose == Services::MapRuntimeSavePurpose::Normal && archiveSession_->SourceHasStrongSignature()) {
+        job->strongSignatureDropped = true;
+        AddDiagnostics({{DiagnosticSeverity::Warning, "地图", std::string(kStrongSignatureDroppedCode),
+            "原地图文件尾带官方签名（NGIS 签名块），签名只对未改动的官方原图有效；保存的地图不带这个签名。", std::nullopt}});
+    }
     // 正常保存将自动小地图策略冻结给worker；内容预检只重建通行，
     // 是否需要生成小地图由最终来源和成员列表判定。
     job->minimapChoice = generateMinimap ? minimapChoice : Services::TerrainMinimapSaveChoice::Preserve;

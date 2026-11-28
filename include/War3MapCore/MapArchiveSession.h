@@ -47,6 +47,9 @@ struct ArchiveExactIdentityResult {
     std::vector<ArchiveExactMemberIdentity> members;
 };
 
+// 保存来源带官方强签名块、保存结果不带它时的提醒代码（界面与 Agent 回执共用）。
+inline constexpr std::string_view kStrongSignatureDroppedCode = "MAP_SAVE_STRONG_SIGNATURE_DROPPED";
+
 struct ArchiveSaveResult {
     std::filesystem::path path;
     std::string sha256;
@@ -161,6 +164,9 @@ public:
     // 源归档中存在的 (attributes) / (signature)。它们不进入 Members()，完整重建时丢弃
     // （内容会过期）；原字节追加保存路径下仍原样保留在源字节中。
     [[nodiscard]] std::span<const std::string> MetadataMembers() const noexcept { return metadataMembers_; }
+    // 源文件尾带官方强签名块（见 MpqArchive::StrongSignatureSize）。保存结果都不带它，
+    // 签名只对官方原内容有效；保存方据此提示作者（kStrongSignatureDroppedCode）。
+    [[nodiscard]] bool SourceHasStrongSignature() const noexcept { return strongSignature_; }
     [[nodiscard]] std::span<const std::byte> Prefix() const noexcept { return prefix_; }
     // 产生保存快照，不更改当前会话或源文件。保留源租约身份；匿名追加路径不能改外头。
     // 只接受同长度头部，或无头归档新增一个经典 512 字节头部。
@@ -219,6 +225,7 @@ private:
     std::vector<MapArchiveMember> members_;
     std::vector<std::string> metadataMembers_;
     bool opaqueMembers_ = false;
+    bool strongSignature_ = false;
     bool scriptAuditOnly_ = false;
     bool minimapAuditOnly_ = false;
     bool terrainAuditOnly_ = false;
