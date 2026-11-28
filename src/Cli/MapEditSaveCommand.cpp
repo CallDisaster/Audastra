@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -400,6 +401,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     request.targetCandidate = AbsolutePathArgument(argv[7]);
     std::vector<Services::MapEditPlacementSource> copySources;
     std::optional<std::array<float, 3>> copyOffset;
+    bool placementMargin = false;
     std::optional<Services::MapEditPlacementTransform> rotation;
     std::size_t retainedTriggerTextBytes = 0;
     std::optional<std::string> runtimeMode, runtimePackage;
@@ -638,6 +640,21 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!manifest.Succeeded() || !manifest.value) { PrintDiagnostics(manifest.diagnostics); return 2; }
             request.placementImport = std::make_shared<const MapData::PlacementManifest>(std::move(*manifest.value));
             index += 2;
+        } else if (flag == L"--placements-standpoint") {
+            if (index + 3 >= argc) return Invalid("--placements-standpoint requires x y z world coordinates");
+            if (request.placementBounds.standpoint) return Invalid("--placements-standpoint may appear only once");
+            const auto x = ParseNumber<double>(argv[index + 1]), y = ParseNumber<double>(argv[index + 2]);
+            const auto z = ParseNumber<double>(argv[index + 3]);
+            if (!x || !y || !z || !std::isfinite(*x) || !std::isfinite(*y) || !std::isfinite(*z))
+                return Invalid("--placements-standpoint requires finite x y z world coordinates");
+            request.placementBounds.standpoint = std::array<double, 3>{*x, *y, *z}; index += 4;
+        } else if (flag == L"--placements-margin") {
+            const auto margin = index + 1 < argc ? ParseNumber<double>(argv[index + 1]) : std::nullopt;
+            if (!margin || !std::isfinite(*margin) || *margin <= 0 || *margin > Services::PlacementImportMaximumStandpointMargin)
+                return Invalid("--placements-margin requires a world distance above 0 and at most 1000000");
+            request.placementBounds.margin = *margin; placementMargin = true; index += 2;
+        } else if (flag == L"--placements-widen-bounds") {
+            request.placementBounds.widen = true; index += 1;
         } else if (flag == L"--terrain-heightfield-follow") {
             if (request.terrainStrokes.empty() || !request.terrainStrokes.back().heightfield)
                 return Invalid("--terrain-heightfield-follow must follow --terrain-heightfield");
@@ -735,6 +752,10 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         return Invalid("--terrain-copy must be the only terrain command");
     if ((!copySources.empty() || copyOffset) && (!copySources.size() || !copyOffset || rotation))
         return Invalid("group copy requires --copy-source and --copy-offset and cannot mix with --rotate");
+    if ((request.placementBounds.standpoint || request.placementBounds.widen || placementMargin) && !request.placementImport)
+        return Invalid("--placements-standpoint, --placements-margin and --placements-widen-bounds need --placements");
+    if (request.placementBounds.widen && !request.placementBounds.standpoint)
+        return Invalid("--placements-widen-bounds needs --placements-standpoint");
     if (rotation) request.placementEdit = std::move(*rotation);
     else if (copyOffset) request.placementEdit = Services::MapEditPlacementCopy{std::move(copySources), *copyOffset};
     if (runtimeMode || runtimePackage || approveRuntime) {
@@ -795,6 +816,33 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             std::cout << "\nplacement_import_type_" << index << '=' << type.key << ','
                 << (type.kind == MapData::PlacementManifestKind::Unit ? "unit" : "doodad") << ',' << type.rawcode
                 << ',' << type.base << ',' << type.instances;
+            if (type.kind == MapData::PlacementManifestKind::Doodad)
+                std::cout << "\nplacement_import_type_" << index << "_bounds=" << (type.boundsChecked ? 1 : 0) << ','
+                    << type.offMap << ',' << type.farFromStandpoint << ',' << type.both;
+        }
+        const auto& bounds = report.bounds;
+        std::cout << "\nplacement_import_bounds_standpoint=";
+        if (bounds.standpoint) std::cout << std::format("{:g},{:g},{:g}", (*bounds.standpoint)[0], (*bounds.standpoint)[1], (*bounds.standpoint)[2]);
+        else std::cout << '-';
+        std::cout << "\nplacement_import_bounds_margin=" << std::format("{:g}", bounds.margin)
+            << "\nplacement_import_bounds_widen=" << (bounds.widenRequested ? 1 : 0)
+            << "\nplacement_import_bounds_checked_instances=" << bounds.checkedInstances
+            << "\nplacement_import_bounds_unchecked_instances=" << bounds.uncheckedInstances
+            << "\nplacement_import_bounds_off_map=" << bounds.offMap << "\nplacement_import_bounds_far=" << bounds.farFromStandpoint
+            << "\nplacement_import_bounds_both=" << bounds.both << "\nplacement_import_bounds_widened_models=" << bounds.widenedModels
+            << "\nplacement_import_bounds_finding_count=" << bounds.findings.size();
+        for (std::size_t index = 0; index < bounds.findings.size(); ++index) {
+            const auto& finding = bounds.findings[index];
+            const auto* problem = finding.problem == Services::PlacementBoundsProblem::Both ? "both"
+                : finding.problem == Services::PlacementBoundsProblem::OffMap ? "off_map" : "far";
+            std::cout << "\nplacement_import_bounds_finding_" << index << '=' << finding.instance << ','
+                << report.types[finding.type].key << ',' << problem << ',' << std::format("{:.0f}", finding.distance);
+        }
+        std::cout << "\nplacement_import_bounds_model_count=" << bounds.models.size();
+        for (std::size_t index = 0; index < bounds.models.size(); ++index) {
+            const auto& model = bounds.models[index];
+            std::cout << "\nplacement_import_bounds_model_" << index << '=' << model.archivePath << ',' << (model.checked ? 1 : 0)
+                << ',' << model.placements << ',' << model.offMap << ',' << model.farFromStandpoint << ',' << model.widenedExtents;
         }
         std::cout << "\nplacement_import_warning_count=" << report.warnings.size();
         for (std::size_t index = 0; index < report.warnings.size(); ++index)

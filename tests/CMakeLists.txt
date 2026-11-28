@@ -253,6 +253,12 @@ target_compile_definitions(war3-map-model-game-limits-tests PRIVATE NOMINMAX UNI
 target_compile_options(war3-map-model-game-limits-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME render-model-game-limits COMMAND war3-map-model-game-limits-tests)
 
+add_executable(war3-map-mdx-declared-extents-tests MdxDeclaredExtentsTests.cpp support/GeosetLimitMdxFixture.h)
+target_link_libraries(war3-map-mdx-declared-extents-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-map-mdx-declared-extents-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-mdx-declared-extents-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME render-mdx-declared-extents COMMAND war3-map-mdx-declared-extents-tests)
+
 add_executable(war3-map-TerrainSpecialDoodadPathing-tests TerrainSpecialDoodadPathingTests.cpp)
 target_link_libraries(war3-map-TerrainSpecialDoodadPathing-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-map-TerrainSpecialDoodadPathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

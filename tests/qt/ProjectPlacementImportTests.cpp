@@ -2,6 +2,8 @@
 #include "EditorProject.h"
 #include "SyntheticObjectCatalogFixture.h"
 #include "../PlacementCreationFixtures.h"
+#include "../support/GeosetLimitMdxFixture.h"
+#include "War3MapCore/Render/MdxDeclaredExtents.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/Workspace.h"
@@ -13,6 +15,8 @@
 #include <QUndoStack>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <iostream>
 
 namespace {
@@ -138,12 +142,40 @@ void RejectedPlanTouchesNothing() {
     Require(!rejected.Succeeded() && HasCode(rejected, "PLACEMENT_IMPORT_OUT_OF_BOUNDS"), "out of map instance rejects the list");
     Require(f.Untouched(), "rejected list changes no editor");
 }
+
+void WidenedCopyIsImported() {
+    // 模型范围深埋 z -6000…-5000；观察点 (0, 0, 200)：两处装饰物都离观察点远，要求加宽时导入的是改写后的副本。
+    Fixture f;
+    auto manifest = Manifest();
+    GeosetLimitFixture::Extent deep{100, {-64, -64, -6000}, {64, 64, -5000}};
+    GeosetLimitFixture::Extents extents;
+    extents.model = extents.sequence = extents.geoset = extents.geosetSequence = deep;
+    const auto original = GeosetLimitFixture::BuildMdx({{}}, extents);
+    manifest.files[0].bytes = original;
+    Services::PlacementImportBoundsOptions bounds;
+    bounds.standpoint = std::array<double, 3>{0, 0, 200};
+    bounds.widen = true;
+    const auto committed = QtProject::CommitProjectPlacementImport(f.project, std::move(manifest), bounds);
+    Require(committed.Succeeded() && committed.value && committed.value->bounds.farFromStandpoint == 2
+        && committed.value->bounds.widenedModels == 1 && committed.value->bounds.uncheckedInstances == 1,
+        "both doodads are far from the standpoint, the unit is not checked, the model is widened");
+    const auto key = EditorProject::AssetKey(QStringLiteral("Sonne\\rock.mdx"));
+    std::shared_ptr<const std::vector<std::byte>> payload;
+    for (const auto& entry : f.project.AssetEntries()) if (EditorProject::AssetKey(entry.path) == key) payload = entry.ownedPayload;
+    Require(payload && payload->size() == original.size() && *payload != original, "the widened copy is the imported file");
+    const auto read = Render::ReadMdxDeclaredExtents(*payload, Render::MdxExtentScope::All);
+    // 第二处摆放在 (128, -128, 0)：局部 z 须到 200 + 512 = 712；第一处缩放 z 3、高度 310.5 只到约 133.8。
+    Require(read.Succeeded() && read.value && read.value->model.minimum[2] == -6000
+        && std::abs(double(read.value->model.maximum[2]) - 712) < 1e-2, "imported extent covers the standpoint at every placement");
+    f.Assets().undo();
+    Require(!f.Imported(), "the widened file is one undoable asset step like any other import");
+}
 } // namespace
 
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
-        UndoStaysInEachEditor(); FailureRollsBackEarlierEditors(); RejectedPlanTouchesNothing();
+        UndoStaysInEachEditor(); FailureRollsBackEarlierEditors(); RejectedPlanTouchesNothing(); WidenedCopyIsImported();
         std::cout << "ProjectPlacementImport tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

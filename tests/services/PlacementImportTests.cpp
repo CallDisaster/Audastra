@@ -2,6 +2,9 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/Services/PlacementImport.h"
+#include "War3MapCore/Render/MdxDeclaredExtents.h"
+#include "War3MapCore/Render/MdxModel.h"
+#include "../support/GeosetLimitMdxFixture.h"
 
 #include <Windows.h>
 #include <cmath>
@@ -177,11 +180,135 @@ void BatchCommitsBothFilesInOneRevision() {
         "一次撤销撤回整批");
     Require(HasCode(MapData::AddPlacementBatch(session, {}, {}), "PLACEMENT_BATCH_LIMIT"), "空批次拒绝");
 }
+
+// 写明范围检查：地图 x/y 为 -1024…1024。rock 在轴心附近；wall 的范围偏到 x 100000 外（整个在地图外）；
+// deep 的范围深埋 z -6000…-5000（在地图内但离观察点远），摆放两处（第二处朝向 90°、缩放 2）。
+constexpr std::string_view kBoundsManifest = R"({"format":"sonne-placements/v1",
+ "files":[{"source":"rock.mdx","archivePath":"Sonne\\rock.mdx"},{"source":"wall.mdx","archivePath":"Sonne\\wall.mdx"},
+  {"source":"deep.mdx","archivePath":"Sonne\\deep.mdx"},{"source":"bad.mdx","archivePath":"Sonne\\bad.mdx"}],
+ "types":[{"key":"rock","kind":"doodad","model":"Sonne\\rock.mdx","base":"D001"},
+  {"key":"wall","kind":"doodad","model":"Sonne\\wall.mdx","base":"D001"},
+  {"key":"deep","kind":"doodad","model":"SONNE\\DEEP.MDX","base":"D001"},
+  {"key":"pebble","kind":"doodad","model":"Sonne\\rock.mdx","base":"D001","followGround":true},
+  {"key":"bad","kind":"doodad","model":"Sonne\\bad.mdx","base":"D001"},
+  {"key":"tree","kind":"doodad","model":"Doodads\\Tree.mdl","base":"D001"},
+  {"key":"hero","kind":"unit","model":"Sonne\\rock.mdx","base":"u001"}],
+ "instances":[{"type":"rock","x":0,"y":0,"z":0,"facing":0,"scale":[1,1,1]},
+  {"type":"wall","x":0,"y":0,"z":0,"facing":0,"scale":[1,1,1]},
+  {"type":"deep","x":512,"y":0,"z":0,"facing":0,"scale":[1,1,1]},
+  {"type":"deep","x":-512,"y":256,"z":0,"facing":90,"scale":[2,2,2]},
+  {"type":"pebble","x":0,"y":0,"z":-9000,"facing":0,"scale":[1,1,1]},
+  {"type":"bad","x":0,"y":0,"z":0,"facing":0,"scale":[1,1,1]},
+  {"type":"tree","x":0,"y":0,"z":0,"facing":0,"scale":[1,1,1]},
+  {"type":"hero","x":0,"y":0,"z":0,"facing":0,"scale":[1,1,1]}]})";
+
+std::vector<std::byte> ModelWithBox(std::array<float, 3> minimum, std::array<float, 3> maximum) {
+    GeosetLimitFixture::Extent extent{100, {minimum[0], minimum[1], minimum[2]}, {maximum[0], maximum[1], maximum[2]}};
+    GeosetLimitFixture::Extents extents;
+    extents.model = extents.sequence = extents.geoset = extents.geosetSequence = extent;
+    return GeosetLimitFixture::BuildMdx({{}}, extents);
+}
+
+MapData::PlacementManifest BoundsManifest() {
+    auto manifest = Take(MapData::ParsePlacementManifest(Json(kBoundsManifest)));
+    manifest.files[0].bytes = ModelWithBox({-64, -64, 0}, {64, 64, 128});
+    manifest.files[1].bytes = ModelWithBox({100000, -64, 0}, {100100, 64, 128});
+    manifest.files[2].bytes = ModelWithBox({-64, -64, -6000}, {64, 64, -5000});
+    manifest.files[3].bytes = Json("MDLX-synthetic");
+    return manifest;
+}
+
+std::size_t CountCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
+    return static_cast<std::size_t>(std::count_if(diagnostics.begin(), diagnostics.end(), [&](const auto& item) { return item.code == code; }));
+}
+const Diagnostic& WithCode(const std::vector<Diagnostic>& diagnostics, std::string_view code, std::string_view text) {
+    for (const auto& item : diagnostics) if (item.code == code && item.message.find(text) != std::string::npos) return item;
+    throw std::runtime_error("missing diagnostic " + std::string(code) + " with " + std::string(text));
+}
+
+void BoundsCheckReportsAndWidens() {
+    ObjectCommandsFixture fixture(true);
+    const auto manifest = BoundsManifest();
+    Services::PlacementImportInputs inputs{fixture.Context(ObjectType::Doodad), fixture.Context(ObjectType::Unit), Header(), {}};
+    inputs.groundHeight = [](double, double) { return std::optional<float>(0.0f); };
+
+    // 没给观察点：只查地图外。
+    const auto plain = Take(Services::PlanPlacementImport(manifest, inputs));
+    const auto& bounds = plain.report.bounds;
+    Require(bounds.checkedInstances == 5 && bounds.uncheckedInstances == 3 && bounds.offMap == 1 && bounds.farFromStandpoint == 0
+        && bounds.both == 0 && bounds.findings.size() == 1 && bounds.findings[0].instance == 1
+        && bounds.findings[0].problem == Services::PlacementBoundsProblem::OffMap && bounds.findings[0].box[0] == 100000,
+        "without a standpoint only the wall placement is reported, off the map");
+    Require(plain.report.types[1].offMap == 1 && plain.report.types[0].boundsChecked && !plain.report.types[4].boundsChecked
+        && !plain.report.types[5].boundsChecked && !plain.report.types[6].boundsChecked, "per-type summary and coverage");
+    Require(bounds.models.size() == 4 && bounds.models[3].archivePath == "Sonne\\bad.mdx" && !bounds.models[3].checked
+        && !bounds.models[3].uncheckedReason.empty() && bounds.models[0].placements == 2, "models in file order, shared by two types");
+    WithCode(plain.report.warnings, "PLACEMENT_IMPORT_BOUNDS_OFF_MAP", "类型 wall（模型 Sonne\\wall.mdx）：1 个摆放");
+    WithCode(plain.report.warnings, "PLACEMENT_IMPORT_BOUNDS_UNCHECKED", "Sonne\\bad.mdx");
+    Require(CountCode(plain.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR") == 0 && plain.fileRewrites.empty()
+        && &Services::PlacementImportFileBytes(manifest, plain, 1) == &manifest.files[1].bytes, "no standpoint, no far check, no rewrite");
+
+    // 观察点 (0, 0, 200)、余量 512：wall 两项都有；deep 两处都远；rock 与贴地的 pebble 在附近不报。
+    auto withPoint = inputs; withPoint.bounds.standpoint = std::array<double, 3>{0, 0, 200};
+    const auto checked = Take(Services::PlanPlacementImport(manifest, withPoint));
+    const auto& found = checked.report.bounds.findings;
+    Require(found.size() == 3 && found[0].instance == 1 && found[0].problem == Services::PlacementBoundsProblem::Both
+        && found[1].instance == 2 && found[1].problem == Services::PlacementBoundsProblem::FarFromStandpoint
+        && std::abs(found[1].distance - 5200) < 1e-6 && found[2].instance == 3 && std::abs(found[2].distance - 10200) < 1e-3,
+        "wall is both, deep placements are far with their per-axis distance, rock and pebble stay quiet");
+    Require(checked.report.bounds.both == 1 && checked.report.bounds.farFromStandpoint == 2 && checked.report.bounds.offMap == 0
+        && checked.report.types[2].farFromStandpoint == 2 && checked.report.types[1].both == 1, "exclusive counts");
+    WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR", "类型 deep（模型 Sonne\\deep.mdx）：2 个摆放");
+    WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR", "#2（5200）、#3（10200）");
+    WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_OFF_MAP", "类型 wall");
+    auto noGround = withPoint; noGround.groundHeight = {};
+    const auto floating = Take(Services::PlanPlacementImport(manifest, noGround));
+    Require(floating.report.bounds.findings.size() == 4 && floating.report.bounds.findings[3].instance == 4,
+        "without a ground height the follow-ground placement is checked at its listed z");
+
+    // 加宽：只改有问题的 wall 与 deep；deep 取两处摆放各自局部坐标里 P±512 的并集。
+    auto widen = withPoint; widen.bounds.widen = true;
+    const auto widened = Take(Services::PlanPlacementImport(manifest, widen));
+    Require(widened.fileRewrites.size() == 2 && widened.fileRewrites[0].file == 1 && widened.fileRewrites[1].file == 2
+        && widened.report.bounds.widenedModels == 2 && widened.report.bounds.models[2].widenedExtents == 4
+        && &Services::PlacementImportFileBytes(manifest, widened, 0) == &manifest.files[0].bytes
+        && &Services::PlacementImportFileBytes(manifest, widened, 2) == &widened.fileRewrites[1].bytes,
+        "only the flagged models are rewritten; the others keep the manifest bytes");
+    WithCode(widened.report.warnings, "PLACEMENT_IMPORT_BOUNDS_WIDENED", "模型 Sonne\\deep.mdx：已在导入的副本里加宽 4 条");
+    const auto& deep = widened.fileRewrites[1].bytes;
+    const auto deepExtents = Take(Render::ReadMdxDeclaredExtents(deep, Render::MdxExtentScope::All));
+    const auto& box = deepExtents.model;
+    const auto near1 = [](float value, double expected) { return std::abs(double(value) - expected) < 1e-2; };
+    Require(near1(box.minimum[0], -1024) && near1(box.maximum[0], 128) && near1(box.minimum[1], -512) && near1(box.maximum[1], 512)
+        && near1(box.minimum[2], -6000) && near1(box.maximum[2], 712), "union of (P - pivot) ± 512 over both placements in local space");
+    const auto original = Take(Render::ReadMdxDeclaredExtents(manifest.files[2].bytes, Render::MdxExtentScope::All));
+    std::vector<char> field(deep.size(), 0);
+    for (const auto* extent : {&original.model, &original.sequences[0], &original.geosets[0], &original.geosetSequences[0]})
+        std::fill_n(field.begin() + static_cast<std::ptrdiff_t>(extent->offset), Render::kMdxExtentBytes, 1);
+    for (std::size_t at = 0; at < deep.size(); ++at)
+        Require(field[at] || deep[at] == manifest.files[2].bytes[at], "only extent bytes change in the imported copy");
+    Require(Render::ParseMdx(deep).Succeeded() && Render::ParseMdx(widened.fileRewrites[0].bytes).Succeeded(),
+        "widened copies still parse as complete models");
+    auto fixed = manifest;
+    for (const auto& rewrite : widened.fileRewrites) fixed.files[rewrite.file].bytes = rewrite.bytes;
+    const auto rechecked = Take(Services::PlanPlacementImport(fixed, withPoint));
+    Require(rechecked.report.bounds.findings.empty() && rechecked.report.bounds.checkedInstances == 5,
+        "after widening every checked placement reaches the standpoint and the map");
+
+    // 选项：加宽须给观察点；观察点须在地图内；余量须为正。
+    auto noPoint = inputs; noPoint.bounds.widen = true;
+    Require(HasCode(Services::PlanPlacementImport(manifest, noPoint), "PLACEMENT_IMPORT_BOUNDS_OPTIONS"), "widen needs a standpoint");
+    auto outside = withPoint; outside.bounds.standpoint = std::array<double, 3>{5000, 0, 0};
+    Require(HasCode(Services::PlanPlacementImport(manifest, outside), "PLACEMENT_IMPORT_BOUNDS_OPTIONS"), "standpoint off the map");
+    auto zero = withPoint; zero.bounds.margin = 0;
+    Require(HasCode(Services::PlanPlacementImport(manifest, zero), "PLACEMENT_IMPORT_BOUNDS_OPTIONS"), "margin must be positive");
+}
 } // namespace
 
 int main() {
     try {
         ManifestRules(); ReadLoadsFilesRelativeToManifest(); PlanCreatesTypesAndRecords(); BatchCommitsBothFilesInOneRevision();
+        BoundsCheckReportsAndWidens();
         std::cout << "PlacementImportTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

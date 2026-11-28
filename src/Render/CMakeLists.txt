@@ -80,6 +80,7 @@ target_compile_options(War3MapRenderAdapters PRIVATE /W4 /permissive- /utf-8)
 add_library(War3MapRenderSupport STATIC
     TerrainShadowCaster.cpp
     ModelGameLimits.cpp
+    MdxDeclaredExtents.cpp
     Tools/FrameMeasurement.cpp
     Animation/AnimationAssets.cpp
     Animation/AnimationAssetSnapshot.cpp

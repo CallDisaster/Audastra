@@ -1,10 +1,13 @@
 #include "War3MapCore/Services/PlacementImport.h"
 #include "War3MapCore/Services/PlacementCreation.h"
+#include "PlacementImportBounds.h"
 #include "War3MapCore/Render/ModelGameLimits.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 #include <numbers>
+#include <optional>
 
 namespace War3Map::Services {
 namespace {
@@ -78,6 +81,7 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
     const double east = west + 128.0 * (header.width - 1), north = south + 128.0 * (header.height - 1);
     std::size_t outside = 0;
     std::string listed;
+    std::vector<Detail::PlacedDoodad> placed;
     for (std::size_t index = 0; index < manifest.instances.size(); ++index) {
         const auto& instance = manifest.instances[index];
         if (instance.type >= manifest.types.size())
@@ -96,6 +100,10 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
             record.rotation = Radians(instance.facingDegrees); record.scale = instance.scale; record.variation = instance.variation;
             // 游戏只用 0x04 判断是否沿用存储的 Z；未设置时放回地面。
             if (!type.followGround) { record.flags = std::uint8_t(record.flags | MapData::kDoodadFlagFixedZ); ++plan.report.fixedHeightDoodads; }
+            // 范围检查用游戏实际的高度：贴地时取地面高度（取不到时按清单 z）。
+            std::optional<float> ground;
+            if (type.followGround && inputs.groundHeight) ground = inputs.groundHeight(x, y);
+            placed.push_back({index, instance.type, {x, y, ground ? double(*ground) : double(z)}, record.rotation, record.scale});
             plan.doodads.push_back(std::move(record));
         } else {
             // 中立被动（玩家 16，记录中为 15）。单位的 Z 与三轴缩放游戏不采用，照样保存供编辑器参考。
@@ -112,12 +120,20 @@ Result<PlacementImportPlan> PlanPlacementImport(const MapData::PlacementManifest
     plan.report.doodads = plan.doodads.size();
     plan.report.units = plan.units.size();
     plan.report.files = manifest.files.size();
+    if (const auto checked = Detail::CheckPlacementImportBounds(manifest, inputs, placed, plan); !checked.Succeeded())
+        return {{}, checked.diagnostics};
     if (inputs.memberExists)
         for (const auto& file : manifest.files) if (inputs.memberExists(file.archivePath)) ++plan.report.replacedFiles;
     for (const auto& file : manifest.files)
         if (Render::IsMdxPath(file.archivePath))
             if (auto limit = Render::GeosetGameLimitWarning(file.bytes, file.archivePath)) plan.report.warnings.push_back(std::move(*limit));
     return R::Success(std::move(plan));
+}
+
+const std::vector<std::byte>& PlacementImportFileBytes(const MapData::PlacementManifest& manifest,
+    const PlacementImportPlan& plan, std::size_t file) {
+    const auto rewrite = std::ranges::find(plan.fileRewrites, file, &PlacementImportFileRewrite::file);
+    return rewrite != plan.fileRewrites.end() ? rewrite->bytes : manifest.files[file].bytes;
 }
 
 } // namespace War3Map::Services

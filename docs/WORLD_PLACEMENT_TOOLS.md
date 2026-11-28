@@ -123,6 +123,39 @@
 `placement_import_doodads`、`placement_import_fixed_height_doodads`、`placement_import_units` 和
 `placement_import_type_count` 给出数量；`placement_import_type_N` 依次为类型的 key、种类、新 ID、父类型和实例数。
 
+### 模型写明范围检查
+
+魔兽 1.27a 只在装饰物模型文件里写明的范围（MDX 的 MODL、每个动作的 SEQS、每个几何体的 GEOS 范围，
+不是按顶点算出的范围）与镜头目标附近的区域相交时才绘制它。导入时对清单里自带的每个装饰物模型，按每个
+摆放的位置、朝向和三轴缩放（与游戏相同：先绕 Z 旋转，再沿世界轴缩放）把全部写明范围的并集换算到世界坐标，
+逐个摆放检查：
+
+| 问题 | 诊断码 | 含义 |
+|---|---|---|
+| 地图外 | `PLACEMENT_IMPORT_BOUNDS_OFF_MAP` | 换算后的范围在 x/y 上整个落在地图地形范围之外，游戏里永远不画 |
+| 离观察点远 | `PLACEMENT_IMPORT_BOUNDS_FAR` | 给了观察点 P 时，范围与以 P 为中心、半边长为余量（默认 512）的立方体不相交；括号内为逐轴最大距离 |
+| 未检查 | `PLACEMENT_IMPORT_BOUNDS_UNCHECKED` | 清单里的模型读不出写明范围（不是经典 MDX 800、字段顺序不符或数值无效），写明原因 |
+
+每个类型分“地图外”和“离观察点远”各给一条提醒，列出实例序号（两项都有的实例两条里都列）。只检查清单
+`files` 里的装饰物模型：游戏自带模型、单位（高度和缩放由游戏决定）不检查，计入未检查数量。贴地装饰物按
+地面高度检查。检查只提醒，不拦截导入。
+
+可选“加宽模型范围”需要观察点：对有问题的模型，取它全部摆放处的 P±余量（各自按轴心、朝向和缩放换到模型
+局部坐标）的并集，把文件里每条写明范围都扩到包含这个并集，半径取新盒对角线的一半；已经包含的范围不改。
+只改导入副本里这些 28 字节字段，文件长度和其余字节不变，作者的源文件不动；改过的模型给出
+`PLACEMENT_IMPORT_BOUNDS_WIDENED`。要加宽的模型不能安全改写时整份不导入（`PLACEMENT_IMPORT_BOUNDS_WIDEN`）。
+观察点须在地图范围内，余量大于 0 且不超过 1000000，否则整份拒绝（`PLACEMENT_IMPORT_BOUNDS_OPTIONS`）。
+
+编辑器导入对话框里勾选“观察点”后填写 X/Y/Z 与余量，可再勾选“加宽模型范围”；报告随之重新计算。命令行在
+`--placements` 之外追加 `--placements-standpoint X Y Z`、`--placements-margin 余量`、`--placements-widen-bounds`。
+回执另给：
+
+- `placement_import_type_N_bounds`：是否检查、地图外、离观察点远、两者都有的实例数（仅装饰物类型）；
+- `placement_import_bounds_standpoint`、`_margin`、`_widen`、`_checked_instances`、`_unchecked_instances`、`_off_map`、
+  `_far`、`_both`、`_widened_models`（三类问题互斥计数）；
+- `placement_import_bounds_finding_N`：实例序号、类型 key、`off_map`/`far`/`both`、逐轴最大距离；
+- `placement_import_bounds_model_N`：包内路径、是否检查、摆放数、地图外数、离观察点远数、加宽改写的范围条数。
+
 装饰物有变化的保存会重建通行数据，此时整张地图已有的全部自定义装饰物类型与摆放、游戏自带的装饰物与
 可破坏物表都计入同一份单次保存的解析预算（至多 64MiB）。这份预算按整张地图的累计量计算，分几次导入不能
 绕过。在 192×128 的测试地图上实测，大约能容纳 1500 个自定义装饰物类型（摆放约 1600 个），或 50 个类型配

@@ -456,8 +456,10 @@ Status ApplyPlacementImport(const MapData::PlacementManifest& manifest, const Pl
         return source.HasMember(member) || std::any_of(manifest.files.begin(), manifest.files.end(),
             [&](const auto& file) { return file.archivePath == member; });
     };
-    for (const auto& file : manifest.files) {
-        const MapArchiveMember member{file.archivePath, file.bytes};
+    for (std::size_t index = 0; index < manifest.files.size(); ++index) {
+        const auto& file = manifest.files[index];
+        // 要求加宽写明范围时，导入的是改写过范围字段的副本。
+        const MapArchiveMember member{file.archivePath, PlacementImportFileBytes(manifest, plan, index)};
         const auto noted = receipt(member); if (!noted.Succeeded()) return noted;
         replacements.push_back(member);
         const auto registered = imports.Upsert(file.archivePath, exists);
@@ -709,6 +711,8 @@ static Result<MapEditSaveReceipt> SaveMapEditCandidateImpl(const MapEditSaveRequ
             || fieldRequest || customRequest || placementRequest || triggerRequest || auxiliaryRequest || markerRequest
             || request.rebuildTerrainShadow || request.runtime.decision.has_value())))
             return Fail("SAVE_PLACEMENT_IMPORT_SCOPE", "摆放清单导入须单独保存；地形等其它修改请先另存，再在新候选上导入。");
+        if (!importRequest && (request.placementBounds.standpoint || request.placementBounds.widen))
+            return Fail("SAVE_PLACEMENT_IMPORT_SCOPE", "观察点与加宽模型范围只用于摆放清单导入。");
         if (markerRequest != !request.minimapMarkerRevision.empty())
             return Fail("SAVE_MINIMAP_MARKER_REQUEST", "图标编辑需要同时提供操作和查询所得修订。");
         const bool terrainCompanion = terrainRequest && (fieldRequest || objectRequest)
@@ -1412,8 +1416,11 @@ Result<PreparedPlacementImport> PreparePlacementImportSave(const MapEditSaveRequ
     if (!doodads.Succeeded() || !doodads.value) return {{}, doodads.diagnostics};
     auto units = sources.value->context(ObjectData::ObjectType::Unit);
     if (!units.Succeeded() || !units.value) return {{}, units.diagnostics};
-    PlacementImportInputs inputs{*doodads.value, *units.value, terrain.value->Snapshot()->header,
-        [&source](std::string_view name) { return source.HasMember(name); }};
+    const auto grid = terrain.value->Snapshot();
+    PlacementImportInputs inputs{*doodads.value, *units.value, grid->header,
+        [&source](std::string_view name) { return source.HasMember(name); },
+        [&grid](double x, double y) { return MapData::SampleGroundHeight(*grid, x, y, MapData::TerrainHeightSource::RawWithRamps); },
+        request.placementBounds};
     auto plan = PlanPlacementImport(*request.placementImport, inputs);
     if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
     PreparedPlacementImport prepared{request, std::move(*plan.value)};

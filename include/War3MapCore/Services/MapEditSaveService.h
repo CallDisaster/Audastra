@@ -150,6 +150,8 @@ struct MapEditSaveRequest {
     // 外部摆放清单（已装入文件字节）：导入文件、新建装饰物/单位类型和摆放一次写出，须单独保存。
     // 物编由保存服务按实际来源规划并冻结；调用方不能同时提供 objectTransactions 或成员字节。
     std::shared_ptr<const MapData::PlacementManifest> placementImport;
+    // 摆放清单导入的模型写明范围检查选项（观察点、余量、是否加宽）；只在 placementImport 时有效。
+    PlacementImportBoundsOptions placementBounds;
 };
 
 struct MapEditMemberReceipt {

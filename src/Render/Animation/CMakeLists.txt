@@ -8,7 +8,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         "${_animation_root}/src/Core/Types.cpp"
         "${_animation_root}/src/Core/Image/BlpImage.cpp"
         "${_animation_root}/src/Core/Image/JpegDecoder.cpp"
-        "${_animation_root}/src/Render/Scene/WorldModelScene.cpp")
+        "${_animation_root}/src/Render/Scene/WorldModelScene.cpp"
+        "${_animation_root}/src/Render/MdxDeclaredExtents.cpp")
     target_link_libraries(forge-animation-reference PUBLIC War3RenderCore::CPU)
     add_subdirectory("${_animation_root}/src/Render/Particles" "${CMAKE_CURRENT_BINARY_DIR}/particles")
     add_library(forge-model-animation STATIC AnimationAssets.cpp AnimationState.cpp AnimationVisibility.cpp AnimationFrame.cpp AnimationWorkers.cpp AnimationParticles.cpp AnimationParticleAssets.cpp AnimationRenderer.cpp AnimationCapturePlan.cpp)

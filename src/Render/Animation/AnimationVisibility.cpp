@@ -1,4 +1,5 @@
 #include "AnimationVisibility.h"
+#include "War3MapCore/Render/MdxDeclaredExtents.h"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -27,12 +28,6 @@ void Include(Box& box, const Box& other) {
     for (unsigned a=0;a<3;++a) { box[a]=std::min(box[a],other[a]); box[a+3]=std::max(box[a+3],other[a+3]); }
 }
 void IncludeRadius(Box& box, double radius) { Include(box,{-radius,-radius,-radius,radius,radius,radius}); }
-std::uint32_t Word(std::span<const std::byte> bytes, std::size_t at) {
-    std::uint32_t value=0;
-    for (unsigned k=0;k<4;++k) value|=std::to_integer<std::uint32_t>(bytes[at+k])<<(8*k);
-    return value;
-}
-float Number(std::span<const std::byte> bytes, std::size_t at) { return std::bit_cast<float>(Word(bytes,at)); }
 
 // 求值器在首末键接缝可做区间外插值。不能把只有声明盒或按键凸包当作已证动态边界。
 // 对多键 TRS，先要求每个实际动作区间闭合；无法证明的接缝整资产保守放行。
@@ -278,31 +273,22 @@ Frustum MakeFrustum(const AnimationView& view) {
 
 void ReadAnimationVisibilityBounds(AnimationAsset& asset, std::span<const std::byte> bytes) noexcept {
     asset.visibilityBounds={};
-    if (!asset.parsed || asset.parsed->version!=800 || bytes.size()<4 || std::memcmp(bytes.data(),"MDLX",4)!=0) return;
-    Box box{}; bool modelSeen=false; std::size_t sequences=0;
-    for (std::size_t at=4;at<bytes.size();) {
-        if (bytes.size()-at<8) return;
-        const auto size=Word(bytes,at+4); const auto body=at+8;
-        if (size>bytes.size()-body) return;
-        if (std::memcmp(bytes.data()+at,"MODL",4)==0) {
-            if (modelSeen || size<372) return;
-            const double radius=Number(bytes,body+340);
-            if (!std::isfinite(radius) || radius<0) return;
-            for (unsigned a=0;a<3;++a) { box[a]=Number(bytes,body+344+a*4); box[a+3]=Number(bytes,body+356+a*4); }
-            if (!FiniteBox(box)) return;
-            IncludeRadius(box,radius); modelSeen=true;
-        } else if (std::memcmp(bytes.data()+at,"SEQS",4)==0) {
-            if (!modelSeen || size%132) return;
-            for (std::size_t record=body;record<body+size;record+=132) {
-                const double radius=Number(bytes,record+104); Box declared{};
-                for (unsigned a=0;a<3;++a) { declared[a]=Number(bytes,record+108+a*4); declared[a+3]=Number(bytes,record+120+a*4); }
-                if (!std::isfinite(radius) || radius<0 || !FiniteBox(declared)) return;
-                Include(box,declared); IncludeRadius(box,radius); ++sequences;
-            }
-        }
-        at=body+size;
-    }
-    if (modelSeen && sequences==asset.parsed->sequences.size()) asset.visibilityBounds={box,0,true};
+    if (!asset.parsed || asset.parsed->version!=800) return;
+    // 写明范围与导入检查共用一个读取；读不到、数值不可用或动作条数对不上时保守放行。
+    try {
+        const auto declared=ReadMdxDeclaredExtents(bytes,MdxExtentScope::ModelAndSequences);
+        if (!declared.Succeeded() || !declared.value || declared.value->sequences.size()!=asset.parsed->sequences.size()) return;
+        Box box{}; bool first=true;
+        const auto include=[&](const MdxDeclaredExtent& extent) {
+            if (!MdxExtentUsable(extent)) return false;
+            const Box other{extent.minimum[0],extent.minimum[1],extent.minimum[2],extent.maximum[0],extent.maximum[1],extent.maximum[2]};
+            if (first) box=other; else Include(box,other);
+            first=false; IncludeRadius(box,extent.radius); return true;
+        };
+        if (!include(declared.value->model)) return;
+        for (const auto& sequence:declared.value->sequences) if (!include(sequence)) return;
+        asset.visibilityBounds={box,0,true};
+    } catch (...) { asset.visibilityBounds={}; }
 }
 
 Status CheckAnimationView(const AnimationView& view) {

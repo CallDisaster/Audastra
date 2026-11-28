@@ -31,6 +31,20 @@ void PlacementImportReadsManifestBeforeSharedSave() {
     auto twice = base("ok.json"); twice.insert(twice.end(), {L"--placements", (directory / "ok.json").wstring()});
     Rejected(Invoke(twice), "may appear only once");
     auto incomplete = Arguments(); incomplete.push_back(L"--placements"); Rejected(Invoke(incomplete), "requires <placements.json>");
+    // 写明范围检查选项只随 --placements 使用；加宽须给观察点；余量须为正。
+    auto stray = Arguments(); stray.insert(stray.end(), {L"--placements-standpoint", L"0", L"0", L"0"});
+    Rejected(Invoke(stray), "need --placements");
+    auto widenOnly = base("ok.json"); widenOnly.push_back(L"--placements-widen-bounds");
+    Rejected(Invoke(widenOnly), "needs --placements-standpoint");
+    auto badMargin = base("ok.json"); badMargin.insert(badMargin.end(), {L"--placements-margin", L"0"});
+    Rejected(Invoke(badMargin), "--placements-margin requires");
+    auto shortPoint = base("ok.json"); shortPoint.insert(shortPoint.end(), {L"--placements-standpoint", L"0", L"0"});
+    Rejected(Invoke(shortPoint), "--placements-standpoint requires");
+    auto bounded = base("ok.json");
+    bounded.insert(bounded.end(), {L"--placements-standpoint", L"0", L"0", L"200", L"--placements-margin", L"256", L"--placements-widen-bounds"});
+    const auto accepted = Invoke(bounded);
+    Require(accepted.exitCode != 0 && accepted.error.find("SAVE_ARGUMENT_INVALID") == std::string::npos,
+        "standpoint, margin and widen options are accepted with a placement list and handed to the save service");
     const auto missing = Invoke(base("missing-file.json"));
     Require(missing.exitCode == 2 && missing.output.empty() && missing.error.find("SAVE_ARGUMENT_INVALID") == std::string::npos,
         "an imported file that cannot be read stops before the save service");

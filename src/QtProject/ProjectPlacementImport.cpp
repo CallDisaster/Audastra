@@ -6,6 +6,7 @@
 
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
+#include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Services/ImportPayloadPolicy.h"
 
 #include <QCoreApplication>
@@ -53,13 +54,17 @@ Status CheckPlacementImportPayloadBudget(const MapData::PlacementManifest& manif
 }
 
 Result<Services::PlacementImportPlan> PlanProjectPlacementImport(EditorProject& project,
-    const MapData::PlacementManifest& manifest) {
+    const MapData::PlacementManifest& manifest, const Services::PlacementImportBoundsOptions& bounds) {
     using R = Result<Services::PlacementImportPlan>;
     if (!project.mapEdits_) return R::Failure(kDomain, "PLACEMENT_IMPORT_MAP_UNAVAILABLE", "先打开地图。");
     const auto terrain = project.mapEdits_->Terrain();
     if (!terrain) return R::Failure(kDomain, "PLACEMENT_IMPORT_TERRAIN", "地图地形尚未读取，不能确定摆放范围。");
     Services::PlacementImportInputs inputs;
     inputs.terrain = terrain->header;
+    inputs.bounds = bounds;
+    inputs.groundHeight = [terrain](double x, double y) {
+        return MapData::SampleGroundHeight(*terrain, x, y, MapData::TerrainHeightSource::RawWithRamps);
+    };
     // 上下文借用 provider 内的空表与名称快照；规划会复制文档，provider 只需活到规划结束。
     const auto provider = MakeObjectContextProvider(project);
     for (const auto [kind, type, target] : {
@@ -80,11 +85,11 @@ Result<Services::PlacementImportPlan> PlanProjectPlacementImport(EditorProject& 
 }
 
 Result<Services::PlacementImportReport> CommitProjectPlacementImport(EditorProject& project,
-    MapData::PlacementManifest manifest) {
+    MapData::PlacementManifest manifest, const Services::PlacementImportBoundsOptions& bounds) {
     using R = Result<Services::PlacementImportReport>;
     if (project.savingMap_) return R::Failure(kDomain, "PLACEMENT_IMPORT_BUSY", "地图正在保存，保存完成后再导入。");
     if (const auto budget = CheckPlacementImportPayloadBudget(manifest); !budget.Succeeded()) return {{}, budget.diagnostics};
-    auto planned = PlanProjectPlacementImport(project, manifest);
+    auto planned = PlanProjectPlacementImport(project, manifest, bounds);
     if (!planned.Succeeded() || !planned.value) return {{}, std::move(planned.diagnostics)};
     auto& plan = *planned.value;
     auto* assets = project.AssetUndoStack();
@@ -105,6 +110,9 @@ Result<Services::PlacementImportReport> CommitProjectPlacementImport(EditorProje
     if (!manifest.files.empty()) {
         std::vector<EditorProject::ImportPayload> payloads;
         payloads.reserve(manifest.files.size());
+        // 加宽过的模型改用规划里的副本字节，其余文件正文直接移入。
+        for (auto& rewrite : plan.fileRewrites) manifest.files[rewrite.file].bytes = std::move(rewrite.bytes);
+        plan.fileRewrites.clear();
         for (auto& file : manifest.files)
             payloads.push_back({QString::fromStdString(file.archivePath),
                 std::make_shared<const std::vector<std::byte>>(std::move(file.bytes))});
