@@ -49,7 +49,7 @@ QString ReportText(const MapData::PlacementManifest& manifest, const Services::P
     }
     if (report.types.size() > kListedTypes) lines << QObject::tr("  等 %1 个").arg(report.types.size());
     const auto& bounds = report.bounds;
-    lines << QObject::tr("模型写明范围：检查 %1 个摆放 · 地图外 %2 · 离观察点远 %3 · 两者都有 %4 · 未检查 %5 · 加宽模型 %6")
+    lines << QObject::tr("模型写明范围：检查 %1 个摆放 · 地图外 %2 · 未包住观察点 %3 · 两者都有 %4 · 未检查 %5 · 加宽模型 %6")
         .arg(bounds.checkedInstances).arg(bounds.offMap).arg(bounds.farFromStandpoint).arg(bounds.both)
         .arg(bounds.uncheckedInstances).arg(bounds.widenedModels);
     for (std::size_t index = 0; index < report.warnings.size() && index < kListedWarnings; ++index)

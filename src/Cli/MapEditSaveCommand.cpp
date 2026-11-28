@@ -836,7 +836,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             const auto* problem = finding.problem == Services::PlacementBoundsProblem::Both ? "both"
                 : finding.problem == Services::PlacementBoundsProblem::OffMap ? "off_map" : "far";
             std::cout << "\nplacement_import_bounds_finding_" << index << '=' << finding.instance << ','
-                << report.types[finding.type].key << ',' << problem << ',' << std::format("{:.0f}", finding.distance);
+                << report.types[finding.type].key << ',' << problem << ',' << std::format("{:.0f}", finding.clearance);
         }
         std::cout << "\nplacement_import_bounds_model_count=" << bounds.models.size();
         for (std::size_t index = 0; index < bounds.models.size(); ++index) {

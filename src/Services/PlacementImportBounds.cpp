@@ -60,11 +60,24 @@ template<class Map> Box MapCorners(const Box& box, Map&& map) {
     return out;
 }
 
-// 点到盒的逐轴最大距离；点在盒内或盒面上为 0。
-double Distance(const Box& box, const Point& point) {
-    double out = 0;
-    for (unsigned a = 0; a < 3; ++a) out = std::max({out, box[a] - point[a], point[a] - box[a + 3]});
-    return out;
+// 范围包住观察点立方体的判定容差（世界单位）：写明范围是 float，旋转后的换算有舍入。
+constexpr double kClearanceTolerance = 1e-2;
+
+// P 在一组局部范围里的深度：以 P 为中心、半边长 d 的世界轴向立方体按摆放换到局部坐标后，
+// 仍在每个范围里的最大 d。局部第 k 轴上立方体伸展 d·Σ|M_kj|（M 为世界到局部的线性部分）。P 在范围外时为负。
+double Clearance(const std::vector<Box>& boxes, const PlacedDoodad& doodad, const Point& point) {
+    const auto& scale = doodad.scale;
+    if (std::any_of(scale.begin(), scale.end(), [](float value) { return !std::isfinite(value) || value == 0; }))
+        return -kInfinity;
+    const Placement placement(doodad);
+    const auto center = placement.ToLocal(point);
+    const double c = std::abs(placement.cosine), s = std::abs(placement.sine);
+    const double ix = 1 / std::abs(placement.scale[0]), iy = 1 / std::abs(placement.scale[1]);
+    const Point reach{c * ix + s * iy, s * ix + c * iy, 1 / std::abs(placement.scale[2])};
+    double out = kInfinity;
+    for (const auto& box : boxes)
+        for (unsigned a = 0; a < 3; ++a) out = std::min(out, std::min(center[a] - box[a], box[a + 3] - center[a]) / reach[a]);
+    return std::isnan(out) ? -kInfinity : out;
 }
 
 Box ExtentBox(const Render::MdxDeclaredExtent& extent) {
@@ -75,6 +88,7 @@ struct ModelState {
     std::size_t file = 0;
     PlacementImportBoundsModel report;
     Box local = kEmpty;              // 全部写明范围的并集（模型局部坐标）
+    std::vector<Box> visibility;     // MODL 与每条 SEQS 范围：每条都须包住观察点立方体
     std::vector<std::size_t> placed; // placed 下标
     bool flagged = false;
 };
@@ -88,7 +102,7 @@ std::string InstanceList(const std::vector<const PlacementImportBoundsFinding*>&
     std::string out;
     for (std::size_t i = 0; i < findings.size() && i < PlacementImportReportedBoundsInstances; ++i) {
         out += (i ? "、#" : "#") + std::to_string(findings[i]->instance);
-        if (distances) out += std::format("（{:.0f}）", findings[i]->distance);
+        if (distances) out += std::format("（{:.0f}）", findings[i]->clearance);
     }
     if (findings.size() > PlacementImportReportedBoundsInstances) out += " 等";
     return out;
@@ -154,8 +168,13 @@ Status CheckPlacementImportBounds(const MapData::PlacementManifest& manifest, co
             include(read.value->model);
             for (const auto* list : {&read.value->sequences, &read.value->geosets, &read.value->geosetSequences})
                 for (const auto& extent : *list) include(extent);
-            if (usable) model.report.checked = true;
-            else { model.local = kEmpty; model.report.uncheckedReason = "写明范围含无效数值（非有限、半径为负或最小大于最大）。"; }
+            if (usable) {
+                model.report.checked = true;
+                model.visibility.push_back(ExtentBox(read.value->model));
+                for (const auto& extent : read.value->sequences) model.visibility.push_back(ExtentBox(extent));
+            } else {
+                model.local = kEmpty; model.report.uncheckedReason = "写明范围含无效数值（非有限、半径为负或最小大于最大）。";
+            }
         }
         models.push_back(std::move(model));
     }
@@ -176,8 +195,8 @@ Status CheckPlacementImportBounds(const MapData::PlacementManifest& manifest, co
         const Placement placement(doodad);
         const auto box = MapCorners(model.local, [&](const Point& local) { return placement.ToWorld(local); });
         const bool offMap = box[3] < west || box[0] > east || box[4] < south || box[1] > north;
-        const double distance = options.standpoint ? Distance(box, *options.standpoint) : 0.0;
-        const bool distant = options.standpoint && distance > options.margin;
+        const double clearance = options.standpoint ? Clearance(model.visibility, doodad, *options.standpoint) : 0.0;
+        const bool distant = options.standpoint && clearance < options.margin - kClearanceTolerance;
         if (!offMap && !distant) continue;
         model.flagged = true;
         if (offMap) ++model.report.offMap;
@@ -188,7 +207,7 @@ Status CheckPlacementImportBounds(const MapData::PlacementManifest& manifest, co
         auto& typeCounter = offMap && distant ? type.both : offMap ? type.offMap : type.farFromStandpoint;
         ++counter;
         ++typeCounter;
-        bounds.findings.push_back({doodad.instance, doodad.type, problem, box, distance});
+        bounds.findings.push_back({doodad.instance, doodad.type, problem, box, clearance});
     }
     bounds.uncheckedInstances += plan.units.size();
 
@@ -216,7 +235,7 @@ Status CheckPlacementImportBounds(const MapData::PlacementManifest& manifest, co
         }
     }
 
-    // 提醒：每个类型分“地图外”和“离观察点远”各一条；每个加宽的模型一条；清单内读不了范围的模型一条。
+    // 提醒：每个类型分“地图外”和“未包住观察点”各一条；每个加宽的模型一条；清单内读不了范围的模型一条。
     std::vector<std::vector<const PlacementImportBoundsFinding*>> offMapByType(manifest.types.size()), farByType(manifest.types.size());
     for (const auto& finding : bounds.findings) {
         if (finding.problem != PlacementBoundsProblem::FarFromStandpoint) offMapByType[finding.type].push_back(&finding);
@@ -235,7 +254,8 @@ Status CheckPlacementImportBounds(const MapData::PlacementManifest& manifest, co
         if (!farByType[type].empty()) {
             const auto& point = *options.standpoint;
             plan.report.warnings.push_back(Warning("PLACEMENT_IMPORT_BOUNDS_FAR", prefix + std::format(
-                "{} 个摆放的模型写明范围离观察点 ({:g}, {:g}, {:g}) 超过 {:g}，从那里看不到（括号内为逐轴最大距离）：{}。{}",
+                "{} 个摆放的模型写明范围没有包住观察点 ({:g}, {:g}, {:g}) ±{:g}，游戏里有被剔掉的风险"
+                "（括号内为观察点在范围里的深度，负值是在范围外的距离）：{}。{}",
                 farByType[type].size(), point[0], point[1], point[2], options.margin, InstanceList(farByType[type], true), widened),
                 model.report.archivePath));
         }

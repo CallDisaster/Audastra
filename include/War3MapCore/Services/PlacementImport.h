@@ -23,15 +23,16 @@ inline constexpr std::string_view PlacementImportDefaultDoodadBase = "LOsp";
 inline constexpr std::size_t PlacementImportReportedOutside = 32;
 
 // 模型写明范围检查。游戏 1.27a 只在装饰物模型的写明范围（MODL/SEQS/GEOS，不是顶点）与镜头目标附近的区域
-// 相交时才绘制：整个在地图外的范围永远不画；离观察点很远（例如深埋地下）的范围在那里看不到，
-// 加宽到包含观察点 ±512 后才画出来。检查只读、只提醒；加宽须显式开启。
+// 相交时才绘制：整个在地图外的范围永远不画；镜头目标在观察点前方几百单位，游戏里验证过的规则是 MODL 与每条
+// SEQS 范围都包住观察点 ±512 的立方体（按摆放的朝向与缩放）才画出来，没包住的（例如深埋地下）有被剔掉的风险。
+// 检查只读、只提醒；加宽须显式开启。
 inline constexpr double PlacementImportDefaultStandpointMargin = 512;
 inline constexpr double PlacementImportMaximumStandpointMargin = 1000000;
 inline constexpr std::size_t PlacementImportReportedBoundsInstances = 16; // 每条提醒列出的实例序号数
 
 struct PlacementImportBoundsOptions {
     std::optional<std::array<double, 3>> standpoint; // 观察点 P（世界坐标），须在地图范围内
-    double margin = PlacementImportDefaultStandpointMargin; // P 周围立方体的半边长
+    double margin = PlacementImportDefaultStandpointMargin; // P 周围立方体的半边长：范围须包住 [P−margin, P+margin]
     // 把有问题的模型的全部写明范围加宽到包含每个摆放处的 P±margin（各摆放按自己的轴心、朝向和缩放换算，取并集）。
     // 需要 standpoint；只改导入副本里这些范围字段，作者的源文件不动。
     bool widen = false;
@@ -44,7 +45,9 @@ struct PlacementImportBoundsFinding {
     std::uint32_t type = 0;   // 清单 types 下标
     PlacementBoundsProblem problem = PlacementBoundsProblem::OffMap;
     std::array<double, 6> box{}; // 摆放后的世界范围：最小 xyz、最大 xyz
-    double distance = 0;         // 与 P 的逐轴最大距离（0 表示相交）；没给 P 时为 0
+    // P 在写明范围里的深度（世界单位）：以 P 为中心、半边长为它的立方体恰好还在 MODL 与每条 SEQS 范围里
+    // （按摆放的朝向与缩放）；小于 margin 即为 FarFromStandpoint，负值是 P 在范围外的距离。没给 P 时为 0。
+    double clearance = 0;
 };
 
 struct PlacementImportBoundsModel {

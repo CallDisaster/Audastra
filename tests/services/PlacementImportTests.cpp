@@ -248,34 +248,55 @@ void BoundsCheckReportsAndWidens() {
     Require(CountCode(plain.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR") == 0 && plain.fileRewrites.empty()
         && &Services::PlacementImportFileBytes(manifest, plain, 1) == &manifest.files[1].bytes, "no standpoint, no far check, no rewrite");
 
-    // 观察点 (0, 0, 200)、余量 512：wall 两项都有；deep 两处都远；rock 与贴地的 pebble 在附近不报。
+    // 观察点 (0, 0, 200)、余量 512：范围须包住 P±512。wall 两项都有；deep 两处深埋；rock 与贴地的 pebble 的范围
+    // 只到 z 128，P 在范围外 72，同样没包住。深度为负值是 P 在范围外的距离。
     auto withPoint = inputs; withPoint.bounds.standpoint = std::array<double, 3>{0, 0, 200};
     const auto checked = Take(Services::PlanPlacementImport(manifest, withPoint));
     const auto& found = checked.report.bounds.findings;
-    Require(found.size() == 3 && found[0].instance == 1 && found[0].problem == Services::PlacementBoundsProblem::Both
-        && found[1].instance == 2 && found[1].problem == Services::PlacementBoundsProblem::FarFromStandpoint
-        && std::abs(found[1].distance - 5200) < 1e-6 && found[2].instance == 3 && std::abs(found[2].distance - 10200) < 1e-3,
-        "wall is both, deep placements are far with their per-axis distance, rock and pebble stay quiet");
-    Require(checked.report.bounds.both == 1 && checked.report.bounds.farFromStandpoint == 2 && checked.report.bounds.offMap == 0
-        && checked.report.types[2].farFromStandpoint == 2 && checked.report.types[1].both == 1, "exclusive counts");
+    using Services::PlacementBoundsProblem;
+    Require(found.size() == 5 && found[0].instance == 0 && found[0].problem == PlacementBoundsProblem::FarFromStandpoint
+        && std::abs(found[0].clearance + 72) < 1e-6 && found[1].instance == 1 && found[1].problem == PlacementBoundsProblem::Both
+        && found[2].instance == 2 && found[2].problem == PlacementBoundsProblem::FarFromStandpoint
+        && std::abs(found[2].clearance + 5200) < 1e-6 && found[3].instance == 3 && std::abs(found[3].clearance + 10200) < 1e-3
+        && found[4].instance == 4 && std::abs(found[4].clearance + 72) < 1e-6,
+        "every placement whose extents do not hold P +- 512 is far, with the depth of P inside its extents");
+    Require(checked.report.bounds.both == 1 && checked.report.bounds.farFromStandpoint == 4 && checked.report.bounds.offMap == 0
+        && checked.report.types[2].farFromStandpoint == 2 && checked.report.types[1].both == 1
+        && checked.report.types[0].farFromStandpoint == 1 && checked.report.types[3].farFromStandpoint == 1, "exclusive counts");
     WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR", "类型 deep（模型 Sonne\\deep.mdx）：2 个摆放");
-    WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR", "#2（5200）、#3（10200）");
+    WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_FAR", "#2（-5200）、#3（-10200）");
     WithCode(checked.report.warnings, "PLACEMENT_IMPORT_BOUNDS_OFF_MAP", "类型 wall");
     auto noGround = withPoint; noGround.groundHeight = {};
     const auto floating = Take(Services::PlanPlacementImport(manifest, noGround));
-    Require(floating.report.bounds.findings.size() == 4 && floating.report.bounds.findings[3].instance == 4,
+    Require(floating.report.bounds.findings.size() == 5 && floating.report.bounds.findings[4].instance == 4
+        && std::abs(floating.report.bounds.findings[4].clearance + 9072) < 1e-6,
         "without a ground height the follow-ground placement is checked at its listed z");
 
-    // 加宽：只改有问题的 wall 与 deep；deep 取两处摆放各自局部坐标里 P±512 的并集。
+    // P 正好深入范围 512（余量为 512）时不报；差一点就报，加宽后补足。
+    auto inner = manifest;
+    inner.files[2].bytes = ModelWithBox({-1024, -512, -312}, {0, 512, 712});
+    auto deepOnly = withPoint;
+    const auto exact = Take(Services::PlanPlacementImport(inner, deepOnly));
+    Require(std::none_of(exact.report.bounds.findings.begin(), exact.report.bounds.findings.end(),
+        [](const auto& finding) { return finding.instance == 2; }), "a box that holds P exactly 512 deep is not reported");
+    inner.files[2].bytes = ModelWithBox({-1024, -512, -312}, {0, 512, 700});
+    const auto shallow = Take(Services::PlanPlacementImport(inner, deepOnly));
+    const auto shallowFinding = std::find_if(shallow.report.bounds.findings.begin(), shallow.report.bounds.findings.end(),
+        [](const auto& finding) { return finding.instance == 2; });
+    Require(shallowFinding != shallow.report.bounds.findings.end() && std::abs(shallowFinding->clearance - 500) < 1e-6,
+        "a box that holds P only 500 deep is far even though P is inside");
+
+    // 加宽：只改有问题的 rock、wall 与 deep；deep 取两处摆放各自局部坐标里 P±512 的并集。读不了范围的 bad 不动。
     auto widen = withPoint; widen.bounds.widen = true;
     const auto widened = Take(Services::PlanPlacementImport(manifest, widen));
-    Require(widened.fileRewrites.size() == 2 && widened.fileRewrites[0].file == 1 && widened.fileRewrites[1].file == 2
-        && widened.report.bounds.widenedModels == 2 && widened.report.bounds.models[2].widenedExtents == 4
-        && &Services::PlacementImportFileBytes(manifest, widened, 0) == &manifest.files[0].bytes
-        && &Services::PlacementImportFileBytes(manifest, widened, 2) == &widened.fileRewrites[1].bytes,
+    Require(widened.fileRewrites.size() == 3 && widened.fileRewrites[0].file == 0 && widened.fileRewrites[1].file == 1
+        && widened.fileRewrites[2].file == 2 && widened.report.bounds.widenedModels == 3
+        && widened.report.bounds.models[2].widenedExtents == 4
+        && &Services::PlacementImportFileBytes(manifest, widened, 3) == &manifest.files[3].bytes
+        && &Services::PlacementImportFileBytes(manifest, widened, 2) == &widened.fileRewrites[2].bytes,
         "only the flagged models are rewritten; the others keep the manifest bytes");
     WithCode(widened.report.warnings, "PLACEMENT_IMPORT_BOUNDS_WIDENED", "模型 Sonne\\deep.mdx：已在导入的副本里加宽 4 条");
-    const auto& deep = widened.fileRewrites[1].bytes;
+    const auto& deep = widened.fileRewrites[2].bytes;
     const auto deepExtents = Take(Render::ReadMdxDeclaredExtents(deep, Render::MdxExtentScope::All));
     const auto& box = deepExtents.model;
     const auto near1 = [](float value, double expected) { return std::abs(double(value) - expected) < 1e-2; };
@@ -293,7 +314,7 @@ void BoundsCheckReportsAndWidens() {
     for (const auto& rewrite : widened.fileRewrites) fixed.files[rewrite.file].bytes = rewrite.bytes;
     const auto rechecked = Take(Services::PlanPlacementImport(fixed, withPoint));
     Require(rechecked.report.bounds.findings.empty() && rechecked.report.bounds.checkedInstances == 5,
-        "after widening every checked placement reaches the standpoint and the map");
+        "after widening every checked placement holds the standpoint +- 512 and reaches the map");
 
     // 选项：加宽须给观察点；观察点须在地图内；余量须为正。
     auto noPoint = inputs; noPoint.bounds.widen = true;
