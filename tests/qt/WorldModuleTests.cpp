@@ -860,6 +860,7 @@ private slots:
     void TerrainTextureSlotCliffAppendUsesFrozenSourceAndSharedUndo();
     void TerrainTextureSlotCliffAppendRejectsStale_data();
     void TerrainTextureSlotCliffAppendRejectsStale();
+    void SurfaceMaterialPanelEditsTableInPlaceWithAssetUndo();
     void TerrainTextureSlotWorkerRejectsStale_data();
     void TerrainTextureSlotWorkerRejectsStale();
     void TerrainTextureSlotWorkerSurvivesModuleDestruction();
@@ -5685,6 +5686,7 @@ void WorldModuleTests::ShadowRelationMemoTracksAttachGenerationsAndSessionIdenti
 #include "TerrainConnectedRampWorldCases.h"
 #include "TerrainBlockWorldCases.h"
 #include "WorldTerrainModelReloadCases.h"
+#include "WorldSurfaceMaterialPanelCases.h"
 
 int main(int argc, char** argv) {
     if (qEnvironmentVariable("FORGE_H1_CAPTURE_DIR").isEmpty()) qputenv("QT_QPA_PLATFORM", "offscreen");

@@ -9,6 +9,7 @@
 #include "War3MapCore/Script/ReadOnlyScriptSource.h"
 #include "War3MapCore/Text/SourceEncoding.h"
 
+#include <QFile>
 #include <QFileInfo>
 
 #include <algorithm>
@@ -159,6 +160,20 @@ QString PutOwnedAsset(const EditorProject& project, AssetState& candidate, const
         pending->ownedPayload = std::move(bytes); pending->runtimeLuaDraft = runtimeLuaDraft;
     }
     return {};
+}
+
+Result<EditorProject::ImportPayload> ReadDiskImportPayload(const QString& diskPath, const QString& archivePath) {
+    using Return = Result<EditorProject::ImportPayload>;
+    QFile input(diskPath);
+    if (!QFileInfo(diskPath).isFile() || !input.open(QIODevice::ReadOnly))
+        return Return::Failure("Assets", "IMPORTS_ADD_FILE_UNREADABLE", "无法读取本机文件：" + diskPath.toStdString());
+    if (input.size() > static_cast<qint64>(Services::ImportPayloadPolicy::ownedFileBytes))
+        return Return::Failure("Assets", "IMPORTS_ADD_FILE_TOO_LARGE", "单个文件不能超过 64 MiB：" + diskPath.toStdString());
+    const auto data = input.readAll();
+    if (input.error() != QFileDevice::NoError || data.size() != input.size())
+        return Return::Failure("Assets", "IMPORTS_ADD_FILE_UNREADABLE", "读取本机文件不完整：" + diskPath.toStdString());
+    const auto* begin = reinterpret_cast<const std::byte*>(data.constData());
+    return Return::Success({archivePath, std::make_shared<const std::vector<std::byte>>(begin, begin + data.size())});
 }
 
 } // namespace War3Map::QtProject

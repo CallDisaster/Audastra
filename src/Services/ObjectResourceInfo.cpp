@@ -2,6 +2,7 @@
 #include "War3MapCore/Game/SoundInfoTables.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Render/ModelGameLimits.h"
+#include "War3MapCore/Render/SurfaceMaterialImage.h"
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/Text/SlkCells.h"
@@ -94,6 +95,14 @@ Result<ObjectResourceInfo> InspectObjectResource(const Resources::ResourceResolv
         auto image = Image::DecodeTexture(result.resourcePath, resource.value->bytes);
         if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};
         result.width = image.value->width; result.height = image.value->height;
+    } else if (kind == ObjectResourceKind::MaterialImage) {
+        // 材质图片按宿主读得懂的格式只读文件头取尺寸；像素统计在材质校验里做。
+        const auto header = Render::ReadSurfaceMaterialImageHeader(result.resourcePath,
+            std::span<const std::byte>(resource.value->bytes.data(), resource.value->bytes.size()));
+        if (!header.gameReadable)
+            return Return::Failure("Object.Resource", "OBJECT_RESOURCE_MATERIAL_IMAGE_FORMAT", "材质图片的格式（"
+                + std::string(Render::SurfaceMaterialImageFormatName(header.format)) + "）WarVK 读不了。");
+        result.width = header.width; result.height = header.height;
     }
     return Return::Success(std::move(result));
 }

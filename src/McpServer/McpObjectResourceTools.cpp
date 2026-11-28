@@ -41,7 +41,8 @@ std::size_t Number(const QJsonObject& object, const char* key, std::size_t defau
 }
 ObjectResourceKind Kind(std::string_view name) {
     for (auto kind : {ObjectResourceKind::Model, ObjectResourceKind::Icon, ObjectResourceKind::Texture,
-        ObjectResourceKind::SoundFile, ObjectResourceKind::SoundLabel, ObjectResourceKind::UnitSoundSet})
+        ObjectResourceKind::SoundFile, ObjectResourceKind::SoundLabel, ObjectResourceKind::UnitSoundSet,
+        ObjectResourceKind::MaterialImage})
         if (ObjectResourceKindName(kind) == name) return kind;
     throw ArgumentError("未知资源类型。");
 }
@@ -103,7 +104,7 @@ std::vector<ToolDefinition> ObjectResourceToolDefinitions() {
     const QJsonArray required{"project_identity", "expected_revision", "resource_revision"};
     auto query = properties;
     query.insert("origin", EnumSchema({"object", "import", "game"}));
-    query.insert("kind", EnumSchema({"model", "icon", "texture", "sound-file", "sound-label", "unit-sound-set"}));
+    query.insert("kind", EnumSchema({"model", "icon", "texture", "sound-file", "sound-label", "unit-sound-set", "material-image"}));
     query.insert("object_type", TextSchema(32)); query.insert("field_id", TextSchema(128));
     query.insert("search", TextSchema(1024)); query.insert("directory", TextSchema());
     query.insert("limit", IntegerSchema(128)); query.insert("max_examined", IntegerSchema(8192)); query.insert("cursor", CursorSchema());

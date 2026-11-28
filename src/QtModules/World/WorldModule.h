@@ -25,6 +25,7 @@
 #include "WorldInstanceTiming.h"
 #include "RenderPluginFailure.h"
 #include "TerrainWaterEditPreparation.h"
+#include "Widgets/ObjectResourcePicker.h"
 #include "War3MapCore/MapData/TerrainResizeEditing.h"
 
 #include <QObject>
@@ -64,6 +65,7 @@ namespace War3Map::Render { struct TerrainGroundMesh; struct AnimatedModelScene;
 
 namespace War3Map::Modules {
 class WorldViewport;
+class WorldSurfaceMaterialPanel;
 class WorldAnimationPlayer;
 class WorldPlacementPreview;
 class WorldSelectionPresenter;
@@ -108,6 +110,8 @@ public:
     [[nodiscard]] QWidget* Widget() override;
     [[nodiscard]] QUndoStack* UndoStack() override; // 与实例、区域、设置共用地图数据撤销栈
     void AttachHost(Shell::ModuleHost* host) override { host_ = host; }
+    // 材质面板的图片选择用共用资源选择器（与物编、界面编辑、触发器同一份索引）。
+    void SetResourcePickerFactory(ObjectResourcePickerFactory factory);
     [[nodiscard]] bool Reveal(const Shell::NavigationTarget& target) override;
     [[nodiscard]] QJsonObject SaveViewState() const override;
     void RestoreViewState(const QJsonObject& state) override;
@@ -200,6 +204,10 @@ private:
     // 单位和物品落地用的当前显示地形与水面事实；返回值借用 terrain_，只在本次调用内使用。
     [[nodiscard]] WorldPlacementGround PlacementGround() const;
     void RefreshMapEdits();
+    // 材质表：Refresh 与只改材质表时共用的读取；只改材质表时不重读地形。
+    static void LogWorldLoadWarnings(const char* what, const std::vector<Diagnostic>& diagnostics);
+    [[nodiscard]] std::shared_ptr<const Render::SurfaceMaterialTable> ReadSurfaceMaterials() const;
+    void ReloadSurfaceMaterials();
     [[nodiscard]] bool RefreshEnvironment(); // 已改为完整重新读取时返回 true
     void CaptureAuxiliary(const MapDocument& document);
     // 界面框架（WorldPanels.cpp）：顶栏工具、左侧工具面板（场景目录 / 摆放 / 地形笔刷）、状态栏。
@@ -388,6 +396,10 @@ private:
     QDockWidget* toolDock_ = nullptr;
     QDockWidget* assetDock_ = nullptr;
     QDockWidget* inspectorDock_ = nullptr;
+    QDockWidget* materialDock_ = nullptr;             // 仅 WarVK 入口显示时
+    WorldSurfaceMaterialPanel* materialPanel_ = nullptr;
+    std::optional<MapData::PlacementId> materialFollowed_; // 材质面板上次跟随的摆放
+    ObjectResourcePickerFactory resourcePickerFactory_;
     QJsonObject retainedViewState_;
     std::optional<WorldPlacementRotationOrigin> rotationOrigin_;
     std::optional<Services::WorldSelectionVersion> dragSelectionVersion_;

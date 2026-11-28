@@ -40,9 +40,25 @@ private:
     std::map<std::string, std::size_t, std::less<>> placements_;
 };
 
+// 图片检查缓存（按内容哈希，换了图就不再命中）：Agent 命令与材质面板共用一份。
+[[nodiscard]] Services::SurfaceMaterialImageCache& SharedSurfaceMaterialImageCache();
+
 // 校验来源：图片按当前资源读，类型按 index 查；cache 可为空。index 须活得比返回值长。
 [[nodiscard]] Services::SurfaceMaterialValidationSources SurfaceMaterialSources(const EditorProject& project,
     const SurfaceMaterialTypeIndex& index, Services::SurfaceMaterialImageCache* cache);
+
+// 校验所需输入的冻结副本：在界面线程读齐表、类型与图片，之后可交给后台线程校验（不再碰工程）。
+struct SurfaceMaterialSnapshot {
+    Services::SurfaceMaterialTableDocument document;
+    std::map<std::string, Services::SurfaceMaterialTypeInfo, std::less<>> types; // 表里的与摆放过的类型
+    std::map<QString, Services::SurfaceMaterialImageSource> images;              // 键为 AssetKey
+    // 只读快照；cache 可为空。返回值引用本快照，快照须活得比它长。
+    [[nodiscard]] Services::SurfaceMaterialValidationSources Sources(Services::SurfaceMaterialImageCache* cache) const;
+};
+inline constexpr std::size_t kSurfaceMaterialSnapshotImageBudget = 512 * 1024 * 1024;
+// 表里引用的图片总字节超过 imageBudget 的部分记为读取失败并说明原因，不静默跳过。
+[[nodiscard]] std::shared_ptr<const SurfaceMaterialSnapshot> CaptureSurfaceMaterialSnapshot(const EditorProject& project,
+    Services::SurfaceMaterialTableDocument document, std::size_t imageBudget = kSurfaceMaterialSnapshotImageBudget);
 
 // 把新表正文和要导入的图片作为一步资源撤销写入。expectedSha256 不为空时先核对当前表，对不上就拒绝。
 // 图片路径已有文件时须 replaceImages。返回空字符串表示成功，否则为原因。

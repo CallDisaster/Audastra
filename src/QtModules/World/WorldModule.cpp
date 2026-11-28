@@ -17,6 +17,7 @@
 #include "EditorProject.h"
 #include "ObjectNames.h"
 #include "ProjectSurfaceMaterials.h"
+#include "WorldSurfaceMaterialPanel.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/Render/EditorOverlay.h"
 #include "War3MapCore/Render/ModelPicking.h"
@@ -272,7 +273,10 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
         // 只动了界面描述、脚本或声音时场景不变，不整体重读（重读会清掉全部地形与模型）。
         using Use = QtProject::EditorProject::ImportUse;
-        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound})) Refresh();
+        if (project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound})) return;
+        // 只改了材质表：重读表，模型按新材质换变体，地形不动。
+        if (project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound, Use::SurfaceMaterial})) ReloadSurfaceMaterials();
+        else Refresh();
     });
     connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::ObjectDocumentsReplaced, this, &WorldModule::Refresh);
@@ -390,6 +394,13 @@ QWidget* WorldModule::Widget() {
     assetDock_ = dock("worldAssetDock", tr("资源浏览器"), assetBrowser_, Qt::LeftDockWidgetArea);
     inspectorDock_ = dock("worldInspectorDock", tr("属性"), BuildInspector(), Qt::RightDockWidgetArea);
     worldDockHost_->tabifyDockWidget(toolDock_, assetDock_); toolDock_->raise();
+    // 表面材质只在 WarVK 入口显示时提供；与属性同组，默认显示属性。
+    if (WarVKFeaturesShown()) {
+        materialPanel_ = new WorldSurfaceMaterialPanel(project_, worldDockHost_);
+        materialPanel_->SetResourcePickerFactory(resourcePickerFactory_);
+        materialDock_ = dock("worldMaterialDock", tr("材质"), materialPanel_, Qt::RightDockWidgetArea);
+        worldDockHost_->tabifyDockWidget(inspectorDock_, materialDock_); inspectorDock_->raise();
+    }
     // 资源浏览器与属性面板标题固定为功能名；场景目录的紧凑标题取决于它是否与其他面板成组。
     // 任一面板浮动、移动或拆出分组都会使停靠布局重排，所以在停靠宿主每次重排后统一同步，
     // 不只跟随场景目录自己的信号（另一面板移出分组时它收不到信号）。
@@ -620,21 +631,10 @@ void WorldModule::Refresh() {
     shadow.context = ShadowContextFor(project_, sourceRaw.get(), shadowRelationMemo_);
     shadow.read.emplace(project_.ReadMapMember("war3map.shd"));
     if (WarVKFeaturesShown()) {
-        // 只写运行日志，不改地形加载阶段（阶段供诊断快照读取）。
-        const auto logWarnings = [](const char* what, const std::vector<Diagnostic>& diagnostics) {
-            for (const auto& item : diagnostics) War3Map::RunLog::Info("世界加载", std::string(what) + "：" + item.code + " " + item.message);
-        };
-        // 没有材质表是常态，不报错。读当前有效内容（含未保存的材质修改）；读不出或表内的坏行写进运行日志。
-        if (auto table = QtProject::ReadSurfaceMaterialTable(project_); table.Succeeded() && table.value) {
-            auto parsed = std::make_shared<Render::SurfaceMaterialTable>(table.value->document.Table());
-            logWarnings("表面材质表", parsed->warnings);
-            if (!parsed->byRawcode.empty()) surfaceMaterials_ = std::move(parsed);
-        } else {
-            logWarnings("表面材质表", table.diagnostics);
-        }
+        surfaceMaterials_ = ReadSurfaceMaterials();
         // 天空模型随主模型场景装好后显示；设置读不出时写进运行日志，不显示天空。
         if (const auto warvk = project_.QueryWarVKMapSettings(); warvk.Succeeded() && warvk.value) skyModelPath_ = warvk.value->skyModel;
-        else logWarnings("WarVK 设置", warvk.diagnostics);
+        else LogWorldLoadWarnings("WarVK 设置", warvk.diagnostics);
     }
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     auto cache = std::make_shared<std::shared_ptr<WorldTerrainCache>>();
@@ -1168,6 +1168,35 @@ void WorldModule::RefreshPlacements() {
     else { (void)viewport_->SetModelScene(nullptr); (void)viewport_->SetModelScene(scene_); }
     ValidateSelection();
     UpdateOverlay(); UpdateSelectionText();
+}
+
+void WorldModule::SetResourcePickerFactory(ObjectResourcePickerFactory factory) {
+    resourcePickerFactory_ = std::move(factory);
+    if (materialPanel_) materialPanel_->SetResourcePickerFactory(resourcePickerFactory_);
+}
+
+// 只写运行日志，不改地形加载阶段（阶段供诊断快照读取）。
+void WorldModule::LogWorldLoadWarnings(const char* what, const std::vector<Diagnostic>& diagnostics) {
+    for (const auto& item : diagnostics) War3Map::RunLog::Info("世界加载", std::string(what) + "：" + item.code + " " + item.message);
+}
+
+// 没有材质表是常态，不报错。读当前有效内容（含未保存的材质修改）；读不出或表内的坏行写进运行日志。
+std::shared_ptr<const Render::SurfaceMaterialTable> WorldModule::ReadSurfaceMaterials() const {
+    auto table = QtProject::ReadSurfaceMaterialTable(project_);
+    if (!table.Succeeded() || !table.value) { LogWorldLoadWarnings("表面材质表", table.diagnostics); return nullptr; }
+    auto parsed = std::make_shared<Render::SurfaceMaterialTable>(table.value->document.Table());
+    LogWorldLoadWarnings("表面材质表", parsed->warnings);
+    if (parsed->byRawcode.empty()) return nullptr;
+    return parsed;
+}
+
+// 材质面板或 Agent 改了材质表：地形不重读，模型场景按新表重新捕获。不能走 RefreshPlacements：
+// 动画路径按地图编辑修订判断有无变化，改材质表不动这个修订，会把这次刷新当成没变化吞掉。
+void WorldModule::ReloadSurfaceMaterials() {
+    if (!WarVKFeaturesShown()) return;
+    surfaceMaterials_ = ReadSurfaceMaterials();
+    // 地形还没装好时模型尚未捕获，装好后自然按新表捕获。
+    if (terrain_ && page_ && viewport_) StartModels(generation_);
 }
 
 void WorldModule::RefreshMapEdits() {

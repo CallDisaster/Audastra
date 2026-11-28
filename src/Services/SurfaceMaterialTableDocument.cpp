@@ -259,4 +259,22 @@ Status SurfaceMaterialTableDocument::RemoveSection(std::string_view rawcode) {
     Erase(remove);
     return Status::Ok();
 }
+
+bool SurfaceMaterialSectionApplies(const SurfaceMaterialSection& section) noexcept {
+    for (std::size_t i = 0; i < Render::kSurfaceMaterialKeys.size(); ++i) {
+        const auto& key = Render::kSurfaceMaterialKeys[i];
+        if (key.name == "shader" && section.values[i] && *section.values[i] == "water") return true;
+        if (key.kind == SurfaceMaterialKeyKind::Image && section.values[i] && !section.values[i]->empty()) return true;
+    }
+    return false;
+}
+
+std::optional<Diagnostic> SurfaceMaterialStopsApplying(const SurfaceMaterialTableDocument& before,
+    const SurfaceMaterialTableDocument& after, std::string_view rawcode) {
+    const auto old = before.Section(rawcode), now = after.Section(rawcode);
+    if (!old || !now || !SurfaceMaterialSectionApplies(*old) || SurfaceMaterialSectionApplies(*now)) return std::nullopt;
+    return Diagnostic{DiagnosticSeverity::Warning, std::string(kSurfaceMaterialSubsystem), "SURFACE_MATERIAL_SECTION_STOPS_APPLYING",
+        "[" + std::string(rawcode) + "] 改后没有任何图片，这一类型的材质将不再生效：表面着色没有图片时 WarVK 和编辑器都忽略整节，"
+        "其余数值也不起作用。", std::nullopt};
+}
 }

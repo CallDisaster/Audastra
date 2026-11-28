@@ -95,6 +95,11 @@ Services::SurfaceMaterialTypeInfo SurfaceMaterialTypeIndex::Info(std::string_vie
     return info;
 }
 
+Services::SurfaceMaterialImageCache& SharedSurfaceMaterialImageCache() {
+    static Services::SurfaceMaterialImageCache cache;
+    return cache;
+}
+
 Services::SurfaceMaterialValidationSources SurfaceMaterialSources(const EditorProject& project,
     const SurfaceMaterialTypeIndex& index, Services::SurfaceMaterialImageCache* cache) {
     Services::SurfaceMaterialValidationSources sources;
@@ -102,6 +107,54 @@ Services::SurfaceMaterialValidationSources SurfaceMaterialSources(const EditorPr
     sources.typeInfo = [&index](std::string_view rawcode) { return index.Info(rawcode); };
     sources.cache = cache;
     return sources;
+}
+
+Services::SurfaceMaterialValidationSources SurfaceMaterialSnapshot::Sources(Services::SurfaceMaterialImageCache* cache) const {
+    using State = Services::SurfaceMaterialImageSource::State;
+    Services::SurfaceMaterialValidationSources sources;
+    sources.readImage = [this](std::string_view path) {
+        const auto found = images.find(EditorProject::AssetKey(QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size()))));
+        if (found != images.end()) return found->second;
+        Services::SurfaceMaterialImageSource missing;
+        missing.state = State::Failed;
+        missing.problems.push_back({DiagnosticSeverity::Error, std::string(Services::kSurfaceMaterialSubsystem),
+            "SURFACE_MATERIAL_SNAPSHOT_MISSING", "这张图没有在校验前读取。", std::nullopt});
+        return missing;
+    };
+    sources.typeInfo = [this](std::string_view rawcode) {
+        const auto found = types.find(rawcode);
+        return found != types.end() ? found->second : Services::SurfaceMaterialTypeInfo{};
+    };
+    sources.cache = cache;
+    return sources;
+}
+
+std::shared_ptr<const SurfaceMaterialSnapshot> CaptureSurfaceMaterialSnapshot(const EditorProject& project,
+    Services::SurfaceMaterialTableDocument document, std::size_t imageBudget) {
+    auto snapshot = std::make_shared<SurfaceMaterialSnapshot>();
+    snapshot->document = std::move(document);
+    const SurfaceMaterialTypeIndex index(project);
+    for (const auto& entry : index.Placements()) snapshot->types.emplace(entry.first, index.Info(entry.first));
+    std::size_t used = 0;
+    for (const auto& section : snapshot->document.Sections()) {
+        snapshot->types.try_emplace(section.rawcode, index.Info(section.rawcode));
+        for (std::size_t i = 0; i < Render::kSurfaceMaterialKeys.size(); ++i) {
+            if (Render::kSurfaceMaterialKeys[i].kind != Render::SurfaceMaterialKeyKind::Image || !section.values[i]) continue;
+            const auto path = QString::fromStdString(*section.values[i]);
+            const auto key = EditorProject::AssetKey(path);
+            if (snapshot->images.contains(key)) continue;
+            auto source = ReadSurfaceMaterialImage(project, *section.values[i]);
+            if (source.bytes && used + source.bytes->size() > imageBudget) {
+                source.state = Services::SurfaceMaterialImageSource::State::Failed;
+                source.bytes.reset();
+                source.problems.push_back({DiagnosticSeverity::Warning, std::string(Services::kSurfaceMaterialSubsystem),
+                    "SURFACE_MATERIAL_SNAPSHOT_BUDGET", "材质图片合计超过本次校验的读取预算，这张没有检查。", std::nullopt});
+            }
+            if (source.bytes) used += source.bytes->size();
+            snapshot->images.emplace(key, std::move(source));
+        }
+    }
+    return snapshot;
 }
 
 QString CommitSurfaceMaterialTable(EditorProject& project, std::string_view expectedSha256,

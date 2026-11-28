@@ -12,7 +12,9 @@ namespace War3Map::Services {
 class ImportInventorySnapshot;
 struct ImportInventoryBinding;
 
-enum class ObjectResourceKind { Model, Icon, Texture, SoundFile, SoundLabel, UnitSoundSet };
+// MaterialImage：WarVK 表面材质的图片槽。游戏一侧只拷 .png .jpg .jpeg .bmp .tga（见 SurfaceMaterialImage.h）；
+// 游戏本身读不了前四种，所以贴图、图标字段不列它们；材质查询另外接受 .tga 文件。
+enum class ObjectResourceKind { Model, Icon, Texture, SoundFile, SoundLabel, UnitSoundSet, MaterialImage };
 enum class ObjectResourceOrigin { Object, Import, Game };
 
 struct ObjectResourceField {

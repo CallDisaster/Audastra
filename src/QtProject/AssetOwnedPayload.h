@@ -32,5 +32,8 @@ struct OwnedAssetSource {
 // 在 private AssetState 中规划，与普通资源导入同一份队列；发布由 RecordAssetEdit 共同负责。
 [[nodiscard]] QString PutOwnedAsset(const EditorProject& project, AssetState& candidate, const QString& path,
     std::shared_ptr<const std::vector<std::byte>> bytes, bool runtimeLuaDraft = true);
+// 把一个本机文件读成导入载荷，单个文件按 ImportPayloadPolicy::ownedFileBytes 限制；只读文件，不动工程。
+// Agent 导入命令与材质面板共用。
+[[nodiscard]] Result<EditorProject::ImportPayload> ReadDiskImportPayload(const QString& diskPath, const QString& archivePath);
 
 } // namespace War3Map::QtProject

@@ -12,6 +12,7 @@
 #include "Icons/IconProvider.h"
 #include "Fonts/FontLoader.h"
 #include "Icons/SvgIcons.h"
+#include "WorldSurfaceMaterialPanel.h"
 #include "Modules/ModuleHost.h"
 #include "Widgets/ElidedLabel.h"
 #include "Widgets/Motion.h"
@@ -656,6 +657,12 @@ void WorldModule::UpdateInspector(bool animate) {
         fieldZ_->setToolTip(single ? tr("Z：%1\n移动时保持与地表的相对高度").arg(position[2], 0, 'f', 1)
             : tr("每个摆放分别保持与地表的相对高度；手工高度只读"));
         selectionTitle_->setText(single ? selectionName_ : tr("已选 %1 个摆放").arg(selectedPlacements_.size()));
+        // 材质面板跟到选中的装饰物/可破坏物类型（war3map.doo 里的摆放）。只在选中的摆放换了时跟：
+        // 属性栏会因提交、刷新反复更新，不能每次都把作者在面板里点的类型抢回来。
+        if (materialPanel_ && single && id.file == MapData::PlacementFile::Doodads && materialFollowed_ != id) {
+            materialFollowed_ = id;
+            materialPanel_->FollowType(QString::fromStdString(id.rawcode));
+        }
         QStringList meta = single ? QStringList{QString::fromUtf8(id.rawcode), TypeName(selectionType_, unit)} : QStringList{};
         selectionMeta_->setText(meta.join(QStringLiteral(" · ")));
         if (single && hasStart) selectionMeta_->setText(tr("起始位置 · %1").arg(selectionOwner_ ? PlayerName(*selectionOwner_) : tr("玩家未知")));

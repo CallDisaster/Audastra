@@ -49,6 +49,8 @@ public:
     [[nodiscard]] QString Value() const;
     // 打开后直接按目录浏览游戏文件（界面贴图这类没有物体字段可参照的资源）。
     void BrowseGameFiles();
+    // 打开后直接列地图已导入的文件（材质图片这类主要来自作者导入的资源）。
+    void BrowseImports();
 signals:
     void ValueCommitted(const QString& value);
 private:

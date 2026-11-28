@@ -73,4 +73,11 @@ private:
     std::string eol_ = "\r\n";
     std::vector<Line> lines_;
 };
+
+// 一节在 WarVK 与编辑器里是否生效：着色为 water，或至少有一张图片（表面类型没有图片时整节被忽略，数值白写）。
+[[nodiscard]] bool SurfaceMaterialSectionApplies(const SurfaceMaterialSection& section) noexcept;
+// 修改让一个原本生效的类型不再生效（删去最后一张图，或改回表面着色而没有图）时给出提醒；整节删除不算。
+// 材质面板在提交前据此确认，Agent 命令在回执里给出同一条。
+[[nodiscard]] std::optional<Diagnostic> SurfaceMaterialStopsApplying(const SurfaceMaterialTableDocument& before,
+    const SurfaceMaterialTableDocument& after, std::string_view rawcode);
 }

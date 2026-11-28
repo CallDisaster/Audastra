@@ -22,7 +22,7 @@ ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* pa
     connect(&project_, &EditorProject::MapDocumentChanged, this, changed);
     connect(&project_, &EditorProject::ImportsChanged, this, [this] {
         using Use = EditorProject::ImportUse;
-        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound})) Invalidate();
+        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Sound, Use::SurfaceMaterial})) Invalidate();
     });
     connect(&project_, &EditorProject::SourceStateChanged, this, changed);
     connect(&project_, &EditorProject::WorldEditStringsChanged, this, changed);

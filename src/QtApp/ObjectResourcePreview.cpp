@@ -57,12 +57,20 @@ PreviewData ReadPreview(Reader& source, const QString& value, Services::ObjectRe
         auto resource = resolver.Read(path);
         if (!resource.Succeeded()) { result.error = Notes(resource.diagnostics); return result; }
         result.source = U8(resource.value->location.sourceId); result.path = U8(resource.value->location.sourcePath);
-        if (kind == Services::ObjectResourceKind::Icon || kind == Services::ObjectResourceKind::Texture) {
+        if (kind == Services::ObjectResourceKind::Icon || kind == Services::ObjectResourceKind::Texture
+            || kind == Services::ObjectResourceKind::MaterialImage) {
             auto image = Image::DecodeTexture(path, resource.value->bytes);
-            if (!image.Succeeded()) { result.error = Notes(image.diagnostics); return result; }
-            const auto& pixels = *image.value;
-            result.image = QImage(reinterpret_cast<const uchar*>(pixels.rgba.data()), static_cast<int>(pixels.width),
-                static_cast<int>(pixels.height), static_cast<int>(pixels.width * 4), QImage::Format_RGBA8888).copy();
+            if (image.Succeeded()) {
+                const auto& pixels = *image.value;
+                result.image = QImage(reinterpret_cast<const uchar*>(pixels.rgba.data()), static_cast<int>(pixels.width),
+                    static_cast<int>(pixels.height), static_cast<int>(pixels.width * 4), QImage::Format_RGBA8888).copy();
+            } else if (kind == Services::ObjectResourceKind::MaterialImage) {
+                // 材质图片里的 BMP 贴图解码不读，预览交给 Qt 自带的读取。
+                result.image = QImage::fromData(QByteArray::fromRawData(reinterpret_cast<const char*>(resource.value->bytes.data()),
+                    static_cast<qsizetype>(resource.value->bytes.size())));
+                if (result.image.isNull()) { result.error = Notes(image.diagnostics); return result; }
+                result.image = result.image.convertToFormat(QImage::Format_RGBA8888);
+            } else { result.error = Notes(image.diagnostics); return result; }
         } else result.sound = std::move(resource.value->bytes);
     }
     const auto after = source.reader->VerifyCurrentSource();

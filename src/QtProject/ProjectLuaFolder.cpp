@@ -52,7 +52,7 @@ ProjectLuaFolder::ProjectLuaFolder(EditorProject& project) : QObject(&project), 
     connect(&debounce_, &QTimer::timeout, this, [this] { Refresh(); });
     connect(&project_, &EditorProject::ImportsChanged, this, [this] {
         using Use = EditorProject::ImportUse;
-        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Sound, Use::Model, Use::Texture})) Refresh(false);
+        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Sound, Use::Model, Use::Texture, Use::SurfaceMaterial})) Refresh(false);
     });
     connect(&project_, &EditorProject::SourceStateChanged, this, [this] { Refresh(false); });
 }

@@ -6,6 +6,7 @@
 
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Render/SurfaceMaterialTable.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/Workspace.h"
@@ -32,6 +33,8 @@ EditorProject::ImportUse EditorProject::ClassifyImport(const QString& path) {
     const QString key = AssetKey(path);
     const auto folder = QString::fromUtf8(GameUi::kUiDescriptionFolder.data(), static_cast<qsizetype>(GameUi::kUiDescriptionFolder.size())).toLower();
     if (key.startsWith(folder) && key.endsWith(QLatin1String(".json"))) return ImportUse::UiDescription;
+    if (key == AssetKey(QString::fromLatin1(Render::kSurfaceMaterialTablePath.data(),
+            static_cast<qsizetype>(Render::kSurfaceMaterialTablePath.size())))) return ImportUse::SurfaceMaterial;
     const auto dot = key.lastIndexOf(QLatin1Char('.'));
     if (dot < 0 || key.indexOf(QLatin1Char('\\'), dot) >= 0) return ImportUse::Other;
     const QStringView extension = QStringView(key).mid(dot + 1);

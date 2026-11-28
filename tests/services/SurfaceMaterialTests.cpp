@@ -171,10 +171,16 @@ void HeadersAndPixels() {
     Require(header.format == SurfaceMaterialImageFormat::Bmp && header.width == 32 && header.height == 16, "BMP 头（自上而下）");
     const auto gif = Bytes({'G', 'I', 'F', '8', '9', 'a', 8, 0, 4, 0});
     header = ReadSurfaceMaterialImageHeader("a.gif", View(gif));
-    Require(header.format == SurfaceMaterialImageFormat::Gif && header.width == 8 && header.height == 4, "GIF 头");
+    Require(header.format == SurfaceMaterialImageFormat::Gif && header.width == 8 && header.height == 4 && !header.gameReadable,
+        "GIF 头；游戏一侧不拷 GIF");
     const auto tiff = Bytes({'I', 'I', 42, 0, 8, 0, 0, 0, 2, 0, 0, 1, 3, 0, 1, 0, 0, 0, 64, 0, 0, 0, 1, 1, 4, 0, 1, 0, 0, 0, 32, 0, 0, 0});
     header = ReadSurfaceMaterialImageHeader("a.tif", View(tiff));
-    Require(header.format == SurfaceMaterialImageFormat::Tiff && header.width == 64 && header.height == 32, "TIFF 头");
+    Require(header.format == SurfaceMaterialImageFormat::Tiff && header.width == 64 && header.height == 32 && !header.gameReadable,
+        "TIFF 头；游戏一侧不拷 TIFF");
+    for (const auto* path : {"a.png", "A.PNG", "x\\b.Jpg", "c.jpeg", "d.BMP", "e.tga"})
+        Require(Render::SurfaceMaterialImageExtensionAccepted(path), std::string("游戏一侧拷 ") + path);
+    for (const auto* path : {"a.gif", "a.tif", "a.tiff", "a.dds", "a.blp", "png", "a.png\\b", "a."})
+        Require(!Render::SurfaceMaterialImageExtensionAccepted(path), std::string("游戏一侧不拷 ") + path);
     header = ReadSurfaceMaterialImageHeader("a.tga", View(Filled(3, 5, {1, 2, 3, 4})));
     Require(header.format == SurfaceMaterialImageFormat::Tga && header.width == 3 && header.height == 5 && header.gameReadable, "TGA 头");
     header = ReadSurfaceMaterialImageHeader("a.TGA", View(Tga(1, 1, {{0, 0, 0, 0}}, 16)));
@@ -286,6 +292,40 @@ void ValidateTable() {
     const auto bare = ValidateSurfaceMaterials(document, "D001", {});
     Require(bare.types.size() == 1 && bare.types[0].diagnostics.empty() && !bare.types[0].type, "不给来源时不查图片与类型");
 }
+
+// 游戏一侧（WarVK 拷图）的规则：扩展名不在之列的图不生效；非 ASCII 路径未验证；删去最后一张图整节失效。
+void GameSideRules() {
+    const auto document = SurfaceMaterialTableDocument::Parse(
+        "[D001]\nnormal=Synthetic\\a.gif\n"
+        "[D002]\nnormal=Synthetic\\\xE7\x9F\xB3.tga\n");
+    const auto flat = std::make_shared<const std::vector<std::byte>>(Filled(2, 2, {128, 128, 255, 255}));
+    int reads = 0;
+    SurfaceMaterialValidationSources sources;
+    sources.readImage = [&](std::string_view) {
+        ++reads;
+        return SurfaceMaterialImageSource{SurfaceMaterialImageSource::State::Found, flat, {}};
+    };
+    const auto checked = ValidateSurfaceMaterials(document, {}, sources);
+    Require(checked.types.size() == 2 && reads == 1, "扩展名不在之列时不读图");
+    Require(HasCode(checked.types[0].diagnostics, "SURFACE_MATERIAL_IMAGE_EXTENSION")
+        && checked.Count(DiagnosticSeverity::Error) == 1, "GIF 在游戏里不生效是错误");
+    Require(HasCode(checked.types[1].diagnostics, "SURFACE_MATERIAL_IMAGE_PATH_NOT_ASCII"), "非 ASCII 路径提醒");
+
+    auto edited = SurfaceMaterialTableDocument::Parse("[D001]\nnormal=a.png\norm=b.png\nroughness=2\n");
+    const auto before = edited;
+    Require(edited.Unset("D001", "normal").Succeeded() && !SurfaceMaterialStopsApplying(before, edited, "D001"), "还剩一张图仍生效");
+    const auto one = edited;
+    Require(edited.Unset("D001", "orm").Succeeded(), "删去最后一张图");
+    const auto stops = SurfaceMaterialStopsApplying(one, edited, "D001");
+    Require(stops && stops->code == "SURFACE_MATERIAL_SECTION_STOPS_APPLYING" && stops->message.starts_with("[D001]"),
+        "删去最后一张图提醒不再生效");
+    auto water = edited;
+    Require(water.Set("D001", "shader", "water").Succeeded() && !SurfaceMaterialStopsApplying(one, water, "D001"),
+        "水面没有图也生效");
+    Require(SurfaceMaterialStopsApplying(water, edited, "D001").has_value(), "水面改回表面且没有图时提醒");
+    auto removed = one;
+    Require(removed.RemoveSection("D001").Succeeded() && !SurfaceMaterialStopsApplying(one, removed, "D001"), "整节删除不提醒");
+}
 }
 
 int main() {
@@ -297,6 +337,7 @@ int main() {
         HeadersAndPixels();
         InspectImages();
         ValidateTable();
+        GameSideRules();
         std::cout << "SurfaceMaterialTests passed\n";
         return 0;
     } catch (const std::exception& error) {

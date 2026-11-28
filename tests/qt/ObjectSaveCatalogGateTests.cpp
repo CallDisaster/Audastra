@@ -259,6 +259,10 @@ void UnrelatedImportsKeepObjectCatalog() {
         && QtProject::EditorProject::ClassifyImport("war3mapImported\\a.blp") == Use::Texture
         && QtProject::EditorProject::ClassifyImport("Scripts\\main.lua") == Use::Script
         && QtProject::EditorProject::ClassifyImport("Sound\\a.wav") == Use::Sound
+        && QtProject::EditorProject::ClassifyImport("WarVK\\materials.ini") == Use::SurfaceMaterial
+        && QtProject::EditorProject::ClassifyImport("warvk/Materials.INI") == Use::SurfaceMaterial
+        && QtProject::EditorProject::ClassifyImport("WarVK\\Materials\\rock.png") == Use::Texture
+        && QtProject::EditorProject::ClassifyImport("other\\materials.ini") == Use::Other
         && QtProject::EditorProject::ClassifyImport("Units\\UnitData.slk") == Use::Other
         && QtProject::EditorProject::ClassifyImport("other.json") == Use::Other
         && QtProject::EditorProject::ClassifyImport("folder.mdx\\file") == Use::Other, "import classification");

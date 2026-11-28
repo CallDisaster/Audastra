@@ -8,14 +8,18 @@
 
 namespace War3Map::Render {
 // 表面材质图片的文件头与像素统计：世界视口的细节均值、材质校验和材质面板共用。
-// 游戏一侧（WarVK）用 WIC 读 PNG、JPEG、BMP、TIFF、GIF，另有自带的 24/32 位 TGA 读取；不读 BLP、DDS。
+// 游戏一侧（WarVK）只把扩展名为 .tga .png .jpg .jpeg .bmp 的图从地图拷给宿主（不分大小写），宿主读 PNG、
+// JPEG、BMP 和自带读取的 24/32 位 TGA。TIFF、GIF 宿主能解但不会被拷；DDS 会被拷但宿主解码未验证，暂不开放；
+// 不读 BLP。
 enum class SurfaceMaterialImageFormat : std::uint8_t { Unknown, Png, Jpeg, Bmp, Tiff, Gif, Tga, Blp, Dds };
 
 struct SurfaceMaterialImageHeader {
     SurfaceMaterialImageFormat format = SurfaceMaterialImageFormat::Unknown;
     std::uint32_t width = 0, height = 0; // 0 表示文件头里读不出尺寸
-    bool gameReadable = false;           // 格式在 WarVK 支持之列（TGA 还要求 24/32 位无色表真彩色）
+    bool gameReadable = false;           // PNG、JPEG、BMP，或 24/32 位无色表真彩色 TGA
 };
+// 扩展名在游戏一侧拷图之列（.tga .png .jpg .jpeg .bmp，不分大小写）。
+[[nodiscard]] bool SurfaceMaterialImageExtensionAccepted(std::string_view path) noexcept;
 // 按文件头判断格式与尺寸；TGA 没有文件头标记，只在扩展名为 .tga 时按 TGA 头读。
 [[nodiscard]] SurfaceMaterialImageHeader ReadSurfaceMaterialImageHeader(std::string_view path,
     std::span<const std::byte> bytes) noexcept;

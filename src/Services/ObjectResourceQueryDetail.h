@@ -22,6 +22,8 @@ inline std::optional<ObjectResourceKind> PathKind(std::string_view path) {
     if (value.ends_with(".mdx") || value.ends_with(".mdl")) return ObjectResourceKind::Model;
     if (value.ends_with(".blp") || value.ends_with(".tga")) return ObjectResourceKind::Texture;
     if (value.ends_with(".wav") || value.ends_with(".mp3")) return ObjectResourceKind::SoundFile;
+    for (const std::string_view extension : {".png", ".jpg", ".jpeg", ".bmp"})
+        if (value.ends_with(extension)) return ObjectResourceKind::MaterialImage;
     return {};
 }
 inline std::string JoinPath(std::string_view base, std::string_view file) {

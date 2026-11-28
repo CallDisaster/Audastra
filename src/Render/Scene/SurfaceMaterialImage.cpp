@@ -88,10 +88,10 @@ SurfaceMaterialImageHeader ReadSurfaceMaterialImageHeader(std::string_view path,
             }
         }
     } else if (b.Text(0, std::string_view("II*\0", 4)) || b.Text(0, std::string_view("MM\0*", 4))) {
-        out.format = Format::Tiff; out.gameReadable = true;
+        out.format = Format::Tiff; // 宿主 WIC 能解，但游戏一侧不拷 .tif/.tiff，不算游戏读得了
         TiffSize(b, b.U8(0) == 'I', out);
     } else if (b.Text(0, "GIF87a") || b.Text(0, "GIF89a")) {
-        out.format = Format::Gif; out.gameReadable = true;
+        out.format = Format::Gif; // 同上：游戏一侧不拷 .gif
         if (b.Has(6, 4)) { out.width = b.Le16(6); out.height = b.Le16(8); }
     } else if (b.Text(0, "BLP")) {
         out.format = Format::Blp;
@@ -106,6 +106,20 @@ SurfaceMaterialImageHeader ReadSurfaceMaterialImageHeader(std::string_view path,
         }
     }
     return out;
+}
+
+bool SurfaceMaterialImageExtensionAccepted(std::string_view path) noexcept {
+    const auto dot = path.rfind('.');
+    if (dot == std::string_view::npos || path.find_first_of("\\/", dot) != std::string_view::npos) return false;
+    const auto extension = path.substr(dot + 1);
+    for (const std::string_view accepted : {"tga", "png", "jpg", "jpeg", "bmp"}) {
+        if (extension.size() != accepted.size()) continue;
+        bool same = true;
+        for (std::size_t i = 0; i < accepted.size() && same; ++i)
+            same = static_cast<char>(extension[i] | 0x20) == accepted[i];
+        if (same) return true;
+    }
+    return false;
 }
 
 std::string_view SurfaceMaterialImageFormatName(SurfaceMaterialImageFormat format) noexcept {

@@ -153,6 +153,15 @@ void SourceFailureAndInfo() {
     Require(info.Succeeded() && info.value->source.sourceId == "map" && info.value->width == 2u && info.value->height == 3u, "decoded dimensions and exact source");
     Require(!InspectObjectResource(resolver, "../Test.tga", ObjectResourceKind::Texture).Succeeded(), "unsafe resource denied");
     Require(!InspectObjectResource(resolver, "Icons/Test.tga", ObjectResourceKind::Texture, 5).Succeeded(), "read byte limit preserved");
+    // 材质图片只读文件头取尺寸；宿主读不了的格式（BLP 头）明确拒绝。
+    auto material = InspectObjectResource(resolver, "Icons/Test.tga", ObjectResourceKind::MaterialImage);
+    Require(material.Succeeded() && material.value->width == 2u && material.value->height == 3u, "material image header dimensions");
+    (void)resolver.RemoveSource("map");
+    Require(resolver.AddSource({"map", Resources::ResourceLayer::MapImport, 500, probe, [](std::string_view) {
+        return Result<std::vector<std::byte>>::Success(Bytes("BLP1 not for the host")); }}).Succeeded(), "add blp-headed image");
+    auto blp = InspectObjectResource(resolver, "Icons/Test.png", ObjectResourceKind::MaterialImage);
+    Require(!blp.Succeeded() && !blp.diagnostics.empty() && blp.diagnostics.front().code == "OBJECT_RESOURCE_MATERIAL_IMAGE_FORMAT",
+        "material image the host cannot read is refused");
 }
 void TgaPacketsAndOrientation() {
     std::vector<std::byte> data(18, std::byte{});
@@ -252,8 +261,35 @@ void ImportAndGameFolders() {
     page = QueryObjectResources(**gameCatalog.value, query);
     Require(page.Succeeded() && page.value->rows.size() == 2, "texture fields still list every game image");
 }
+void MaterialImages() {
+    Temp temp;
+    const std::vector<Mpq::MpqBuildFile> files{{"Textures/Rock.blp", Bytes("blp"), false},
+        {"Textures/Rock_n.png", Bytes("png"), false}, {"Textures/Rock_orm.tga", Bytes("tga"), false},
+        {"Only/Bark.blp", Bytes("blp"), false}, {"Shots/A.BMP", Bytes("bmp"), false}, {"Shots/B.gif", Bytes("gif"), false},
+        {"Shots/C.tiff", Bytes("tiff"), false}};
+    Require(Mpq::WriteMpqArchive(temp.root / "war3.mpq", files).Succeeded(), "write synthetic material archive");
+    auto game = Game::GameDataSource::MountStrict(temp.root); Require(game.Succeeded(), "mount synthetic material game");
+    auto catalog = CaptureGameResourceCatalog(*game.value, "game:material"); Require(catalog.Succeeded(), "capture material listing");
+    Require(ObjectResourceKindName(ObjectResourceKind::MaterialImage) == "material-image", "material kind name");
+    ObjectResourceQuery query; query.expectedRevision = "game:material"; query.kind = ObjectResourceKind::MaterialImage;
+    auto page = QueryObjectResources(**catalog.value, query);
+    std::vector<std::string> titles;
+    if (page.Succeeded()) for (const auto& row : page.value->rows) titles.push_back(row.title);
+    std::sort(titles.begin(), titles.end());
+    Require(titles == std::vector<std::string>{"A.BMP", "Rock_n.png", "Rock_orm.tga"},
+        "material images list only what the game side copies: PNG, JPEG, BMP and TGA, never BLP, GIF or TIFF");
+    query.directory = "";
+    page = QueryObjectResources(**catalog.value, query);
+    titles.clear();
+    if (page.Succeeded()) for (const auto& row : page.value->rows) if (row.directory) titles.push_back(row.title);
+    std::sort(titles.begin(), titles.end());
+    Require(titles == std::vector<std::string>{"Shots", "Textures"}, "folders holding only BLP are not material folders");
+    query.kind = ObjectResourceKind::Texture; query.directory.reset();
+    page = QueryObjectResources(**catalog.value, query);
+    Require(page.Succeeded() && page.value->rows.size() == 3, "texture fields still list BLP and TGA but not PNG or GIF");
+}
 }
 int main() {
-    try { CaptureAndInheritance(); PaginationAndIdentity(); SourceFailureAndInfo(); TgaPacketsAndOrientation(); ModelSequencesAndSoundLabels(); ImportAndGameFolders(); std::cout << "Object resource query tests passed\n"; return 0; }
+    try { CaptureAndInheritance(); PaginationAndIdentity(); SourceFailureAndInfo(); TgaPacketsAndOrientation(); ModelSequencesAndSoundLabels(); ImportAndGameFolders(); MaterialImages(); std::cout << "Object resource query tests passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -24,11 +24,8 @@ constexpr int kDefaultLimit = 64;
 constexpr int kMaxLimit = 256;
 constexpr int kMaxImports = 5;
 
-// 图片检查按内容哈希缓存，跨工程共用也不会串（同一内容同一结果）。
-Services::SurfaceMaterialImageCache& ImageCache() {
-    static Services::SurfaceMaterialImageCache cache;
-    return cache;
-}
+// 图片检查按内容哈希缓存，跨工程共用也不会串（同一内容同一结果）；与材质面板共用。
+Services::SurfaceMaterialImageCache& ImageCache() { return QtProject::SharedSurfaceMaterialImageCache(); }
 QString Text(std::string_view text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 QJsonArray Diagnostics(const std::vector<Diagnostic>& diagnostics) {
     return Mcp::DiagnosticsJson(diagnostics).value("diagnostics").toArray();
@@ -312,6 +309,10 @@ QJsonObject Set(EditorProject& project, const QJsonObject& arguments) {
     result.insert("dry_run", dryRun);
     result.insert("changed", changed);
     result.insert("imports", imported);
+    // 与材质面板提交前的确认同一条：删去最后一张图后这一类型不再生效。
+    std::vector<Diagnostic> warnings;
+    if (auto stops = Services::SurfaceMaterialStopsApplying(state.value->document, document, *code)) warnings.push_back(std::move(*stops));
+    result.insert("warnings", Diagnostics(warnings));
     if (dryRun || !changed) {
         const auto sha = Sha256Text(document.Text());
         return WithTable(std::move(result), project, state.value->exists || changed, sha.value ? *sha.value : std::string{});
@@ -382,7 +383,7 @@ void AppendSurfaceMaterialTools(std::vector<LiveWarVKTool>& tools) {
         "修改一个类型的表面材质：values 只改给出的键，值为 null 表示删去该键（同名节里的所有行），数值按最短十进制写出，图片路径的正斜杠按反斜杠写；"
         "类型不在表里时在表尾新加一节（最多 256 种）。imports 同时导入本机图片（{disk_path, archive_path}，最多 5 张，建议放 WarVK\\Materials\\），"
         "路径已有文件时须 replace_existing。表的其余行（注释、未知键、坏行、换行风格）原样保留。新表正文与导入的图片是资源撤销栈上的一步；"
-        "dry_run=true 只返回结果与诊断，不改地图。返回该类型的完整结果（同 world_surface_material_get）。",
+        "dry_run=true 只返回结果与诊断，不改地图。返回该类型的完整结果（同 world_surface_material_get）；改后这一类型不再生效（表面着色删去了最后一张图）时 warnings 里有 SURFACE_MATERIAL_SECTION_STOPS_APPLYING。图片只用 .png .jpg .jpeg .bmp .tga，文件名建议只用 ASCII 字母、数字和 _ - .。",
         Mcp::ToolPermission::Edit,
         QJsonObject{{"rawcode", RawcodeSchema()}, {"values", ValuesSchema()},
             {"imports", QJsonObject{{"type", "array"}, {"maxItems", kMaxImports}, {"items", QJsonObject{{"type", "object"},

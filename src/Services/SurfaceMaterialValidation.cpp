@@ -96,14 +96,14 @@ SurfaceMaterialImageInspection InspectSurfaceMaterialImage(std::string_view key,
     const std::string format(Render::SurfaceMaterialImageFormatName(header.format));
     if (header.format == SurfaceMaterialImageFormat::Unknown) {
         d.push_back(Make(DiagnosticSeverity::Error, "SURFACE_MATERIAL_IMAGE_FORMAT",
-            "认不出图片格式；游戏一侧读 PNG、JPEG、BMP、TIFF、GIF 和 24/32 位 TGA。"));
+            "认不出图片格式；游戏一侧读 PNG、JPEG、BMP 和 24/32 位 TGA。"));
         return out;
     }
     if (!header.gameReadable) {
         d.push_back(Make(DiagnosticSeverity::Error, "SURFACE_MATERIAL_IMAGE_FORMAT",
             header.format == SurfaceMaterialImageFormat::Tga
                 ? std::string("TGA 须是 24 或 32 位、无色表的真彩色，游戏一侧才读得了。")
-                : format + " 游戏一侧读不了；用 PNG、JPEG、BMP、TIFF、GIF 或 24/32 位 TGA。"));
+                : format + " 游戏一侧读不了；用 PNG、JPEG、BMP 或 24/32 位 TGA。"));
         return out;
     }
     if (header.width && header.height) {
@@ -219,6 +219,16 @@ SurfaceMaterialValidation ValidateSurfaceMaterials(const SurfaceMaterialTableDoc
             report.key = std::string(key.name);
             report.path = *section.values[i];
             const auto where = prefix + std::string(Label(key.name)) + " " + report.path + "：";
+            // 游戏一侧按扩展名决定拷不拷：不在之列的图在游戏里不生效，内容再对也没用。
+            if (!Render::SurfaceMaterialImageExtensionAccepted(report.path)) {
+                type.diagnostics.push_back(Make(DiagnosticSeverity::Error, "SURFACE_MATERIAL_IMAGE_EXTENSION",
+                    where + "游戏一侧只拷扩展名为 .tga .png .jpg .jpeg .bmp 的图，这张在游戏里不生效。"));
+                continue;
+            }
+            // 游戏一侧按表里的原始字节到地图里找文件；1.27a 里非 ASCII 路径能否找到没有验证过。
+            if (std::any_of(report.path.begin(), report.path.end(), [](char c) { return static_cast<unsigned char>(c) >= 0x80; }))
+                type.diagnostics.push_back(Make(DiagnosticSeverity::Warning, "SURFACE_MATERIAL_IMAGE_PATH_NOT_ASCII",
+                    where + "路径含非 ASCII 字符，游戏里能否找到这张图没有验证过；建议只用字母、数字和 _ - . \\。"));
             auto source = sources.readImage(report.path);
             report.state = source.state;
             if (source.state == State::Missing) {

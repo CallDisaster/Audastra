@@ -344,7 +344,7 @@ SoundsModule::SoundsModule(QtProject::EditorProject& project) : project_(project
     });
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
         using Use = QtProject::EditorProject::ImportUse;
-        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Model, Use::Texture})) RebuildResources();
+        if (!project_.ImportChangeOnly({Use::UiDescription, Use::Script, Use::Model, Use::Texture, Use::SurfaceMaterial})) RebuildResources();
     });
     // 游戏目录或数据根变化后通道名随字符串表重读。
     connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &SoundsModule::SyncFieldChoices);

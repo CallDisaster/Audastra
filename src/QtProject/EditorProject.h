@@ -457,7 +457,8 @@ public:
     // 队列或归档会话被整体替换（打开 / 重置 / 保存）后调用，界面据此刷新。
     void NotifyImportsChanged(bool userEdit = false);
     // 导入文件按用途粗分，供各页面判断一次导入变化与自己有没有关系。认不出的一律算 Other（按相关处理）。
-    enum class ImportUse : std::uint8_t { UiDescription, Script, Sound, Model, Texture, Other };
+    // SurfaceMaterial 只指材质表 WarVK\materials.ini 本身；材质图片按扩展名归到 Texture 或 Other。
+    enum class ImportUse : std::uint8_t { UiDescription, Script, Sound, Model, Texture, SurfaceMaterial, Other };
     [[nodiscard]] static ImportUse ClassifyImport(const QString& path);
     // 正在同步发出的 ImportsChanged 涉及的归档路径（AssetKey）。只有资源修改发布通知期间有值；
     // 打开、保存、撤销栈清空等其他来源的通知为空，监听者按“什么都可能变了”处理。

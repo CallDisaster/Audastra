@@ -61,6 +61,7 @@ EditorParts::EditorParts(bool persistentSettings)
     modules_.Register(std::make_unique<PlaceholderModule>("ai",
         QCoreApplication::translate("EditorParts", "AI"), "lucide/shield", key(Qt::Key_8), pending));
     worldModule_ = Add(modules_, std::make_unique<War3Map::Modules::WorldModule>(*project_));
+    worldModule_->SetResourcePickerFactory(resourcePickers);
     gameUiModule_ = Add(modules_, std::make_unique<War3Map::Modules::GameUiModule>(*project_));
     gameUiModule_->SetResourcePickerFactory(resourcePickers);
     // 打开地图（编辑基线重置）后稍等界面安定，再在后台建资源索引；启动探针与测试不预热。

@@ -607,6 +607,11 @@ QLabel#worldPanelTitle { color: @text; font-size: 13px; font-weight: @weightMedi
 QLabel#worldPanelSubtitle { color: @muted; font-size: @fontSmall; }
 QLabel#worldSectionLabel { color: @muted; font-size: @fontTiny; font-weight: @weightMedium; padding-top: 4px; }
 QLabel#worldFieldLabel { color: @muted; font-size: @fontSmall; }
+/* 材质面板：写了的键用正文色，没写的（取默认值）保持弱色。 */
+QLabel#worldFieldLabel[materialWritten="true"] { color: @text; }
+QDoubleSpinBox[materialWritten="false"], QLineEdit#worldMaterialPath[materialWritten="false"] { color: @muted; }
+QLabel#worldMaterialMessage { color: @muted; font-size: @fontSmall; }
+QLabel#worldMaterialMessage[error="true"] { color: @red; }
 
 QLineEdit#worldOutlinerFilter { background: @bg; border-radius: @radiusMd; padding: 5px 8px; font-size: @fontSmall; }
 QTreeView#worldOutliner, QTreeWidget#worldOutliner {

@@ -163,7 +163,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
         // 只动了界面描述、声音、模型或贴图时 Lua 目录不变。
         using Use = QtProject::EditorProject::ImportUse;
-        if (project_.ImportChangeOnly({Use::UiDescription, Use::Sound, Use::Model, Use::Texture})) return;
+        if (project_.ImportChangeOnly({Use::UiDescription, Use::Sound, Use::Model, Use::Texture, Use::SurfaceMaterial})) return;
         RefreshDirectory();
         if (project_.LuaFolderSource().Active()) return;
         if (publishing_ || selectedPath_.isEmpty()) return;

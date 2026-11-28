@@ -85,7 +85,7 @@ QIcon CandidateIcon(bool directory, Services::ObjectResourceKind kind) {
     using Kind = Services::ObjectResourceKind;
     if (directory) return UiKit::SvgIcon(QStringLiteral("lucide/folder"));
     if (kind == Kind::Model) return UiKit::SvgIcon(QStringLiteral("lucide/box"));
-    if (kind == Kind::Icon || kind == Kind::Texture) return UiKit::SvgIcon(QStringLiteral("lucide/image"));
+    if (kind == Kind::Icon || kind == Kind::Texture || kind == Kind::MaterialImage) return UiKit::SvgIcon(QStringLiteral("lucide/image"));
     if (kind == Kind::SoundFile || kind == Kind::SoundLabel || kind == Kind::UnitSoundSet) return UiKit::SvgIcon(QStringLiteral("lucide/music-2"));
     return UiKit::SvgIcon(QStringLiteral("lucide/file"));
 }
@@ -240,6 +240,10 @@ ObjectResourcePicker::~ObjectResourcePicker() { alive_->store(false); ++request_
 void ObjectResourcePicker::SetCommit(std::function<bool(const QString&)> commit) { commit_ = std::move(commit); }
 void ObjectResourcePicker::BrowseGameFiles() {
     browse_->setCurrentIndex(browse_->findData(static_cast<int>(Services::ObjectResourceOrigin::Game)));
+}
+void ObjectResourcePicker::BrowseImports() {
+    BrowseGameFiles();
+    tabs_->setCurrentIndex(1);
 }
 QString ObjectResourcePicker::Value() const {
     if (!selected_) return path_->text();

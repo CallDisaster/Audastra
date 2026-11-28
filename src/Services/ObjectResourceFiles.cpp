@@ -5,6 +5,9 @@
 #include "War3MapCore/Services/ImportInventoryQuery.h"
 #include "War3MapCore/Text/SlkCells.h"
 
+#include <array>
+#include <span>
+
 namespace War3Map::Services {
 using namespace ObjectResourceDetail;
 namespace {
@@ -25,15 +28,20 @@ bool AddFile(Builder& builder, ObjectResourceCandidate row, std::set<std::string
     if (row.title.empty()) { const auto slash = path.rfind('/'); row.title = slash == std::string::npos ? row.value : row.value.substr(slash + 1); }
     const auto origin = row.origin;
     if (!builder.Add(std::move(row))) return false;
+    // .tga 既是贴图也能放进材质图片槽：所在目录在两种浏览里都要出现。
+    const bool tga = *kind == ObjectResourceKind::Texture && Text::LowerAscii(path).ends_with(".tga");
+    const std::array<ObjectResourceKind, 2> folderKinds{*kind, ObjectResourceKind::MaterialImage};
     for (auto end = path.find('/'); end != std::string::npos; end = path.find('/', end + 1)) {
         const auto directory = path.substr(0, end);
-        const auto id = std::string(ObjectResourceKindName(*kind)) + ':' + Text::LowerAscii(directory);
-        if (!directories.insert(id).second) continue;
-        ObjectResourceCandidate folder;
-        folder.id = "directory:" + id; folder.value = directory; folder.kind = *kind; folder.origin = origin;
-        folder.directory = true; folder.state = "directory";
-        const auto slash = directory.rfind('/'); folder.title = slash == std::string::npos ? directory : directory.substr(slash + 1);
-        if (!builder.Add(std::move(folder))) return false;
+        for (const auto folderKind : std::span(folderKinds).first(tga ? 2 : 1)) {
+            const auto id = std::string(ObjectResourceKindName(folderKind)) + ':' + Text::LowerAscii(directory);
+            if (!directories.insert(id).second) continue;
+            ObjectResourceCandidate folder;
+            folder.id = "directory:" + id; folder.value = directory; folder.kind = folderKind; folder.origin = origin;
+            folder.directory = true; folder.state = "directory";
+            const auto slash = directory.rfind('/'); folder.title = slash == std::string::npos ? directory : directory.substr(slash + 1);
+            if (!builder.Add(std::move(folder))) return false;
+        }
     }
     return true;
 }

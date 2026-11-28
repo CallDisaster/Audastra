@@ -27,6 +27,7 @@ std::string_view ObjectResourceKindName(ObjectResourceKind kind) noexcept {
     case ObjectResourceKind::SoundFile: return "sound-file";
     case ObjectResourceKind::SoundLabel: return "sound-label";
     case ObjectResourceKind::UnitSoundSet: return "unit-sound-set";
+    case ObjectResourceKind::MaterialImage: return "material-image";
     }
     return "unknown";
 }
@@ -111,7 +112,10 @@ Result<ObjectResourcePage> QueryObjectResources(const ObjectResourceCatalog& cat
         const auto& row = catalog.rows[index];
         const bool compatibleImage = catalog.origin != ObjectResourceOrigin::Object
             && query.kind == ObjectResourceKind::Icon && row.kind == ObjectResourceKind::Texture;
-        if (row.kind != query.kind && !compatibleImage) continue;
+        // 材质图片槽也读 TGA；.tga 所在目录在建目录时已另记一份材质图片目录。
+        const bool materialTga = query.kind == ObjectResourceKind::MaterialImage && row.kind == ObjectResourceKind::Texture
+            && !row.directory && Text::LowerAscii(row.value).ends_with(".tga");
+        if (row.kind != query.kind && !compatibleImage && !materialTga) continue;
         if (compatibleImage && catalog.origin == ObjectResourceOrigin::Game && !GameIconRow(row)) continue;
         if (query.objectType && (!row.object || row.object->type != *query.objectType)) continue;
         if (!query.directory && row.directory) continue;
