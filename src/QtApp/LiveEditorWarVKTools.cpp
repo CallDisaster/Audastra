@@ -187,7 +187,7 @@ std::vector<LiveWarVKTool> LiveWarVKTools() {
     std::vector<LiveWarVKTool> tools;
     tools.push_back({"map_warvk_get", "读取地图设置 → WarVK：镜头远距上限、近裁剪、执行时机、远景装饰物类型、天空模型、太阳方向与颜色、"
         "昼夜光照开关（含实际写出值）、云海、保存时写出的指令、提醒（warnings），以及当前地形的地面范围与云海盒。",
-        Mcp::ToolPermission::Query, {}, {}, SettingsJson, {}});
+        Mcp::ToolPermission::Query, {}, {}, [](QtProject::EditorProject& project, const QJsonObject&) { return SettingsJson(project); }, {}});
     QJsonObject set{
         {"timing", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"timer", "main"}}}},
         {"camera_limits", QJsonObject{{"type", "object"}, {"additionalProperties", false},
@@ -247,6 +247,7 @@ std::vector<LiveWarVKTool> LiveWarVKTools() {
             if (!status.Succeeded()) return Mcp::Failure(status);
             return SettingsJson(project);
         }});
+    AppendSurfaceMaterialTools(tools);
     return tools;
 }
 

@@ -6,6 +6,8 @@
 namespace War3Map::QtProject {
 
 inline constexpr std::size_t kOwnedLuaAssetBytes = Services::ImportPayloadPolicy::luaDraftBytes;
+// 只读取（不编辑）一个资源正文时的上限，供材质图片等较大的文件；编辑 Lua 仍按 kOwnedLuaAssetBytes。
+inline constexpr std::size_t kOwnedAssetReadMaxBytes = 64 * 1024 * 1024;
 
 struct OwnedAssetSource {
     QString path;

@@ -16,6 +16,7 @@
 #include "WorldAssetBrowser.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
+#include "ProjectSurfaceMaterials.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/Render/EditorOverlay.h"
 #include "War3MapCore/Render/ModelPicking.h"
@@ -623,12 +624,13 @@ void WorldModule::Refresh() {
         const auto logWarnings = [](const char* what, const std::vector<Diagnostic>& diagnostics) {
             for (const auto& item : diagnostics) War3Map::RunLog::Info("世界加载", std::string(what) + "：" + item.code + " " + item.message);
         };
-        // 没有材质表是常态，读不到不报错；表内的坏行写进运行日志。
-        if (auto table = project_.ReadMapMember(std::string(Render::kSurfaceMaterialTablePath)); table.Succeeded()) {
-            auto parsed = std::make_shared<Render::SurfaceMaterialTable>(Render::ParseSurfaceMaterialTable(
-                std::string_view(reinterpret_cast<const char*>(table.value->data()), table.value->size())));
+        // 没有材质表是常态，不报错。读当前有效内容（含未保存的材质修改）；读不出或表内的坏行写进运行日志。
+        if (auto table = QtProject::ReadSurfaceMaterialTable(project_); table.Succeeded() && table.value) {
+            auto parsed = std::make_shared<Render::SurfaceMaterialTable>(table.value->document.Table());
             logWarnings("表面材质表", parsed->warnings);
             if (!parsed->byRawcode.empty()) surfaceMaterials_ = std::move(parsed);
+        } else {
+            logWarnings("表面材质表", table.diagnostics);
         }
         // 天空模型随主模型场景装好后显示；设置读不出时写进运行日志，不显示天空。
         if (const auto warvk = project_.QueryWarVKMapSettings(); warvk.Succeeded() && warvk.value) skyModelPath_ = warvk.value->skyModel;

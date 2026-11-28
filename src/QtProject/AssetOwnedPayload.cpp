@@ -49,8 +49,8 @@ Result<OwnedAssetSource> ReadOwnedMapAsset(const EditorProject& project, const Q
     const auto found = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) { return EditorProject::AssetKey(entry.path) == key; });
     if (found == entries.end()) return Failed<OwnedAssetSource>("ASSET_SOURCE_MISSING", "当前有效资源中没有此路径。");
     if (found->ambiguous) return Failed<OwnedAssetSource>("ASSET_SOURCE_AMBIGUOUS", "当前资源路径具有多份来源，不能选择其中一份正文。");
-    if (!maxBytes || maxBytes > kOwnedLuaAssetBytes || found->size < 0 || static_cast<std::uint64_t>(found->size) > maxBytes)
-        return Failed<OwnedAssetSource>("ASSET_TEXT_BUDGET", "Lua 正文超过 2 MiB 编辑预算；来源保持原样。");
+    if (!maxBytes || maxBytes > kOwnedAssetReadMaxBytes || found->size < 0 || static_cast<std::uint64_t>(found->size) > maxBytes)
+        return Failed<OwnedAssetSource>("ASSET_TEXT_BUDGET", "资源正文超过 " + std::to_string(maxBytes / 1024) + " KiB 读取预算；来源保持原样。");
     std::shared_ptr<const std::vector<std::byte>> bytes = found->ownedPayload;
     if (bytes) {
         if (bytes->size() != static_cast<std::size_t>(found->size)) return Failed<OwnedAssetSource>("ASSET_PAYLOAD_SIZE", "内存载荷长度与资源记录不一致。");

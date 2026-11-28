@@ -104,7 +104,9 @@ add_library(War3MapServices STATIC
     TerrainBoundsEditService.cpp
     TerrainResizeEditService.cpp
     TerrainResizeResources.cpp
-    TerrainSessionResources.cpp)
+    TerrainSessionResources.cpp
+    SurfaceMaterialTableDocument.cpp
+    SurfaceMaterialValidation.cpp)
 add_library(War3MapEditor::Services ALIAS War3MapServices)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3MapTrigger War3MapEditor::UiLibrary War3MapEditor::ScriptBuild)
 target_link_libraries(War3MapServices PRIVATE audastra-json)

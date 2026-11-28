@@ -67,6 +67,9 @@ struct ProjectObjectChoice {
     const War3Map::ObjectData::StandardObjectCatalog* catalog,
     const War3Map::MapDocument* map = nullptr);
 
+// 当前工程（地图覆盖或原版目录）是否认得这个类别的 rawcode。
+[[nodiscard]] bool ProjectObjectKnown(const War3Map::QtProject::EditorProject& project,
+    War3Map::ObjectData::ObjectType type, const std::string& rawcode);
 // 摆放（单位文件含单位/物品，装饰物文件含装饰物/可破坏物）的显示身份：只在两类目录中恰好
 // 一类认得该 rawcode 时确定类型，未知或歧义不猜测；起始位置单独命名。实例列表与世界视图共用。
 [[nodiscard]] std::optional<War3Map::ObjectData::ObjectType> PlacementType(const War3Map::QtProject::EditorProject& project,

@@ -1,5 +1,6 @@
 #include "LiveEditorTools.h"
 #include "EditorProject.h"
+#include "ProjectSurfaceMaterials.h"
 #include "ProjectOpen.h"
 #include "ProjectLuaModules.h"
 #include "Commands/TriggerCommands.h"
@@ -55,6 +56,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
+#include <cstring>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -374,6 +376,7 @@ private slots:
     void GameUiToolsUseHostAndValidateArguments();
     void BatchDeleteTriggersVariablesAndLuaFiles();
     void WarVKSettingsUseSettingsUndoAndRefuseSeventeenth();
+    void SurfaceMaterialToolsEditTableInOneAssetStep();
 };
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
@@ -403,10 +406,11 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "triggers_batch_delete",
         "undo_campaign", "update.status",
         "variables_batch_delete", "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update",
-        "world_scatter_stroke", "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
+        "world_scatter_stroke", "world_surface_material_get", "world_surface_material_list", "world_surface_material_remove",
+        "world_surface_material_set", "world_surface_material_validate", "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{115});
+    QCOMPARE(expected.size(), qsizetype{120});
     const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
@@ -3238,6 +3242,137 @@ void LiveEditorToolsTests::BatchDeleteTriggersVariablesAndLuaFiles() {
     QCOMPARE(rmRes.value("removed").toArray().size(), 40);
     QCOMPARE(f.project.AssetUndoStack()->count(), assetUndoBeforeImp + 1);
     f.project.AssetUndoStack()->undo();
+}
+
+namespace {
+// 原创合成图：无色表 32 位 TGA，左上原点，整张同一像素（RGBA）。
+std::vector<std::byte> SurfaceMaterialTga(int width, int height, std::array<std::uint8_t, 4> pixel) {
+    std::vector<std::byte> out(18, std::byte{0});
+    out[2] = std::byte{2}; out[12] = std::byte(width & 0xFF); out[13] = std::byte(width >> 8);
+    out[14] = std::byte(height & 0xFF); out[15] = std::byte(height >> 8); out[16] = std::byte{32}; out[17] = std::byte{0x28};
+    for (int i = 0; i < width * height; ++i)
+        for (const auto channel : {pixel[2], pixel[1], pixel[0], pixel[3]}) out.push_back(std::byte{channel});
+    return out;
+}
+}
+
+void LiveEditorToolsTests::SurfaceMaterialToolsEditTableInOneAssetStep() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = std::filesystem::path(f.outputs.filePath("material-source.w3x").toStdWString());
+    const std::string original = "; 原注释\r\n[D001]\r\nnormal = Synthetic\\a.tga ; 法线\r\nfoo = 1\r\n";
+    std::vector<std::byte> table(original.size());
+    std::memcpy(table.data(), original.data(), original.size());
+    const std::array<MapArchiveMember, 2> members{{{"WarVK\\materials.ini", table},
+        {"Synthetic\\a.tga", SurfaceMaterialTga(4, 4, {128, 128, 255, 255})}}};
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    auto archive = MapArchiveSession::Open(source); QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.sourceArchivePath_ = source;
+    f.project.ResetEditTracking();
+    f.tools = std::make_unique<LiveEditorTools>(f.project);
+    auto* assetUndo = f.project.AssetUndoStack();
+    const auto tableText = [&] {
+        const auto state = QtProject::ReadSurfaceMaterialTable(f.project);
+        return state.Succeeded() && state.value ? state.value->document.Text() : std::string("<unreadable>");
+    };
+    const auto field = [](const QJsonObject& type, const QString& key) {
+        for (const auto& value : type.value("fields").toArray())
+            if (value.toObject().value("key") == key) return value.toObject();
+        return QJsonObject{};
+    };
+    const auto hasCode = [](const QJsonArray& diagnostics, const QString& code) {
+        return std::any_of(diagnostics.begin(), diagnostics.end(), [&](const auto& item) { return item.toObject().value("code") == code; });
+    };
+
+    auto list = f.Context(); list.insert("filter", "with_material");
+    const auto listed = f.tools->Invoke("world_surface_material_list", list);
+    QVERIFY2(listed.value("ok").toBool(), qPrintable(Explain(listed)));
+    QVERIFY(listed.value("table_exists").toBool());
+    QCOMPARE(listed.value("types").toArray().size(), 1);
+    const auto row = listed.value("types").toArray().at(0).toObject();
+    QCOMPARE(row.value("rawcode").toString(), QStringLiteral("D001"));
+    QCOMPARE(row.value("images").toObject().value("normal").toString(), QStringLiteral("Synthetic\\a.tga"));
+    QCOMPARE(row.value("errors").toInt(), 0);
+
+    auto get = f.Context(); get.insert("rawcode", "D001");
+    const auto read = f.tools->Invoke("world_surface_material_get", get);
+    QVERIFY2(read.value("ok").toBool(), qPrintable(Explain(read)));
+    QCOMPARE(field(read, "normal").value("value").toString(), QStringLiteral("Synthetic\\a.tga"));
+    QVERIFY(!field(read, "roughness").value("written").toBool());
+    QCOMPARE(field(read, "roughness").value("default").toDouble(), 1.0);
+    QCOMPARE(read.value("unknown_keys").toArray(), QJsonArray{"foo"});
+    const auto image = read.value("images").toArray().at(0).toObject();
+    QCOMPARE(image.value("state").toString(), QStringLiteral("found"));
+    QCOMPARE(image.value("format").toString(), QStringLiteral("TGA"));
+    QCOMPARE(image.value("stats").toObject().value("pixels").toInt(), 16);
+    QVERIFY(hasCode(read.value("diagnostics").toArray(), "SURFACE_MATERIAL_NORMAL_FLAT"));
+    QVERIFY(hasCode(read.value("diagnostics").toArray(), "SURFACE_MATERIAL_TYPE_UNPLACED"));
+
+    // 预演：返回改后的结果，不改地图、不入栈。
+    auto preview = f.Context(); preview.insert("rawcode", "D001"); preview.insert("dry_run", true);
+    preview.insert("values", QJsonObject{{"roughness", 0.5}});
+    const auto previewed = f.tools->Invoke("world_surface_material_set", preview);
+    QVERIFY2(previewed.value("ok").toBool(), qPrintable(Explain(previewed)));
+    QVERIFY(previewed.value("dry_run").toBool() && previewed.value("changed").toBool());
+    QCOMPARE(field(previewed, "roughness").value("value").toString(), QStringLiteral("0.5"));
+    QCOMPARE(assetUndo->count(), 0);
+    QCOMPARE(tableText(), original);
+
+    // 改值并同时导入一张图：新表与图片是一步资源撤销；表的其余行原样保留。
+    const auto disk = f.outputs.filePath("orm.tga");
+    {
+        const auto bytes = SurfaceMaterialTga(2, 2, {255, 128, 0, 255});
+        QFile file(disk); QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size()));
+    }
+    auto set = f.Context(); set.insert("rawcode", "D001");
+    set.insert("values", QJsonObject{{"roughness", 0.5}, {"orm", "WarVK/Materials/orm.tga"}, {"normalY", "dx"}});
+    set.insert("imports", QJsonArray{QJsonObject{{"disk_path", QDir::toNativeSeparators(disk)}, {"archive_path", "WarVK/Materials/orm.tga"}}});
+    const auto written = f.tools->Invoke("world_surface_material_set", set);
+    QVERIFY2(written.value("ok").toBool(), qPrintable(Explain(written)));
+    QCOMPARE(assetUndo->count(), 1);
+    // values 按键名顺序应用（normalY、orm、roughness），每个新键接在上一个已知键之后，沿用“ = ”。
+    const std::string edited = "; 原注释\r\n[D001]\r\nnormal = Synthetic\\a.tga ; 法线\r\nnormalY = dx\r\n"
+        "orm = WarVK\\Materials\\orm.tga\r\nroughness = 0.5\r\nfoo = 1\r\n";
+    QCOMPARE(QString::fromStdString(tableText()), QString::fromStdString(edited));
+    QCOMPARE(written.value("images").toArray().size(), 2);
+    QCOMPARE(written.value("images").toArray().at(1).toObject().value("state").toString(), QStringLiteral("found"));
+    QVERIFY(hasCode(written.value("diagnostics").toArray(), "SURFACE_MATERIAL_ORM_CONSTANT"));
+
+    // 坏值拒绝，不入栈。
+    auto bad = f.Context(); bad.insert("rawcode", "D001"); bad.insert("values", QJsonObject{{"roughness", 9}});
+    QCOMPARE(ErrorCode(f.tools->Invoke("world_surface_material_set", bad)), QString("SURFACE_MATERIAL_VALUE_INVALID"));
+    QCOMPARE(assetUndo->count(), 1);
+
+    // 撤销回到原表；重做恢复。
+    assetUndo->undo();
+    QCOMPARE(tableText(), original);
+    assetUndo->redo();
+    QCOMPARE(tableText(), edited);
+
+    // 新类型的图片不存在：照常写入，校验给出错误。
+    auto added = f.Context(); added.insert("rawcode", "D002"); added.insert("values", QJsonObject{{"normal", "Synthetic\\none.png"}});
+    const auto addedResult = f.tools->Invoke("world_surface_material_set", added);
+    QVERIFY2(addedResult.value("ok").toBool(), qPrintable(Explain(addedResult)));
+    QVERIFY(hasCode(addedResult.value("diagnostics").toArray(), "SURFACE_MATERIAL_IMAGE_MISSING"));
+    QCOMPARE(assetUndo->count(), 2);
+    const auto validated = f.tools->Invoke("world_surface_material_validate", f.Context());
+    QVERIFY2(validated.value("ok").toBool(), qPrintable(Explain(validated)));
+    QCOMPARE(validated.value("types_total").toInt(), 2);
+    QCOMPARE(validated.value("counts").toObject().value("error").toInt(), 1);
+
+    // 删除一节：预演不改；删除是一步撤销，注释与其他节保留。
+    auto remove = f.Context(); remove.insert("rawcode", "D002"); remove.insert("dry_run", true);
+    QVERIFY(f.tools->Invoke("world_surface_material_remove", remove).value("ok").toBool());
+    QCOMPARE(assetUndo->count(), 2);
+    remove.insert("dry_run", false);
+    remove.insert("expected_revision", f.Context().value("expected_revision"));
+    const auto removed = f.tools->Invoke("world_surface_material_remove", remove);
+    QVERIFY2(removed.value("ok").toBool(), qPrintable(Explain(removed)));
+    QCOMPARE(assetUndo->count(), 3);
+    QCOMPARE(tableText(), edited + "\r\n");
+    auto missing = f.Context(); missing.insert("rawcode", "D009");
+    QCOMPARE(ErrorCode(f.tools->Invoke("world_surface_material_remove", missing)), QString("SURFACE_MATERIAL_SECTION_MISSING"));
 }
 
 void LiveEditorToolsTests::WarVKSettingsUseSettingsUndoAndRefuseSeventeenth() {

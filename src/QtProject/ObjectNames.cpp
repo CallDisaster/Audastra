@@ -335,17 +335,19 @@ std::optional<std::string> ObjectFieldValue(const ObjectInheritanceChain& chain,
     return std::nullopt;
 }
 
+bool ProjectObjectKnown(const War3Map::QtProject::EditorProject& project,
+    War3Map::ObjectData::ObjectType type, const std::string& rawcode) {
+    const auto index = static_cast<std::size_t>(type);
+    const auto* lni = project.objectDocuments_[index].get();
+    const auto* native = lni ? nullptr : project.nativeObjectDocuments_[index].get();
+    return (lni && lni->FindObject({type, rawcode})) ||
+        (native && native->IsStructurallySafe() && native->Type() == type && native->FindObject({type, rawcode})) ||
+        (project.standardCatalog_ && project.standardCatalog_->Find(type, rawcode));
+}
+
 std::optional<War3Map::ObjectData::ObjectType> PlacementType(const War3Map::QtProject::EditorProject& project,
     const std::string& rawcode, War3Map::ObjectData::ObjectType first, War3Map::ObjectData::ObjectType second) {
-    const auto known = [&](War3Map::ObjectData::ObjectType type) {
-        const auto index = static_cast<std::size_t>(type);
-        const auto* lni = project.objectDocuments_[index].get();
-        const auto* native = lni ? nullptr : project.nativeObjectDocuments_[index].get();
-        return (lni && lni->FindObject({type, rawcode})) ||
-            (native && native->IsStructurallySafe() && native->Type() == type && native->FindObject({type, rawcode})) ||
-            (project.standardCatalog_ && project.standardCatalog_->Find(type, rawcode));
-    };
-    const bool a = known(first), b = known(second);
+    const bool a = ProjectObjectKnown(project, first, rawcode), b = ProjectObjectKnown(project, second, rawcode);
     if (a == b) return std::nullopt; // 未知或跨类型歧义均不猜测。
     return a ? first : second;
 }

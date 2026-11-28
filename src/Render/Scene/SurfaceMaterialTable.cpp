@@ -7,29 +7,84 @@
 
 namespace War3Map::Render {
 namespace {
+constexpr std::string_view kSpace = " \t\r\n";
+
 std::string_view Trim(std::string_view text) {
-    const auto first = text.find_first_not_of(" \t\r\n");
+    const auto first = text.find_first_not_of(kSpace);
     if (first == std::string_view::npos) return {};
-    return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
-}
-bool Rawcode(std::string_view text) {
-    if (text.size() != 4) return false;
-    for (const char c : text) if (c <= ' ' || c > '~') return false;
-    return true;
-}
-std::optional<float> Number(std::string_view text, float low, float high) {
-    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
-    float value = 0;
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (text.empty() || error != std::errc{} || end != text.data() + text.size() || !std::isfinite(value)
-        || value < low || value > high) return std::nullopt;
-    return value;
+    return text.substr(first, text.find_last_not_of(kSpace) - first + 1);
 }
 struct Section { std::string rawcode; ModelSurfaceMaterial material; };
 bool HasImages(const ModelSurfaceMaterial& m) {
     return !m.normalPath.empty() || !m.ormPath.empty() || !m.detailNormalPath.empty() || !m.detailOrmPath.empty()
         || !m.detailAlbedoPath.empty();
 }
+std::string* ImagePath(ModelSurfaceMaterial& m, std::string_view key) {
+    if (key == "normal") return &m.normalPath;
+    if (key == "orm") return &m.ormPath;
+    if (key == "detailNormal") return &m.detailNormalPath;
+    if (key == "detailOrm") return &m.detailOrmPath;
+    if (key == "detailAlbedo") return &m.detailAlbedoPath;
+    return nullptr;
+}
+float* NumberField(ModelSurfaceMaterial& m, std::string_view key) {
+    if (key == "normalScale") return &m.normalScale;
+    if (key == "roughness") return &m.roughness;
+    if (key == "metallic") return &m.metallic;
+    if (key == "occlusion") return &m.occlusion;
+    if (key == "specular") return &m.specular;
+    if (key == "detailScale") return &m.detailScale;
+    if (key == "detailStrength") return &m.detailStrength;
+    return nullptr;
+}
+}
+
+const SurfaceMaterialKey* FindSurfaceMaterialKey(std::string_view name) noexcept {
+    for (const auto& key : kSurfaceMaterialKeys) if (key.name == name) return &key;
+    return nullptr;
+}
+
+std::optional<float> ParseSurfaceMaterialNumber(std::string_view text, const SurfaceMaterialKey& key) {
+    if (key.kind != SurfaceMaterialKeyKind::Number) return std::nullopt;
+    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
+    float value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (text.empty() || error != std::errc{} || end != text.data() + text.size() || !std::isfinite(value)
+        || value < key.minimum || value > key.maximum) return std::nullopt;
+    return value;
+}
+
+bool SurfaceMaterialRawcode(std::string_view text) noexcept {
+    if (text.size() != 4) return false;
+    for (const char c : text) if (c <= ' ' || c > '~') return false;
+    return true;
+}
+
+SurfaceMaterialLine ReadSurfaceMaterialLine(std::string_view line) noexcept {
+    SurfaceMaterialLine out;
+    const auto content = line.substr(0, line.find_first_of(";#"));
+    const auto trimmed = Trim(content);
+    if (trimmed.empty()) return out;
+    if (trimmed.front() == '[') {
+        const auto close = trimmed.find(']');
+        const auto code = close == std::string_view::npos ? std::string_view{} : Trim(trimmed.substr(1, close - 1));
+        out.kind = SurfaceMaterialRawcode(code) ? SurfaceMaterialLine::Kind::Section : SurfaceMaterialLine::Kind::BadSection;
+        out.rawcode = code;
+        return out;
+    }
+    const auto equals = content.find('=');
+    if (equals == std::string_view::npos) { out.kind = SurfaceMaterialLine::Kind::Bad; return out; }
+    out.kind = SurfaceMaterialLine::Kind::KeyValue;
+    out.key = Trim(content.substr(0, equals));
+    const auto first = content.find_first_not_of(kSpace, equals + 1);
+    if (first == std::string_view::npos) {
+        out.valueBegin = out.valueEnd = equals + 1;
+    } else {
+        out.valueBegin = first;
+        out.valueEnd = content.find_last_not_of(kSpace) + 1;
+    }
+    out.value = content.substr(out.valueBegin, out.valueEnd - out.valueBegin);
+    return out;
 }
 
 std::shared_ptr<const ModelSurfaceMaterial> SurfaceMaterialTable::Find(std::string_view rawcode) const {
@@ -51,53 +106,37 @@ SurfaceMaterialTable ParseSurfaceMaterialTable(std::string_view text) {
     while (!text.empty()) {
         ++lineNumber;
         const auto end = text.find('\n');
-        auto line = text.substr(0, end);
+        const auto read = ReadSurfaceMaterialLine(text.substr(0, end));
         text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
-        if (const auto comment = line.find_first_of(";#"); comment != std::string_view::npos) line = line.substr(0, comment);
-        line = Trim(line);
-        if (line.empty()) continue;
-        if (line.front() == '[') {
+        using Kind = SurfaceMaterialLine::Kind;
+        if (read.kind == Kind::Blank) continue;
+        if (read.kind == Kind::Section || read.kind == Kind::BadSection) {
             current = nullptr;
-            const auto close = line.find(']');
-            const auto code = close == std::string_view::npos ? std::string_view{} : Trim(line.substr(1, close - 1));
-            if (!Rawcode(code)) { warn(lineNumber, "节名不是四字符物体类型。"); continue; }
-            for (auto& section : sections) if (section.rawcode == code) current = &section;
+            if (read.kind == Kind::BadSection) { warn(lineNumber, "节名不是四字符物体类型。"); continue; }
+            for (auto& section : sections) if (section.rawcode == read.rawcode) current = &section;
             if (!current) {
                 if (sections.size() >= kSurfaceMaterialTableMaxTypes) { warn(lineNumber, "物体类型超过 256 种，本节忽略。"); continue; }
-                current = &sections.emplace_back(Section{std::string(code), {}});
+                current = &sections.emplace_back(Section{std::string(read.rawcode), {}});
             }
             continue;
         }
-        const auto equals = line.find('=');
-        if (!current || equals == std::string_view::npos) { warn(lineNumber, "不在任何节内，或缺少“=”。"); continue; }
-        const auto key = Trim(line.substr(0, equals)), value = Trim(line.substr(equals + 1));
+        if (!current || read.kind == Kind::Bad) { warn(lineNumber, "不在任何节内，或缺少“=”。"); continue; }
+        const auto* key = FindSurfaceMaterialKey(read.key);
+        if (!key) { warn(lineNumber, "未知键 " + std::string(read.key) + "。"); continue; }
         auto& m = current->material;
-        const auto number = [&](float& target, float low, float high) {
-            if (const auto parsed = Number(value, low, high)) target = *parsed;
-            else warn(lineNumber, std::string(key) + " 的值无效或超出范围，保留原值。");
-        };
-        if (key == "shader") {
-            if (value == "surface" || value == "water")
-                m.shader = value == "water" ? ModelSurfaceShader::Water : ModelSurfaceShader::Surface;
-            else warn(lineNumber, "shader 只能是 surface 或 water，保留原值。");
+        if (key->kind == SurfaceMaterialKeyKind::Image) { *ImagePath(m, key->name) = std::string(read.value); continue; }
+        if (key->kind == SurfaceMaterialKeyKind::Number) {
+            if (const auto parsed = ParseSurfaceMaterialNumber(read.value, *key)) *NumberField(m, key->name) = *parsed;
+            else warn(lineNumber, std::string(key->name) + " 的值无效或超出范围，保留原值。");
+            continue;
         }
-        else if (key == "normal") m.normalPath = std::string(value);
-        else if (key == "orm") m.ormPath = std::string(value);
-        else if (key == "detailNormal") m.detailNormalPath = std::string(value);
-        else if (key == "detailOrm") m.detailOrmPath = std::string(value);
-        else if (key == "detailAlbedo") m.detailAlbedoPath = std::string(value);
-        else if (key == "normalY") {
-            if (value == "gl" || value == "dx") m.normalYSign = value == "gl" ? -1.0f : 1.0f;
-            else warn(lineNumber, "normalY 只能是 gl 或 dx，保留原值。");
+        if (read.value != key->choices[0] && read.value != key->choices[1]) {
+            warn(lineNumber, std::string(key->name) + " 只能是 " + std::string(key->choices[0]) + " 或 "
+                + std::string(key->choices[1]) + "，保留原值。");
+            continue;
         }
-        else if (key == "normalScale") number(m.normalScale, 0.0f, 8.0f);
-        else if (key == "roughness") number(m.roughness, 0.0f, 4.0f);
-        else if (key == "metallic") number(m.metallic, 0.0f, 1.0f);
-        else if (key == "occlusion") number(m.occlusion, 0.0f, 1.0f);
-        else if (key == "specular") number(m.specular, 0.0f, 4.0f);
-        else if (key == "detailScale") number(m.detailScale, 8.0f, 65536.0f);
-        else if (key == "detailStrength") number(m.detailStrength, 0.0f, 4.0f);
-        else warn(lineNumber, "未知键 " + std::string(key) + "。");
+        if (key->name == "shader") m.shader = read.value == "water" ? ModelSurfaceShader::Water : ModelSurfaceShader::Surface;
+        else m.normalYSign = read.value == "gl" ? -1.0f : 1.0f;
     }
     for (auto& section : sections) {
         if (section.material.shader == ModelSurfaceShader::Surface && !HasImages(section.material)) {

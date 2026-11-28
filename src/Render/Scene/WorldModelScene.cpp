@@ -6,6 +6,7 @@
 #include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Render/MdxPose.h"
+#include "War3MapCore/Render/SurfaceMaterialImage.h"
 #include "War3MapCore/Resources/ClassicObjectTexture.h"
 
 #include <algorithm>
@@ -398,21 +399,16 @@ private:
         scene_.untexturedLayers = untextured;
         return index;
     }
-    // 细节图只取相对自身均值的变化：按最高一级 mip 的存储值算 R、G 与亮度（Rec.709）的均值，下限 1/1024 防止除零。
+    // 细节图只取相对自身均值的变化：按最高一级 mip 的存储值算 R、G 与亮度（Rec.709）的均值，与材质校验同一统计。
     std::array<float, 3> DetailMeans(std::uint32_t index) {
         if (const auto found = detailMeans_.find(index); found != detailMeans_.end()) return found->second;
         const auto& texture = std::as_const(scene_).textures[index];
         const std::size_t pixels = std::min<std::size_t>(static_cast<std::size_t>(texture.width) * texture.height,
             texture.rgba.size() / 4);
-        double red = 0, green = 0, brightness = 0;
-        for (std::size_t i = 0; i < pixels; ++i) {
-            const auto* p = texture.rgba.data() + i * 4;
-            red += p[0]; green += p[1]; brightness += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
-        }
-        const auto mean = [&](double sum) {
-            return pixels ? std::clamp(static_cast<float>(sum / (255.0 * pixels)), 1.0f / 1024.0f, 1.0f) : 1.0f;
-        };
-        return detailMeans_.emplace(index, std::array<float, 3>{mean(red), mean(green), mean(brightness)}).first->second;
+        const auto stats = MeasureSurfaceMaterialPixels(std::span<const std::uint8_t>(texture.rgba.data(), pixels * 4));
+        return detailMeans_.emplace(index, std::array<float, 3>{SurfaceMaterialDetailMean(stats, stats.channels[0].mean),
+            SurfaceMaterialDetailMean(stats, stats.channels[1].mean),
+            SurfaceMaterialDetailMean(stats, stats.brightnessMean)}).first->second;
     }
     void AssignSurface(std::uint32_t model, const ModelSurfaceMaterial& material) {
         auto surface = kNoModelSurface;

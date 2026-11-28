@@ -37,6 +37,7 @@ qt_add_library(War3MapQtProject STATIC
     MapRuntimeSettings.cpp
     ProjectOwnedMembers.cpp
     ProjectWarVKSettings.cpp
+    ProjectSurfaceMaterials.cpp ProjectSurfaceMaterials.h
     AssetEdits.cpp
     ProjectAssetMentions.cpp
     AssetOwnedPayload.cpp AssetOwnedPayload.h
